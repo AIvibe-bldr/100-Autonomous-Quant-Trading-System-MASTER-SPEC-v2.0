@@ -1,0 +1,17 @@
+[project]
+name = "trading-platform"
+version = "0.1.0"
+description = "100x Autonomous Quant Trading System (MASTER SPEC v2.0) — V1 paper-trading core"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
