@@ -34,7 +34,10 @@ python3 scripts/run_paper_demo.py --days 5
 | 10 | Post-Stop/Post-Profit Tracker（§50-51）/ P&L Attribution（§54）/ Profit Quality（§55）/ Daily PDCA Review（§63-64） | `services/pdca` |
 | 11 | Shadow Portfolios（§56）/ Ablation（§57）/ Champion-Challenger（§58） | `services/pdca/shadow.py`, `services/alpha_factory` |
 | 12 | Operating Cost Engine / Two P&L（§80-81）/ Data ROI（§82） | `services/cost_manager` |
-| 13(一部) | Status API（§86-97のUIバックエンド、read-only） | `apps/api/main.py` |
+| 13 | Status API＋ダッシュボードUI（§86-97、read-only） | `apps/api/main.py`, `apps/web/dashboard.html` |
+| — | Corporate Action Engine（§15）/ Event Calendar（§16） | `services/market_data` |
+| — | Forecast Tracker（§32）/ Human Intent・Override・Human vs AI（§76-79） | `services/decision` |
+| — | Experiment Registry（§98）/ Exit Optimizer（§52: 段階昇格＋人間承認必須） | `packages/common/experiments.py`, `services/pdca/exit_optimizer.py` |
 
 ## 安全設計（AIから変更不能 §2）
 
@@ -66,12 +69,17 @@ Data Flow）/ `invariants.md`（Safety Invariants）/ `database.md`（DB Schema�
 `agents.md`（Agent Interfaces）/ `risk.md`（Risk Pipeline）/ `execution.md`（Order State Machine・
 Broker Interface）/ `experiments.md`（Testing Strategy・Failure Matrix・Paper→Live Gate・Phase計画）
 
-## Status API
+## ダッシュボード + Status API
 
 ```bash
 pip install fastapi uvicorn httpx
-# apps/api/main.py の create_app(pipeline) をuvicornで起動
+python3 scripts/run_dashboard.py --days 5   # http://localhost:8000/ にUI表示
 ```
+
+`apps/web/dashboard.html` はビルド不要の自己完結UI（§86-97: Simple Mode / 資産チャート /
+保有銘柄＋テーマタグ / テーマ配分（40%超で集中警告 §90）/ セッションファネルとNO TRADE理由 /
+System Health / PAPER・LIVEバッジ / MASTER STOP状態表示）。Next.js/TypeScript版（§100）への
+移行はフロントエンド専用フェーズで実施予定。
 
 read-onlyエンドポイント: `/health`（環境バッジ・Risk状態 §73,97）/ `/portfolio`（Simple Mode §86、
 Two P&L §81）/ `/chart`（§87）/ `/holdings`（§88-89）/ `/themes`（§90）/ `/session`

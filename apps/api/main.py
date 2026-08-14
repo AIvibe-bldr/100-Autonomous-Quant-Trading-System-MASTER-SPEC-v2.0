@@ -10,9 +10,13 @@ the UI can never become a path around the risk pipeline (§2, §78).
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+
+DASHBOARD_HTML = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
 
 from packages.common.risk_config import RiskConfig
 from services.cost_manager.engine import OperatingCostEngine
@@ -41,6 +45,11 @@ def create_app(pipeline: TradingPipeline,
                               "equity": snap.equity})
 
     app.state.record_session = record_session
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard() -> str:
+        """Self-contained dashboard UI (§86-97). Read-only like every route."""
+        return DASHBOARD_HTML.read_text()
 
     @app.get("/health")
     def health() -> dict[str, Any]:
