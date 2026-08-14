@@ -26,9 +26,15 @@ python3 scripts/run_paper_demo.py --days 5
 | 2 | Broker Adapter Interface / Paper Broker / Order State Machine / Reconciliation | `packages/broker_adapters`, `services/execution`, `services/reconciliation` |
 | 3 | Loss Control / Position Sizing / Capital Allocation / Master Risk Controller / Gap Risk | `services/loss_control`, `services/position_sizing`, `services/capital_allocation`, `services/risk` |
 | 4 | Paper Execution E2E ＋ Decision Provenance | `services/pipeline.py`, `packages/common/provenance.py` |
-| 5(一部) | Quant Scanner（LLM前段のPythonファネル §21） | `services/quant` |
-| — | Decision AI / Skeptic インターフェース＋決定論的Mock（§27-31） | `services/decision` |
-| — | Post-Stop/Post-Profit Tracker・Heartbeat（最小実装 §50-51, §67） | `services/pdca`, `services/supervisor` |
+| 5 | Quant Scanner（§21）/ Backtest Microstructure Simulator（§25）/ Replay Engine（§62）/ Anti-Overfitting toolkit（§24: walk-forward, embargo, Monte Carlo, Bonferroni） | `services/quant`, `packages/strategy_sdk` |
+| 6 | News Engine（§17-19: dedup/clustering/source hierarchy/SNS単独発注禁止/injection防御）/ Institutional Flow（§20: 単一Feature売買禁止） | `services/news`, `services/institutional` |
+| 7 | Feature Store＋Lifecycle＋Drift（§22, §59, §61）/ Regime Engine（§26）/ Alpha Factory＋Judge（§23, §60） | `services/feature_manager`, `services/regime`, `services/alpha_factory` |
+| 8 | Decision AI / Skeptic / Calibration / Disagreement Engine（§27-31, §30） | `services/decision` |
+| 9 | Recovery Manager（§69: 重大障害は人間承認必須）/ Incident Postmortem（§71）/ Heartbeat（§67） | `services/supervisor` |
+| 10 | Post-Stop/Post-Profit Tracker（§50-51）/ P&L Attribution（§54）/ Profit Quality（§55）/ Daily PDCA Review（§63-64） | `services/pdca` |
+| 11 | Shadow Portfolios（§56）/ Ablation（§57）/ Champion-Challenger（§58） | `services/pdca/shadow.py`, `services/alpha_factory` |
+| 12 | Operating Cost Engine / Two P&L（§80-81）/ Data ROI（§82） | `services/cost_manager` |
+| 13(一部) | Status API（§86-97のUIバックエンド、read-only） | `apps/api/main.py` |
 
 ## 安全設計（AIから変更不能 §2）
 
@@ -60,12 +66,25 @@ Data Flow）/ `invariants.md`（Safety Invariants）/ `database.md`（DB Schema�
 `agents.md`（Agent Interfaces）/ `risk.md`（Risk Pipeline）/ `execution.md`（Order State Machine・
 Broker Interface）/ `experiments.md`（Testing Strategy・Failure Matrix・Paper→Live Gate・Phase計画）
 
+## Status API
+
+```bash
+pip install fastapi uvicorn httpx
+# apps/api/main.py の create_app(pipeline) をuvicornで起動
+```
+
+read-onlyエンドポイント: `/health`（環境バッジ・Risk状態 §73,97）/ `/portfolio`（Simple Mode §86、
+Two P&L §81）/ `/chart`（§87）/ `/holdings`（§88-89）/ `/themes`（§90）/ `/session`
+（ファネルとNO TRADE理由 §93）/ `/features`（§94）/ `/risk-config`（閲覧のみ §39）。
+**書き込み系エンドポイントは存在しない**（テストで強制）。
+
 ## 既知の制限（V1）
 
 - 市場データは決定論的Mock（実データProviderは `MarketDataProvider` 実装で差し替え）
 - Decision AI / Skeptic はMock（実LLMは `DecisionModel` Protocol 実装で差し替え。
   出力は同じSchema検証を通る）
-- News / Institutional / Regime / Alpha Factory / Shadow / UI は未実装（Phase 6以降）
+- News/Institutional は実フィード未接続（エンジンはテスト済み、入力はスタブ）
+- Next.js フロントエンド（§100）は未着手 — Status API がバックエンド
 - 通貨は内部USD（`docs/MASTER_SPEC.md` ISSUE-1参照）
 
 ## 免責
