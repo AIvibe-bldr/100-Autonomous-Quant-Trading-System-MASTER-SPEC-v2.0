@@ -22,6 +22,7 @@ from packages.broker_adapters.base import (
 )
 from packages.common.clock import Clock
 from packages.common.environment import Environment
+from packages.schemas.audit import ApprovedOrderSnapshot
 from packages.schemas.core import (
     BrokerFill,
     BrokerOrderRequest,
@@ -34,6 +35,11 @@ from services.risk.master_controller import MasterRiskController, RiskState
 
 class UnauthorizedOrderError(RuntimeError):
     """Order lacked a valid risk approval — the pipeline was bypassed (§7)."""
+
+
+class OrderTamperError(RuntimeError):
+    """Order fields no longer match the approved snapshot hash (INV-17).
+    The approval is void; the order must go back through Audit + Risk (A4)."""
 
 
 def make_client_order_id(environment: Environment, proposal_id: str, seq: int) -> str:
@@ -49,8 +55,10 @@ class ExecutionEngine:
     environment: Environment
     on_fill: Optional[Callable[[BrokerFill], None]] = None
     _submitted: dict[str, RiskApprovedOrder] = field(default_factory=dict)
+    _snapshots: dict[str, ApprovedOrderSnapshot] = field(default_factory=dict)
 
-    def submit(self, order: RiskApprovedOrder) -> OrderState:
+    def submit(self, order: RiskApprovedOrder,
+               snapshot: Optional[ApprovedOrderSnapshot] = None) -> OrderState:
         intent = order.intent
 
         # §7: only risk-approved orders reach the broker — verify the token
@@ -63,16 +71,30 @@ class ExecutionEngine:
         if intent.client_order_id in self._submitted:
             raise DuplicateClientOrderIdError(intent.client_order_id)
 
+        # A4 / INV-17: the intent must re-hash to the approved snapshot.
+        # If no snapshot is supplied, freeze one now from the approved order.
+        snapshot = snapshot or ApprovedOrderSnapshot.from_approved(order)
+        if not snapshot.matches_intent(intent):
+            raise OrderTamperError(
+                f"{intent.client_order_id}: order fields do not match approved "
+                f"snapshot hash — approval void, re-audit + re-risk required (A4)")
+        self._snapshots[intent.client_order_id] = snapshot
+
         sm = self.state_machine
         sm.create(intent.client_order_id)
         sm.transition(intent.client_order_id, OrderState.RISK_APPROVED,
-                      reason=f"approval {order.approval.approval_id}")
+                      reason=f"approval {order.approval.approval_id} "
+                             f"snapshot {snapshot.hash[:12]}")
         self._submitted[intent.client_order_id] = order
 
-        req = BrokerOrderRequest(client_order_id=intent.client_order_id, symbol=intent.symbol,
-                                 side=intent.side, qty=intent.qty,
-                                 order_type=intent.order_type,
-                                 limit_price=intent.limit_price, stop_price=intent.stop_price)
+        # INV-18 / A4-2: the broker request is built from the SNAPSHOT, never
+        # from mutable local state — the engine cannot alter qty/price/side.
+        req = BrokerOrderRequest(client_order_id=snapshot.client_order_id,
+                                 symbol=snapshot.symbol,
+                                 side=snapshot.side, qty=snapshot.qty,
+                                 order_type=snapshot.order_type,
+                                 limit_price=snapshot.limit_price,
+                                 stop_price=snapshot.stop_price)
         sm.transition(intent.client_order_id, OrderState.SUBMITTED)
         try:
             ack = self.broker.submit_order(req)

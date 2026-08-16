@@ -140,6 +140,48 @@ def create_app(pipeline: TradingPipeline,
         return {status.value: [m.name for m in feature_store.by_status(status)]
                 for status in FeatureStatus}
 
+    @app.get("/decision-quality")
+    def decision_quality() -> dict[str, Any]:
+        """A7: monthly decision quality panel (ADDENDUM A2)."""
+        from services.pdca.decision_quality import DecisionQualityReporter
+
+        now = pipeline.clock.now()
+        reporter = DecisionQualityReporter(pipeline.decision_quality)
+        r = reporter.monthly(now.year, now.month)
+        months = []
+        y, m = now.year, now.month
+        for _ in range(4):
+            months.append((y, m))
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+        return {
+            "month": r.month, "total_decisions": r.total,
+            "good": r.counts.get("GOOD", 0), "good_pct": r.pct("GOOD"),
+            "mixed": r.counts.get("MIXED", 0), "mixed_pct": r.pct("MIXED"),
+            "bad": r.counts.get("BAD", 0), "bad_pct": r.pct("BAD"),
+            "pending": r.counts.get("PENDING", 0), "pending_pct": r.pct("PENDING"),
+            "average_decision_score": r.average_score,
+            "by_kind": r.by_kind,                       # BUY/SELL/WAIT/NO_TRADE精度 (A2-1)
+            "expected_value_per_decision": r.expected_value_per_decision,
+            "avg_good_return": r.avg_good_return,       # A2-2: 勝率だけをKPIにしない
+            "avg_bad_loss": r.avg_bad_loss,
+            "avg_mae": r.avg_mae, "avg_mfe": r.avg_mfe,
+            "confidence_calibration": r.confidence_buckets,   # A2-3
+            "by_regime": r.by_regime,                          # A2-4
+            "trend": reporter.trend(list(reversed(months))),   # A2-5
+        }
+
+    @app.get("/order-safety")
+    def order_safety() -> dict[str, Any]:
+        """A7: 発注安全性 panel — audits, prevented errors, reconciliation."""
+        now = pipeline.clock.now()
+        summary = pipeline.audit_log.monthly_safety_summary(now.year, now.month)
+        summary["broker_reconciliation"] = (
+            "OK" if pipeline.risk_controller.state.value == "NORMAL" else
+            pipeline.risk_controller.state.value)
+        return summary
+
     @app.get("/risk-config")
     def risk_config() -> dict[str, Any]:
         """Read-only view of risk limits — no write endpoint exists (§39)."""

@@ -13,6 +13,7 @@ from packages.common.risk_config import RiskConfig
 from packages.broker_adapters.paper import PaperBroker
 from services.capital_allocation.engine import CapitalAllocationEngine
 from services.data_validation.integrity import DataIntegrityEngine
+from services.decision.audit import IndependentAuditor, MockAuditModel
 from services.decision.models import CalibrationTracker, MockDecisionModel, MockSkepticModel
 from services.execution.engine import ExecutionEngine
 from services.execution.state_machine import OrderStateMachine
@@ -81,7 +82,10 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         sizing=PositionSizingEngine(config=cfg),
         allocation=CapitalAllocationEngine(config=cfg),
         risk_controller=risk, execution=execution, ledger=ledger,
-        provenance=ProvenanceStore(env), symbol_themes=THEMES)
+        provenance=ProvenanceStore(env),
+        # V1 paper mode: audit every order to collect data (A3-6)
+        auditor=IndependentAuditor(model=MockAuditModel(), audit_all=True),
+        symbol_themes=THEMES)
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ from tests.conftest import SYMBOLS, build_pipeline
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--days", type=int, default=5)
+    parser.add_argument("--days", type=int, default=18)
     parser.add_argument("--cash", type=float, default=670.0)
     args = parser.parse_args()
 
@@ -38,11 +38,16 @@ def main() -> None:
     pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
     app = create_app(pipeline)
 
-    report = ReplayEngine(pipeline).run(start=date(2026, 8, 3), sessions=args.days)
+    report = ReplayEngine(pipeline).run(start=date(2026, 7, 20), sessions=args.days)
     for day in report.days:
         app.state.record_session(day.result)
+
+    # mature decision-quality horizons so the A2 panel shows graded decisions
+    observed = pipeline.decision_quality.track(
+        clock.now(), price_fn=lambda s, t: pipeline.market_data.quote(s, t).mid)
     print(f"replayed {report.total_sessions} sessions; final equity "
-          f"${report.final_equity:,.2f}; dashboard at http://localhost:{args.port}/")
+          f"${report.final_equity:,.2f}; graded {observed} decision horizons; "
+          f"dashboard at http://localhost:{args.port}/")
 
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 

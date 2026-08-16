@@ -35,6 +35,26 @@ class SkepticModel(Protocol):
 - 「なぜこのTradeをしてはいけないか」を探す。追認AIにしない
 - 可能なら Decision AI と異なる Model Family を使用
 
+## Independent Audit AI (ADDENDUM A3)
+
+```python
+class AuditModel(Protocol):
+    def audit(self, decision: DecisionOutput, sized: SizedProposal,
+              intent: OrderIntent, context: AuditContext) -> dict: ...
+```
+
+- 発注**直前**の意味的整合監査: Symbol/方向一致、Quantity合理性、Stop存在と方向、
+  Horizon vs Stop幅、Thesis/Risk説明との整合、Stale Signal、不自然な桁
+- 出力は `AuditOutput`（PASS/REJECT/REVIEW + reasons + detected_conflicts + severity）。
+  Schema検証失敗 = REJECT扱い（INV-20）
+- **最終責任は持たない**: Cash/Leverage/Duplicate等の絶対条件はMaster Risk Controllerの
+  固定コードが担う（A3-4）。AuditはRiskの**前段**であり、Riskを代替しない
+- Decision AIと**別Model Family**を推奨（A3-5）。Skeptic AI（§29）とは役割が異なる:
+  Skepticは判断段階の反証、Auditは発注段階のDecision↔Order整合
+- Conditional Audit（A3-6）: 大きいSize/High Vol/イベント直前/Disagreement大/新Alpha/
+  初回LIVE/低流動性等では強制。Audit不能時、強制対象Tradeは発注禁止（INV-19）
+- Audit AIはBrokerへアクセス不可（Decision AIと同様）
+
 ## Confidence Calibration (§31)
 
 - AIの生Confidenceは信用しない

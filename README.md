@@ -38,6 +38,11 @@ python3 scripts/run_paper_demo.py --days 5
 | — | Corporate Action Engine（§15）/ Event Calendar（§16） | `services/market_data` |
 | — | Forecast Tracker（§32）/ Human Intent・Override・Human vs AI（§76-79） | `services/decision` |
 | — | Experiment Registry（§98）/ Exit Optimizer（§52: 段階昇格＋人間承認必須） | `packages/common/experiments.py`, `services/pdca/exit_optimizer.py` |
+| A1-A2 | **Decision Quality Engine**（全判断のImmutable Snapshot・Outcome/Process分離採点・月次レポート） | `services/pdca/decision_quality.py` |
+| A3 | **Independent Audit AI**（発注直前の意味的監査、PASS/REJECT/REVIEW、条件付き強制Audit） | `services/decision/audit.py` |
+| A4 | **Immutable Approved Order Snapshot**（SHA-256 hash照合、変更→再Audit必須） | `packages/schemas/audit.py` |
+| A5-A6 | **Pre-Trade Audit Log / Near-Miss学習**（防止した誤発注の集計） | `services/pdca/audit_log.py` |
+| A7 | 判断品質・発注安全性パネル（`/decision-quality`, `/order-safety`） | `apps/api`, `apps/web` |
 
 ## 安全設計（AIから変更不能 §2）
 

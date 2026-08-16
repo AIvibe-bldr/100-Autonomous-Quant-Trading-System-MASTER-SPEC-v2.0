@@ -28,6 +28,23 @@
 | order timeout | UNKNOWN状態 | Reconciliation + Entry停止 | chaos/test_order_timeout |
 | market halt | Calendar/halt status | 新規停止 | unit/test_market_halt |
 
+## Pre-Trade Audit / Decision Quality tests (ADDENDUM A8)
+
+| ケース | 期待結果 | テスト |
+|---|---|---|
+| Decision BUY / Order SELL | Audit REJECT | test_decision_buy_order_sell_rejected |
+| 承認後Quantity変更 | Hash mismatch → REJECT | test_hash_mismatch_rejected |
+| Symbol変更 | REJECT | test_symbol_change_rejected |
+| Duplicate Order | REJECT（既存INV-7） | test_duplicate_client_order_id_rejected |
+| Stopなし | REJECT（既存INV-4） | test_every_entry_has_stop_plan |
+| Leverage > 1.0 | REJECT（既存INV-1） | test_leverage_never_exceeds_one |
+| Insufficient Cash | REJECT（既存INV-5） | test_order_value_within_settled_cash |
+| Broker Position mismatch | HALT_NEW_ENTRIES（既存§48） | test_reconciliation_mismatch_halts_entries |
+| Audit AI unavailable | High-risk Trade発注禁止 | test_audit_unavailable_blocks_high_risk |
+| Malformed Audit JSON | REJECT | test_malformed_audit_rejected |
+| Decision Snapshot変更 | 新Decision ID必須 | test_decision_snapshot_immutable |
+| Risk承認後のOrder変更 | 再Audit必須（Approval無効化） | test_modified_order_requires_reaudit |
+
 ## Experiment Registry (§98)
 
 全変更は Experiment として登録: Hypothesis / Change / Baseline / Challenger / Period /

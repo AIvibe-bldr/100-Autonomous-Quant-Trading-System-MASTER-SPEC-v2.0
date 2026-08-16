@@ -31,9 +31,13 @@ Position Sizing (services/position-sizing)     … AIが自由に決めない
         ↓
 Capital Allocation (services/capital-allocation) … Total Exposure <= 100%
         ↓
+Independent Audit AI (services/decision/audit)  … 意味的整合の監査（ADDENDUM A3）
+        ↓                                          Decision≠Order方向等をREJECT
 Master Risk Controller (services/risk)  … deterministic・AI禁止・PASSしない注文は送らない
+        ↓                                  ＝ 最終防壁（AuditはAIなので最終責任を持たない）
+Immutable Approved Order Snapshot        … hash固定（ADDENDUM A4）。Field変更→再Audit+再Risk
         ↓
-Execution Engine (services/execution)   … deterministic・LLM禁止
+Execution Engine (services/execution)   … deterministic・LLM禁止・Snapshot hash一致のみ送信
         ↓
 Broker (packages/broker-adapters)       … Adapter Interface、V1はPaper
         ↓

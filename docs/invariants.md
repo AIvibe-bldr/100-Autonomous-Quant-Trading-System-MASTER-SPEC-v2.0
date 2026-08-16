@@ -22,6 +22,12 @@
 | INV-13 | Drawdown閾値はAI変更不可（設定ファイル＋Human Approval） | RiskConfigはfrozen dataclass、変更はファイル経由のみ | test_risk_config_immutable_at_runtime |
 | INV-14 | AI出力はSchema Validation必須・Malformed Reject (§28,74) | DecisionOutputのpydantic検証 | test_malformed_decision_rejected |
 | INV-15 | Stop OrderなしのOvernight持ち越し禁止（Gap Risk管理） | LossControl + Riskチェック | test_overnight_requires_stop |
+| INV-16 | Decision方向とOrder方向の不一致はAuditでREJECT（ADDENDUM A3） | IndependentAuditor.audit | test_decision_buy_order_sell_rejected |
+| INV-17 | Risk承認後のField変更はHash mismatchでREJECT・再Audit必須（A4） | ApprovedOrderSnapshot.hash + ExecutionEngine照合 | test_hash_mismatch_rejected |
+| INV-18 | Execution Engineは注文を自ら変更しない（A4-2） | Broker requestはSnapshotのみから構築 | test_execution_cannot_modify_order |
+| INV-19 | Audit AI不能時、強制Audit対象（High-risk）Tradeは発注禁止（A3-6） | pipeline audit step | test_audit_unavailable_blocks_high_risk |
+| INV-20 | Malformed Audit出力はREJECT扱い（A3-3） | validate_audit_output | test_malformed_audit_rejected |
+| INV-21 | Decision Snapshotは書換不能・変更は新Decision ID必須（A1-1） | DecisionQualityEngine.record | test_decision_snapshot_immutable |
 
 ## MASTER STOP Semantics (§43)
 

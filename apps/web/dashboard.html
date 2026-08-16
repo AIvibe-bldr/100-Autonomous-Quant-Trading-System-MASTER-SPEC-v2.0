@@ -93,6 +93,31 @@
   <ul class="reasons" id="reasons"></ul>
 </section>
 
+<section><h2>今月の判断品質 (ADDENDUM A2)</h2>
+  <div class="grid" id="dqCards">
+    <div class="card"><div class="label">Total Decisions</div><div class="value" id="dqTotal">—</div></div>
+    <div class="card"><div class="label">GOOD</div><div class="value pos" id="dqGood">—</div></div>
+    <div class="card"><div class="label">MIXED</div><div class="value" id="dqMixed">—</div></div>
+    <div class="card"><div class="label">BAD</div><div class="value neg" id="dqBad">—</div></div>
+    <div class="card"><div class="label">PENDING</div><div class="value" id="dqPending">—</div></div>
+    <div class="card"><div class="label">Avg Decision Score</div><div class="value" id="dqScore">—</div></div>
+    <div class="card"><div class="label">EV / Decision</div><div class="value" id="dqEv">—</div></div>
+  </div>
+  <div id="dqKinds" style="color:var(--muted);font-size:12px"></div>
+  <div id="dqCal" style="color:var(--muted);font-size:12px;margin-top:4px"></div>
+</section>
+
+<section><h2>発注安全性 (ADDENDUM A7)</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Pre-Trade Audits</div><div class="value" id="osAudits">—</div></div>
+    <div class="card"><div class="label">PASS</div><div class="value pos" id="osPass">—</div></div>
+    <div class="card"><div class="label">REJECT</div><div class="value" id="osReject">—</div></div>
+    <div class="card"><div class="label">防止した誤発注</div><div class="value" id="osPrevented">—</div></div>
+    <div class="card"><div class="label">Critical Exec Errors</div><div class="value" id="osCritical">—</div></div>
+    <div class="card"><div class="label">Broker Reconciliation</div><div class="value" id="osRecon">—</div></div>
+  </div>
+</section>
+
 <section><h2>System Health (§97)</h2><div id="health"></div></section>
 
 <footer>read-only dashboard — 設定変更・発注機能は存在しません（§39, §78）</footer>
@@ -124,8 +149,9 @@ function drawChart(series) {
 }
 
 async function refresh() {
-  const [health, p, chart, holdings, themes, session] = await Promise.all([
-    j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session")]);
+  const [health, p, chart, holdings, themes, session, dq, os] = await Promise.all([
+    j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session"),
+    j("/decision-quality"), j("/order-safety")]);
 
   const env = $("env");
   env.textContent = health.environment;                     // §73: 常時表示
@@ -170,6 +196,32 @@ async function refresh() {
       : (session.no_trade_reasons || []).map(r => `<li>· ${r}</li>`).join("")
         || "<li>NO TRADE</li>";
   }
+
+  // 判断品質 (A2)
+  $("dqTotal").textContent = dq.total_decisions;
+  $("dqGood").textContent = `${dq.good} / ${fmt(dq.good_pct*100,1)}%`;
+  $("dqMixed").textContent = `${dq.mixed} / ${fmt(dq.mixed_pct*100,1)}%`;
+  $("dqBad").textContent = `${dq.bad} / ${fmt(dq.bad_pct*100,1)}%`;
+  $("dqPending").textContent = `${dq.pending} / ${fmt(dq.pending_pct*100,1)}%`;
+  $("dqScore").textContent = fmt(dq.average_decision_score, 1) + " / 100";
+  signed($("dqEv"), dq.expected_value_per_decision,
+         v => fmt(v*100, 2) + "%");
+  $("dqKinds").textContent = "種別GOOD%: " + Object.entries(dq.by_kind)
+    .map(([k, v]) => `${k} ${fmt(v.good_pct*100,0)}% (n=${v.total})`).join(" · ");
+  $("dqCal").textContent = "Confidence較正: " + Object.entries(dq.confidence_calibration)
+    .map(([b, v]) => `${b}→GOOD ${fmt(v.good_pct*100,0)}%`).join(" · ");
+
+  // 発注安全性 (A7)
+  $("osAudits").textContent = os.pre_trade_audits;
+  $("osPass").textContent = os.audit_pass;
+  $("osReject").textContent = os.audit_reject;
+  $("osPrevented").textContent = os.prevented_potential_errors;
+  const crit = $("osCritical");
+  crit.textContent = os.critical_execution_errors;
+  crit.className = "value " + (os.critical_execution_errors === 0 ? "pos" : "neg");
+  const recon = $("osRecon");
+  recon.textContent = os.broker_reconciliation;
+  recon.className = "value " + (os.broker_reconciliation === "OK" ? "pos" : "neg");
 
   const dh = health.data_health;
   $("health").innerHTML =

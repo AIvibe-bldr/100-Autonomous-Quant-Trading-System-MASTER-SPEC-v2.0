@@ -84,6 +84,44 @@ Drawdown / Ruin probability / OOS robustness / Transaction cost / Liquidity / Op
 Decision AI / News / Institutional 等の LLM 依存部分は **インターフェースのみ** 定義し、
 決定論的な Mock 実装を同梱する（§27 の Decision AI は外部モデルを想定するため）。
 
+## ADDENDUM v2.1 — Decision Quality / Pre-Trade Independent Audit
+
+2026-08 追加指示による正式仕様。既存機能への**統合**であり、新規系統の乱立はしない。
+
+| 追加§ | 要件 | 統合先 | 実装場所 |
+|---|---|---|---|
+| A1 | Decision Quality Engine（全判断種別の Immutable Snapshot・追跡・Outcome/Process分離採点） | 既存 Post-Stop/Post-Profit/Counterfactual Tracker（§50-53）と Forecast Tracker（§32）を包含する上位機構 | `services/pdca/decision_quality.py` |
+| A2 | Monthly Decision Quality Report（種別/Confidence/Regime別、EV/MAE/MFE、月別Trend） | Daily/Weekly/Monthly PDCA（§63-65）の月次集計に統合 | `services/pdca/decision_quality.py` |
+| A3 | Pre-Trade Independent Audit AI（意味的監査、PASS/REJECT/REVIEW） | Skeptic AI（§29）とは別役割（Skeptic=判断段階の反証、Audit=発注直前の整合性）。最終防壁は従来通り deterministic Master Risk Controller（§42） | `services/decision/audit.py` |
+| A4 | Immutable Approved Order Snapshot（hash固定・変更時は再Audit+再Risk） | 既存 RiskApproval HMAC署名（§42実装）の拡張。Execution Engine は hash 一致注文のみ送信 | `packages/schemas/audit.py`, `services/execution/engine.py` |
+| A5 | Pre-Trade Audit Log（Decision→Audit→Risk→Snapshot→Broker→Fill の完全記録） | Decision Provenance（§75）の発注側拡張 | `services/pdca/audit_log.py` |
+| A6 | Near-Miss学習（Audit/Risk REJECTを防止済み誤発注として集計） | Incident Postmortem（§71）/ Counterfactual（§53）に統合 | `services/pdca/audit_log.py` |
+| A7 | UI: 判断品質パネル + 発注安全性パネル | 既存 Dashboard（§86-97）へ追加 | `apps/api`, `apps/web` |
+| A8 | 自動テスト（BUY/SELL不一致・Hash mismatch・Audit不能時等） | Executable Invariants（§102）へ追加（INV-16〜20） | `tests/unit/test_pretrade_audit.py` ほか |
+
+### 正式発注パイプライン（A3-1、§7を置換更新）
+
+```
+Decision AI → Structured Trade Proposal → Loss/Exit Plan → Position Sizing
+→ Independent Audit AI → Master Risk Controller（deterministic・最終防壁）
+→ Immutable Approved Order Snapshot（hash固定）→ Execution Engine → Broker
+```
+
+- Decision AI / Audit AI とも Broker 直接アクセス禁止
+- 誤発注防止の**最終責任はAIに持たせない**: Cash/Leverage/Exposure/Duplicate/Session/
+  Stop存在/Reconciliation/Data health 等は Master Risk Controller の固定コードで確認（A3-4）
+- Audit AI は Decision と Order Intent の**意味的整合**（方向・数量・Stop・Horizon・Thesis）を監査
+- Risk承認後に重要Field（symbol/side/qty/price/stop）が変われば Approval 無効化 → 再Audit+再Risk（A4）
+- Execution Engine は承認済み Snapshot Hash と一致する注文のみ送信し、数量等を自ら変更しない（A4-2）
+
+### Decision Quality の評価原則（A1-5）
+
+- **Outcome Score**（その後の値動き）と **Process Score**（当時の情報で判断プロセスが妥当だったか）を分離
+- ルール遵守の NO TRADE が結果的に上昇 → Outcome=MISSED_OPPORTUNITY / Process=GOOD
+- ルール違反の BUY が偶然利益 → Outcome=GOOD / Process=BAD（**偶然の利益を学習させない**）
+- 正解率のみを KPI にしない: EV per Decision / Average GOOD Return / Average BAD Loss / MAE / MFE を併記
+- GOOD率の月次上昇を「AI自身の進化」と即断せず Regime 変化を併せて分析（A2-5）
+
 ## 仕様上の指摘事項（§110 に基づく ISSUE 提示）
 
 ### ISSUE-1: 通貨単位の混在
