@@ -21,7 +21,7 @@
 | INV-12 | MASTER STOP中もProtective Stop/Risk-reducing SELLは通す (§43) | MasterRiskControllerの状態別許可表 | test_master_stop_allows_protective_exit |
 | INV-13 | Drawdown閾値はAI変更不可（設定ファイル＋Human Approval） | RiskConfigはfrozen dataclass、変更はファイル経由のみ | test_risk_config_immutable_at_runtime |
 | INV-14 | AI出力はSchema Validation必須・Malformed Reject (§28,74) | DecisionOutputのpydantic検証 | test_malformed_decision_rejected |
-| INV-15 | Stop OrderなしのOvernight持ち越し禁止（Gap Risk管理） | LossControl + Riskチェック | test_overnight_requires_stop |
+| INV-15 | Stop OrderなしのOvernight持ち越し禁止。約定した建玉には必ずBrokerに保護Stop注文が存在する | TradingPipeline.place_protective_stop（BUY約定直後にRisk経由でSTOP SELL発注） | test_overnight_requires_stop |
 | INV-16 | Decision方向とOrder方向の不一致はAuditでREJECT（ADDENDUM A3） | IndependentAuditor.audit | test_decision_buy_order_sell_rejected |
 | INV-17 | Risk承認後のField変更はHash mismatchでREJECT・再Audit必須（A4） | ApprovedOrderSnapshot.hash + ExecutionEngine照合 | test_hash_mismatch_rejected |
 | INV-18 | Execution Engineは注文を自ら変更しない（A4-2） | Broker requestはSnapshotのみから構築 | test_execution_cannot_modify_order |

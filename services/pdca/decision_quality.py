@@ -346,13 +346,20 @@ class DecisionQualityReporter:
     def trend(self, months: list[tuple[int, int]]) -> list[dict[str, Any]]:
         """A2-5: monthly GOOD% trend. Interpretation caveat: a rising GOOD%
         is NOT automatically 'the AI improved' — regimes shift; the report
-        carries by_regime so the caller can control for it."""
+        carries by_regime so the caller can control for it.
+
+        `good_pct` uses the same denominator as the monthly report (all
+        decisions, matching the spec's headline example) so the trend and the
+        panel never disagree; `resolved_good_pct` excludes PENDING for
+        month-over-month comparison of matured decisions only."""
         out = []
         for y, m in months:
             r = self.monthly(y, m)
-            done = r.total - r.counts.get("PENDING", 0)
+            resolved = r.total - r.counts.get("PENDING", 0)
+            good = r.counts.get("GOOD", 0)
             out.append({"month": r.month, "total": r.total,
-                        "good_pct": (r.counts.get("GOOD", 0) / done) if done else 0.0,
+                        "good_pct": r.pct("GOOD"),
+                        "resolved_good_pct": (good / resolved) if resolved else 0.0,
                         "average_score": r.average_score,
                         "by_regime": r.by_regime})
         return out

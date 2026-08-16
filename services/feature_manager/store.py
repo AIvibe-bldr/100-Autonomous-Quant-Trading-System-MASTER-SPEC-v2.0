@@ -51,6 +51,9 @@ class FeatureMeta:
     contribution_history: list[float] = field(default_factory=list)
     status_history: list[tuple[FeatureStatus, str]] = field(default_factory=list)
     revival_condition: str = ""
+    # index into contribution_history at the last demotion, so re-evaluating
+    # without fresh evidence cannot cascade a feature down several levels
+    demoted_at_observation: int = 0
 
 
 class FeatureStore:
@@ -96,12 +99,18 @@ class FeatureStore:
         hist = meta.contribution_history[-window:]
         if len(hist) < window or meta.status in (FeatureStatus.DORMANT, FeatureStatus.RETIRED):
             return meta.status
+        # one demotion per `window` of NEW observations: repeatedly calling
+        # evaluate_drift on the same data must not walk a feature to DORMANT
+        fresh = len(meta.contribution_history) - meta.demoted_at_observation
+        if fresh < window:
+            return meta.status
         mean = sum(hist) / len(hist)
         if mean < demote_below:
             idx = _DEMOTION_ORDER.index(meta.status)
             if idx < len(_DEMOTION_ORDER) - 1:
                 new = _DEMOTION_ORDER[idx + 1]
                 meta.status = new
+                meta.demoted_at_observation = len(meta.contribution_history)
                 meta.status_history.append((new, f"drift: mean contribution {mean:.4f}"))
         return meta.status
 

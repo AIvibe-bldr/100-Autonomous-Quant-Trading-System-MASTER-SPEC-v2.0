@@ -135,6 +135,24 @@ class ExecutionEngine:
                         self.on_fill(f)
         return sm.get(client_order_id).state
 
+    def sync_open_orders(self) -> list[BrokerFill]:
+        """Re-check resting orders (e.g. protective stops) and return any new
+        fills.  Without this a stop placed yesterday could never trigger.
+
+        A broker outage here is not fatal to the session: it is recorded as a
+        disconnect so the risk controller blocks new entries (§43, §48)."""
+        broker_poll = getattr(self.broker, "poll_resting_orders", None)
+        try:
+            new_fills: list[BrokerFill] = list(broker_poll()) if broker_poll else []
+            for cid, rec in list(self.state_machine._orders.items()):   # noqa: SLF001
+                if rec.state in (OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED):
+                    self.poll_order(cid)
+        except BrokerDisconnectedError:
+            self.risk_controller.set_state(RiskState.FULL_BROKER_DISCONNECT,
+                                           reason="broker unreachable while syncing orders")
+            return []
+        return new_fills
+
     def resolve_unknown(self, client_order_id: str) -> OrderState:
         """Reconciliation path for UNKNOWN orders (§45): ask the broker, then
         settle the state machine to the truth."""

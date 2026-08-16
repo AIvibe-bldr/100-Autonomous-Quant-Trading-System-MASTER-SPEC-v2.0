@@ -70,6 +70,9 @@ class PreTradeRecord:
     broker_ack: Optional[dict[str, Any]] = None
     fills: list[str] = field(default_factory=list)
     final_state: str = ""
+    # protective exits carry no Decision to compare against, so semantic audit
+    # does not apply (they still pass the deterministic risk controller)
+    protective_exit: bool = False
 
 
 class PreTradeAuditLog:
@@ -93,7 +96,8 @@ class PreTradeAuditLog:
         r = self.records[client_order_id]
         if not r.broker_submitted:
             return True
-        return all([r.audit_result is not None, r.risk_result is not None,
+        audited = r.audit_result is not None or r.protective_exit
+        return all([audited, r.risk_result is not None,
                     r.approved_snapshot_hash != "", r.final_state != ""])
 
     # -- A6 -----------------------------------------------------------------

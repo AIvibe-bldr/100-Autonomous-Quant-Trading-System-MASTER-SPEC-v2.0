@@ -58,7 +58,11 @@ def main() -> None:
         print(f"\n--- {d} ---")
         print(f"funnel: scanned {result.scanned} → candidates {result.candidates} → "
               f"decisions {result.decision_candidates} → sized {result.sized} → "
-              f"risk passed {result.risk_passed} → filled {result.orders_filled}")
+              f"audit passed {result.audit_passed} → risk passed {result.risk_passed} → "
+              f"filled {result.orders_filled}")
+        if result.protective_stops_placed or result.stops_triggered:
+            print(f"  stops: {result.protective_stops_placed} placed, "
+                  f"{result.stops_triggered} triggered (§33-34)")
         for f in result.fills:
             print(f"  FILL {f.side.value} {f.qty:g} {f.symbol} @ {f.price:.2f} "
                   f"(fees {f.fees:.4f})")

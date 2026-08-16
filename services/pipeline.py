@@ -28,6 +28,7 @@ from packages.schemas.core import (
     RiskApprovedOrder,
     RiskRejection,
     SizedProposal,
+    StopPlan,
     TradeProposal,
 )
 from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
@@ -48,6 +49,7 @@ from services.decision.models import (
 )
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
+from services.pdca.post_trade import PostTradeTracker
 from services.pdca.decision_quality import (
     DecisionKind,
     DecisionQualityEngine,
@@ -80,6 +82,8 @@ class PipelineResult:
     decision_candidates: int = 0
     skeptic_vetoes: int = 0
     stop_planned: int = 0
+    protective_stops_placed: int = 0
+    stops_triggered: int = 0
     sized: int = 0
     allocated: int = 0
     audit_passed: int = 0
@@ -117,9 +121,12 @@ class TradingPipeline:
                                                                                   audit_all=False))
     audit_log: PreTradeAuditLog = field(default_factory=PreTradeAuditLog)
     decision_quality: DecisionQualityEngine = field(default_factory=DecisionQualityEngine)
+    post_trade: PostTradeTracker = field(default_factory=PostTradeTracker)
     symbol_themes: dict[str, list[str]] = field(default_factory=dict)
     max_new_positions: int = 5
     _order_seq: int = 0
+    # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
+    open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
 
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
@@ -149,9 +156,97 @@ class TradingPipeline:
             data_health_ok=self.integrity.health is not DataHealth.HALT_ENTRIES)
         self.decision_quality.record(snap)
 
+    # -- protective exits (§33-34, §40, §43, INV-15) -------------------------
+    def _exit_risk_view(self, symbol: str, qty: float, now: datetime) -> PortfolioRiskView:
+        prices = self._mark_prices({}, now)
+        pos_notional = self._position_notional({}, now)
+        snapshot = self.ledger.snapshot(prices)
+        return PortfolioRiskView(
+            equity=snapshot.equity, settled_cash=self.ledger.cash,
+            total_exposure_notional=sum(pos_notional.values()),
+            position_notional=pos_notional,
+            position_qty={s: l.qty for s, l in self.ledger.positions.items()},
+            theme_exposure=self._theme_exposure({}, now),
+            symbol_themes=self.symbol_themes, drawdown=snapshot.drawdown,
+            stop_plan_exists=True, gap_risk_score=0.0, adv_shares=1_000_000,
+            correlation_to_book=0.0, reconciliation_ok=True,
+            data_health=self.integrity.health, broker_connected=True)
+
+    def place_protective_stop(self, symbol: str, qty: float, stop: StopPlan,
+                              now: datetime, decision_id: str = "") -> bool:
+        """Submit a resting protective STOP SELL so the planned stop actually
+        exists at the broker (§33-34).  Risk-reducing exits stay permitted even
+        under MASTER STOP (§43)."""
+        if qty <= 0:
+            return False
+        self._order_seq += 1
+        intent = OrderIntent(
+            client_order_id=make_client_order_id(self.environment, f"stop{symbol}",
+                                                 self._order_seq),
+            proposal_id=f"protective-{symbol}", symbol=symbol, side=Action.SELL,
+            qty=qty, order_type=OrderType.STOP, stop_price=stop.stop_price,
+            environment=self.environment, is_protective_exit=True, created_at=now)
+        verdict = self.risk_controller.review(intent, self._exit_risk_view(symbol, qty, now))
+        if isinstance(verdict, RiskRejection):
+            self.audit_log.record_near_miss(Stage.RISK, NearMissKind.NO_STOP, now,
+                                            decision_id, intent.client_order_id,
+                                            detail="; ".join(verdict.reasons))
+            return False
+        approved = RiskApprovedOrder(intent=intent, approval=verdict)
+        snapshot = ApprovedOrderSnapshot.from_approved(approved, decision_id=decision_id)
+        log_rec = self.audit_log.open(intent.client_order_id, decision_id, now,
+                                      {"symbol": symbol, "side": "SELL",
+                                       "qty": qty, "protective": True})
+        log_rec.protective_exit = True   # semantic audit N/A: no decision to compare
+        log_rec.risk_result = {"passed": True, "approval_id": verdict.approval_id}
+        log_rec.approved_snapshot_hash = snapshot.hash
+        log_rec.broker_submitted = True
+        state = self.execution.submit(approved, snapshot=snapshot)
+        log_rec.final_state = state.value
+        self.open_stops[symbol] = (intent.client_order_id, stop, stop.entry_price,
+                                   qty * stop.stop_distance)
+        return True
+
+    def manage_open_positions(self, now: datetime) -> tuple[int, int]:
+        """Session-start exit management: let resting stops trigger, book the
+        fills, and feed the learning loops.  Returns (stops_triggered, synced)."""
+        fills = self.execution.sync_open_orders()
+        triggered = 0
+        for f in fills:
+            if f.side is not Action.SELL:
+                # a resting BUY (e.g. a limit entry) that fills later must still
+                # reach the ledger, or ledger and broker drift apart (§48)
+                self.ledger.record_fill(f.symbol, f.qty, f.price, f.fees, f.ts,
+                                        note=f.client_order_id)
+                continue
+            self.ledger.record_fill(f.symbol, -f.qty, f.price, f.fees, f.ts,
+                                    note=f.client_order_id)
+            entry = self.open_stops.get(f.symbol)
+            realized = 0.0
+            if entry is not None:
+                _, stop, entry_px, risk_amount = entry
+                realized = (f.price - entry_px) * f.qty
+                # §37/INV-10: feed the anti-martingale guard with the outcome
+                self.sizing.record_trade_result(realized_pnl=realized,
+                                                risk_amount=risk_amount)
+                # §50: grade the stop afterwards
+                self.post_trade.track(f.symbol, f.price, f.ts, kind="STOP")
+                if self.ledger.position_qty(f.symbol) <= 1e-9:
+                    self.open_stops.pop(f.symbol, None)
+            # A1-4: the SELL is a decision and is graded too
+            self._record_decision(f"exit-{f.symbol}-{f.ts.date()}", f.symbol,
+                                  DecisionKind.SELL, now, f.price,
+                                  had_stop_plan=True, skeptic_consulted=False)
+            triggered += 1
+        return triggered, len(fills)
+
     def run_session(self, as_of: datetime) -> PipelineResult:
         result = PipelineResult()
         now = as_of
+
+        # 0. Exit management first: resting protective stops may have triggered
+        #    since the last session (§33-34, §43)
+        result.stops_triggered, _ = self.manage_open_positions(now)
 
         # 1. Universe + Scanner (§12, §21)
         symbols = self.universe.symbols_as_of(now.date())
@@ -350,8 +445,10 @@ class TradingPipeline:
             log_rec.final_state = state.value
             rec.order_ref = intent.client_order_id
             if state in (OrderState.FILLED, OrderState.PARTIALLY_FILLED):
+                filled_qty = 0.0
                 for f in self.execution.broker.get_fills(since=now.replace(year=2000)):
                     if f.client_order_id == intent.client_order_id:
+                        filled_qty += f.qty
                         self.ledger.record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
                                                 f.price, f.fees, f.ts,
                                                 note=intent.client_order_id)
@@ -360,6 +457,15 @@ class TradingPipeline:
                         result.fills.append(f)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
+                # the planned stop must EXIST at the broker, not just on paper
+                # (§33-34, INV-15): place it immediately after the entry fills
+                if self.place_protective_stop(symbol, filled_qty, sized.stop_plan, now,
+                                              decision_id=rec.decision_id):
+                    result.protective_stops_placed += 1
+                else:
+                    result.no_trade_reasons.append(
+                        f"{symbol}: protective stop could not be placed — position "
+                        f"is unprotected, review required")
             else:
                 rec.result = {"state": state.value}
                 result.no_trade_reasons.append(

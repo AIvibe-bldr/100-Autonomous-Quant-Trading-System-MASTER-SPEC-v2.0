@@ -43,6 +43,7 @@ class ExitProposal:
     stage: ExitProposalStage = ExitProposalStage.RESEARCH
     evidence: dict[str, float] = field(default_factory=dict)
     experiment_id: str = ""
+    reject_reason: str = ""
 
 
 class StagePromotionError(RuntimeError):
@@ -105,6 +106,8 @@ class ExitOptimizer:
 
     def reject(self, proposal: ExitProposal, reason: str) -> None:
         proposal.stage = ExitProposalStage.REJECTED
-        proposal.evidence["reject_reason"] = 0.0
+        proposal.reject_reason = reason
+        self.registry.record_result(proposal.experiment_id, {"rejected": reason},
+                                    self.registry.get(proposal.experiment_id).period_start)
         self.registry.decide(proposal.experiment_id, ExperimentDecision.REJECT,
                              decided_by="optimizer")

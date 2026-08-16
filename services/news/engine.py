@@ -103,6 +103,9 @@ def detect_injection(text: str) -> bool:
 
 class NewsEngine:
     def __init__(self, novelty_window: timedelta = timedelta(days=3)) -> None:
+        # a story only counts as a duplicate while it is still recent; after
+        # the window the same headline is news again (e.g. a repeated event)
+        self.novelty_window = novelty_window
         self._seen_hashes: dict[str, datetime] = {}
         self._cluster_counts: dict[str, int] = {}
 
@@ -114,7 +117,8 @@ class NewsEngine:
         for item in items:
             h = _content_hash(item)
             published = ensure_utc(item.published_at)
-            if h in self._seen_hashes:
+            seen_at = self._seen_hashes.get(h)
+            if seen_at is not None and abs(published - seen_at) <= self.novelty_window:
                 continue
             self._seen_hashes[h] = published
             key = f"{','.join(sorted(item.tickers))}:{published.date()}"
