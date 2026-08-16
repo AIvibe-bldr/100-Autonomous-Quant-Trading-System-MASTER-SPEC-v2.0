@@ -60,7 +60,13 @@ def universe() -> UniverseManager:
 
 def build_pipeline(clock: FrozenClock, universe: UniverseManager,
                    initial_cash: float = 1000.0,
-                   config: RiskConfig | None = None) -> TradingPipeline:
+                   config: RiskConfig | None = None,
+                   decision_model=None, skeptic_model=None,
+                   auditor: IndependentAuditor | None = None) -> TradingPipeline:
+    """decision_model / skeptic_model / auditor default to the deterministic
+    Mocks (keeps tests network-free and reproducible); pass real Claude
+    adapters (services.decision.claude_adapters.build_llm_stack) to run the
+    pipeline against the actual API — see scripts/run_llm_paper_demo.py."""
     env = Environment.PAPER
     cfg = config or RiskConfig()
     md = MarketDataService(MockProvider())
@@ -76,7 +82,8 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         environment=env, clock=clock, market_data=md, universe=universe,
         scanner=QuantScanner(md, min_dollar_volume=1_000_000),
         integrity=DataIntegrityEngine(),
-        decision_model=MockDecisionModel(), skeptic=MockSkepticModel(),
+        decision_model=decision_model or MockDecisionModel(),
+        skeptic=skeptic_model or MockSkepticModel(),
         calibration=CalibrationTracker(),
         loss_control=LossControlEngine(),
         sizing=PositionSizingEngine(config=cfg),
@@ -84,7 +91,7 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         risk_controller=risk, execution=execution, ledger=ledger,
         provenance=ProvenanceStore(env),
         # V1 paper mode: audit every order to collect data (A3-6)
-        auditor=IndependentAuditor(model=MockAuditModel(), audit_all=True),
+        auditor=auditor or IndependentAuditor(model=MockAuditModel(), audit_all=True),
         symbol_themes=THEMES)
 
 

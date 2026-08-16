@@ -23,7 +23,9 @@ class DecisionModel(Protocol):
   expected_return_range, bull/base/bear case, key_evidence, counter_evidence,
   risk_factors, invalidation_conditions, unknowns, decision_version
 - pydantic 検証に失敗した出力は Reject し、リトライ回数上限つきで再要求
-- 実モデル（GPT系等を想定 §27）は `DecisionModel` 実装として差し替え。V1は決定論的Mock
+- 実モデル（GPT系等を想定 §27）は `DecisionModel` 実装として差し替え。V1は決定論的Mockが既定。
+  実LLM実装は `services/decision/claude_adapters.py`（Claude API、`client.messages.parse`による
+  Structured Outputs）。認証情報の有無で自動的にMock/実LLMを切替可能（`packages/common/llm_client.py`）
 
 ## Skeptic AI (§29)
 

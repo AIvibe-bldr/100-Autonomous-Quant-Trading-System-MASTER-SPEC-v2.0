@@ -91,11 +91,40 @@ Two P&L §81）/ `/chart`（§87）/ `/holdings`（§88-89）/ `/themes`（§90�
 （ファネルとNO TRADE理由 §93）/ `/features`（§94）/ `/risk-config`（閲覧のみ §39）。
 **書き込み系エンドポイントは存在しない**（テストで強制）。
 
+## 実LLM接続（Decision AI / Skeptic AI / Audit AI）
+
+```bash
+pip install anthropic          # または: pip install -e '.[llm]'
+export ANTHROPIC_API_KEY=...   # または `ant auth login`
+python3 scripts/run_llm_paper_demo.py --days 3
+```
+
+認証情報が無い場合は自動的にMockにフォールバックしてデモが動作する（何もしなくても壊れない）。
+
+3つのAIは**コストの高低とファネルの通過数**に応じてモデル階層を分けている（§21, §80）:
+
+| AI | 既定モデル | 理由 |
+|---|---|---|
+| Decision AI | `claude-sonnet-5` | Quant Scannerで絞った後も1セッション約20候補呼ぶため、コスト効率を優先 |
+| Skeptic AI | `claude-opus-5` | BUY候補のみに絞られ呼び出し数が少ない。Decision AIより強いモデルで独立レビュー（A3-5: 異なるModel） |
+| Audit AI | `claude-haiku-4-5` | Sizing後の注文のみに絞られ最も呼び出し数が少ない。深い推論ではなく意味的整合の狭いチェックなので高速・低コストなモデルで十分 |
+
+環境変数 `QUANT_DECISION_MODEL` / `QUANT_SKEPTIC_MODEL` / `QUANT_AUDIT_MODEL` で上書き可能（`packages/common/llm_client.py`）。
+
+実装は `services/decision/claude_adapters.py`。`client.messages.parse(output_format=...)`
+（Structured Outputs）でpydanticスキーマに強制し、既存のMalformed Output Reject契約
+（INV-14, INV-20）をそのまま活かす。ニュース等の外部テキストは `<untrusted_external_data>`
+タグで明示的に囲み、指示として解釈しないようシステムプロンプトで明記（§19）。
+Skeptic AI / Audit AIが到達不能な場合はfail-safe（Skepticは自動veto、AuditはV1では
+`audit_all=True`のため強制Audit扱いとなり発注ブロック — INV-19）。Decision AI/Skeptic AI/
+Audit AIのいずれもBroker権限を持たない（`packages/broker_adapters`をimportしていないことを
+既存のASTテストで強制）。
+
 ## 既知の制限（V1）
 
 - 市場データは決定論的Mock（実データProviderは `MarketDataProvider` 実装で差し替え）
-- Decision AI / Skeptic はMock（実LLMは `DecisionModel` Protocol 実装で差し替え。
-  出力は同じSchema検証を通る）
+- Decision AI / Skeptic / Audit AI は既定でMock。実LLM接続は上記参照（`DecisionModel` /
+  `SkepticModel` / `AuditModel` Protocol 実装で差し替え。出力は同じSchema検証を通る）
 - News/Institutional は実フィード未接続（エンジンはテスト済み、入力はスタブ）
 - Next.js フロントエンド（§100）は未着手 — Status API がバックエンド
 - 通貨は内部USD（`docs/MASTER_SPEC.md` ISSUE-1参照）
