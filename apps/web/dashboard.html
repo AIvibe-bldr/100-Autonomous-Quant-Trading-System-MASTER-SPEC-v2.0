@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quant Trading Platform</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --green: #3fb950; --red: #f85149; --amber: #d29922;
+    --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "Segoe UI", "Hiragino Sans", sans-serif;
+         padding: 16px; max-width: 1100px; margin: 0 auto; }
+  .env-badge { display: inline-block; padding: 4px 14px; border-radius: 6px;
+               font-weight: 700; letter-spacing: .12em; }
+  .env-PAPER { background: #1f6feb33; color: var(--blue); border: 1px solid var(--blue); }
+  .env-LIVE { background: #da363333; color: var(--red); border: 1px solid var(--red); }
+  header { display: flex; justify-content: space-between; align-items: center;
+           margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 18px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: 10px; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border);
+          border-radius: 8px; padding: 12px 14px; }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                 letter-spacing: .08em; }
+  .card .value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  section { background: var(--panel); border: 1px solid var(--border);
+            border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  section h2 { font-size: 13px; color: var(--muted); text-transform: uppercase;
+               letter-spacing: .08em; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border);
+           font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  th:first-child, td:first-child { text-align: left; }
+  .theme-tag { display: inline-block; background: #1f6feb22; color: var(--blue);
+               border-radius: 10px; padding: 0 8px; font-size: 11px; margin-left: 4px; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .bar-label { width: 110px; color: var(--muted); font-size: 12px; }
+  .bar-track { flex: 1; background: #21262d; border-radius: 4px; height: 14px; }
+  .bar-fill { height: 100%; border-radius: 4px; background: var(--blue); }
+  .bar-fill.warn { background: var(--amber); }
+  .bar-pct { width: 48px; font-size: 12px; text-align: right; }
+  canvas { width: 100%; height: 180px; }
+  ul.reasons { list-style: none; }
+  ul.reasons li { padding: 4px 0; border-bottom: 1px solid var(--border);
+                  color: var(--muted); font-size: 13px; }
+  .status-ok { color: var(--green); } .status-warn { color: var(--amber); }
+  .status-err { color: var(--red); }
+  .master-stop { background: #da363322; border: 1px solid var(--red); color: var(--red);
+                 font-weight: 700; padding: 6px 16px; border-radius: 6px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 10px;
+           font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+  .badge-ok { background: #3fb95022; color: var(--green); border: 1px solid var(--green); }
+  .badge-notify { background: #1f6feb22; color: var(--blue); border: 1px solid var(--blue); }
+  .badge-review { background: #d2992222; color: var(--amber); border: 1px solid var(--amber); }
+  .badge-escalate { background: #da363322; color: var(--red); border: 1px solid var(--red); }
+  .thesis-row { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  .thesis-row:last-child { border-bottom: none; }
+  .thesis-head { display: flex; justify-content: space-between; align-items: center;
+                 font-size: 13px; }
+  .thesis-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .thesis-obj { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  footer { color: var(--muted); font-size: 11px; text-align: center; margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Autonomous Quant Trading System</h1>
+  <div>
+    <span id="env" class="env-badge">…</span>
+    <span id="riskState" class="master-stop" style="display:none"></span>
+  </div>
+</header>
+
+<!-- Simple Mode top block (§86) -->
+<div class="grid" id="simple">
+  <div class="card"><div class="label">現在資産</div><div class="value" id="equity">—</div></div>
+  <div class="card"><div class="label">累積利益</div><div class="value" id="cumPnl">—</div></div>
+  <div class="card"><div class="label">開始資産</div><div class="value" id="start">—</div></div>
+  <div class="card"><div class="label">100×目標</div><div class="value" id="target">—</div></div>
+  <div class="card"><div class="label">進捗</div><div class="value" id="progress">—</div></div>
+  <div class="card"><div class="label">Drawdown</div><div class="value" id="dd">—</div></div>
+  <div class="card"><div class="label">Trading P&L (§81)</div><div class="value" id="tpnl">—</div></div>
+  <div class="card"><div class="label">Project Net P&L</div><div class="value" id="npnl">—</div></div>
+</div>
+
+<section><h2>資産チャート (§87)</h2><canvas id="chart" width="1060" height="180"></canvas></section>
+
+<section><h2>保有銘柄 (§88)</h2>
+  <table id="holdings"><thead><tr>
+    <th>Ticker</th><th>Entry</th><th>Current</th><th>数量</th><th>P&L</th><th>P&L%</th><th>Notional</th>
+  </tr></thead><tbody></tbody></table>
+</section>
+
+<section><h2>テーマ配分 (§90)</h2><div id="themes"></div></section>
+
+<section><h2>本日のセッション (§93)</h2>
+  <div id="funnel" style="margin-bottom:8px;color:var(--muted)"></div>
+  <ul class="reasons" id="reasons"></ul>
+</section>
+
+<section><h2>今月の判断品質 (ADDENDUM A2)</h2>
+  <div class="grid" id="dqCards">
+    <div class="card"><div class="label">Total Decisions</div><div class="value" id="dqTotal">—</div></div>
+    <div class="card"><div class="label">GOOD</div><div class="value pos" id="dqGood">—</div></div>
+    <div class="card"><div class="label">MIXED</div><div class="value" id="dqMixed">—</div></div>
+    <div class="card"><div class="label">BAD</div><div class="value neg" id="dqBad">—</div></div>
+    <div class="card"><div class="label">PENDING</div><div class="value" id="dqPending">—</div></div>
+    <div class="card"><div class="label">Avg Decision Score</div><div class="value" id="dqScore">—</div></div>
+    <div class="card"><div class="label">EV / Decision</div><div class="value" id="dqEv">—</div></div>
+  </div>
+  <div id="dqKinds" style="color:var(--muted);font-size:12px"></div>
+  <div id="dqCal" style="color:var(--muted);font-size:12px;margin-top:4px"></div>
+</section>
+
+<section><h2>発注安全性 (ADDENDUM A7)</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Pre-Trade Audits</div><div class="value" id="osAudits">—</div></div>
+    <div class="card"><div class="label">PASS</div><div class="value pos" id="osPass">—</div></div>
+    <div class="card"><div class="label">REJECT</div><div class="value" id="osReject">—</div></div>
+    <div class="card"><div class="label">防止した誤発注</div><div class="value" id="osPrevented">—</div></div>
+    <div class="card"><div class="label">Critical Exec Errors</div><div class="value" id="osCritical">—</div></div>
+    <div class="card"><div class="label">Broker Reconciliation</div><div class="value" id="osRecon">—</div></div>
+  </div>
+</section>
+
+<section><h2>Final Trade Thesis (§27)</h2>
+  <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    Decision AI × Skeptic AI の統合結果。disagreement_score は Skeptic の
+    severity を Decision の confidence で重み付けした値（自信満々な判断への
+    反証ほど強いシグナル）。
+  </div>
+  <div id="theses"></div>
+</section>
+
+<section><h2>Monitor AI (§66)</h2>
+  <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    異常検知時のみconsult（Broker発注・Position変更・Risk Rule変更・System設定変更は
+    一切不可 — recommendationは要請であり実行ではない）。
+  </div>
+  <div id="monitor"></div>
+</section>
+
+<section><h2>System Health (§97)</h2><div id="health"></div></section>
+
+<footer>read-only dashboard — 設定変更・発注機能は存在しません（§39, §78）</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d=2) => v.toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
+const money = (v) => "$" + fmt(v);
+const signed = (el, v, f) => { el.textContent = f(v); el.className = "value " + (v >= 0 ? "pos" : "neg"); };
+
+async function j(path) { const r = await fetch(path); return r.json(); }
+
+function drawChart(series) {
+  const c = $("chart"), ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (series.length < 2) { ctx.fillStyle = "#8b949e"; ctx.fillText("データ蓄積中…", 10, 20); return; }
+  const vals = series.map(p => p.equity);
+  const lo = Math.min(...vals) * 0.998, hi = Math.max(...vals) * 1.002;
+  const x = i => 40 + (c.width - 50) * i / (vals.length - 1);
+  const y = v => c.height - 18 - (c.height - 30) * (v - lo) / (hi - lo || 1);
+  ctx.strokeStyle = "#30363d"; ctx.fillStyle = "#8b949e"; ctx.font = "10px sans-serif";
+  [lo, (lo+hi)/2, hi].forEach(v => {
+    ctx.beginPath(); ctx.moveTo(40, y(v)); ctx.lineTo(c.width - 10, y(v)); ctx.stroke();
+    ctx.fillText(fmt(v, 0), 2, y(v) + 3);
+  });
+  ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 2; ctx.beginPath();
+  vals.forEach((v, i) => i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)));
+  ctx.stroke();
+}
+
+function recBadge(rec) {
+  const cls = rec === "CONTINUE_MONITORING" ? "badge-ok"
+            : rec === "NOTIFY" ? "badge-notify"
+            : rec === "QUEUE_HUMAN_REVIEW" ? "badge-review"
+            : "badge-escalate";
+  return `<span class="badge ${cls}">${rec}</span>`;
+}
+
+async function refresh() {
+  const [health, p, chart, holdings, themes, session, dq, os, theses, mon] = await Promise.all([
+    j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session"),
+    j("/decision-quality"), j("/order-safety"), j("/final-trade-theses"), j("/monitor")]);
+
+  const env = $("env");
+  env.textContent = health.environment;                     // §73: 常時表示
+  env.className = "env-badge env-" + health.environment;
+  const rs = $("riskState");
+  if (health.risk_state !== "NORMAL") {
+    rs.style.display = "inline-block"; rs.textContent = health.risk_state;   // §43
+  } else rs.style.display = "none";
+
+  $("equity").textContent = money(p.current_equity);
+  signed($("cumPnl"), p.cumulative_pnl, v => money(v) + " (" + fmt(p.cumulative_pnl_pct*100) + "%)");
+  $("start").textContent = money(p.start_equity);
+  $("target").textContent = money(p.target_equity_100x);
+  $("progress").textContent = fmt(p.progress_to_100x * 100, 2) + "%";
+  $("dd").textContent = fmt(p.drawdown * 100, 1) + "%";
+  signed($("tpnl"), p.trading_pnl, money);
+  signed($("npnl"), p.project_net_pnl, money);
+
+  drawChart(chart);
+
+  const tb = $("holdings").querySelector("tbody");
+  tb.innerHTML = holdings.map(h => `<tr>
+    <td>${h.ticker}${h.themes.map(t => `<span class="theme-tag">${t}</span>`).join("")}</td>
+    <td>${fmt(h.entry)}</td><td>${fmt(h.current)}</td><td>${fmt(h.qty, 4)}</td>
+    <td class="${h.pnl >= 0 ? "pos" : "neg"}">${money(h.pnl)}</td>
+    <td class="${h.pnl >= 0 ? "pos" : "neg"}">${fmt(h.pnl_pct*100)}%</td>
+    <td>${money(h.notional)}</td></tr>`).join("") ||
+    `<tr><td colspan="7" style="color:var(--muted)">ポジションなし</td></tr>`;
+
+  $("themes").innerHTML = Object.entries(themes).sort((a,b) => b[1]-a[1]).map(([t, v]) =>
+    `<div class="bar-row"><div class="bar-label">${t}</div>
+     <div class="bar-track"><div class="bar-fill ${v > 0.4 && t !== "Cash" ? "warn" : ""}"
+       style="width:${Math.min(100, v*100)}%"></div></div>
+     <div class="bar-pct">${fmt(v*100, 0)}%</div></div>`).join("");   // §90: 集中警告
+
+  if (session.scanned !== undefined) {
+    $("funnel").textContent =
+      `Scanned ${session.scanned} → Candidates ${session.candidates} → ` +
+      `Decisions ${session.decision_candidates} → Risk passed ${session.risk_passed} → ` +
+      `Filled ${session.orders_filled}`;
+    $("reasons").innerHTML = session.traded ? ""
+      : (session.no_trade_reasons || []).map(r => `<li>· ${r}</li>`).join("")
+        || "<li>NO TRADE</li>";
+  }
+
+  // 判断品質 (A2)
+  $("dqTotal").textContent = dq.total_decisions;
+  $("dqGood").textContent = `${dq.good} / ${fmt(dq.good_pct*100,1)}%`;
+  $("dqMixed").textContent = `${dq.mixed} / ${fmt(dq.mixed_pct*100,1)}%`;
+  $("dqBad").textContent = `${dq.bad} / ${fmt(dq.bad_pct*100,1)}%`;
+  $("dqPending").textContent = `${dq.pending} / ${fmt(dq.pending_pct*100,1)}%`;
+  $("dqScore").textContent = fmt(dq.average_decision_score, 1) + " / 100";
+  signed($("dqEv"), dq.expected_value_per_decision,
+         v => fmt(v*100, 2) + "%");
+  $("dqKinds").textContent = "種別GOOD%: " + Object.entries(dq.by_kind)
+    .map(([k, v]) => `${k} ${fmt(v.good_pct*100,0)}% (n=${v.total})`).join(" · ");
+  $("dqCal").textContent = "Confidence較正: " + Object.entries(dq.confidence_calibration)
+    .map(([b, v]) => `${b}→GOOD ${fmt(v.good_pct*100,0)}%`).join(" · ");
+
+  // 発注安全性 (A7)
+  $("osAudits").textContent = os.pre_trade_audits;
+  $("osPass").textContent = os.audit_pass;
+  $("osReject").textContent = os.audit_reject;
+  $("osPrevented").textContent = os.prevented_potential_errors;
+  const crit = $("osCritical");
+  crit.textContent = os.critical_execution_errors;
+  crit.className = "value " + (os.critical_execution_errors === 0 ? "pos" : "neg");
+  const recon = $("osRecon");
+  recon.textContent = os.broker_reconciliation;
+  recon.className = "value " + (os.broker_reconciliation === "OK" ? "pos" : "neg");
+
+  // Final Trade Thesis (§27)
+  $("theses").innerHTML = theses.length ? theses.map(t => `
+    <div class="thesis-row">
+      <div class="thesis-head">
+        <span><b>${t.symbol}</b> ${t.action} · confidence ${fmt(t.confidence*100,0)}%</span>
+        <span>disagreement ${fmt(t.disagreement_score*100,0)}%</span>
+      </div>
+      <div class="thesis-meta">decision_id=${t.decision_id} · skeptic_id=${t.skeptic_id}
+        ${t.skeptic_severity !== null ? "· skeptic severity " + fmt(t.skeptic_severity*100,0) + "%" : ""}</div>
+      ${t.skeptic_objections.length ? `<div class="thesis-obj">反証: ${t.skeptic_objections.join(" / ")}</div>` : ""}
+    </div>`).join("")
+    : `<div style="color:var(--muted)">このセッションで生き残ったBUY候補はありません</div>`;
+
+  // Monitor AI (§66)
+  const mDiv = $("monitor");
+  if (!mon.consulted) {
+    mDiv.innerHTML = `${recBadge(mon.recommendation)}
+      <span style="color:var(--muted);margin-left:8px">${mon.findings[0]}</span>`;
+  } else {
+    mDiv.innerHTML = `${recBadge(mon.recommendation)}
+      <span style="margin-left:8px">severity ${fmt(mon.severity*100,0)}%</span>
+      <span style="color:var(--muted);margin-left:8px">(${mon.model})</span>
+      <ul class="reasons">${mon.findings.map(f => `<li>· ${f}</li>`).join("")}</ul>`;
+  }
+
+  const dh = health.data_health;
+  $("health").innerHTML =
+    `<span class="${dh === "OK" ? "status-ok" : dh === "DEGRADED" ? "status-warn" : "status-err"}">
+     Data: ${dh}</span> · Risk: ${health.risk_state} · Env: ${health.environment}`;
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

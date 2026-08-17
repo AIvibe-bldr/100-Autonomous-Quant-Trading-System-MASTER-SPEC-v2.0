@@ -74,12 +74,21 @@ class Ledger:
 
     # -- mutations (append-only) -------------------------------------------
     def _append(self, entry: LedgerEntry) -> None:
-        self.entries.append(entry)
-        self._cash += entry.amount
-        if self._cash < -1e-9:
+        """Validate BEFORE mutating.
+
+        This used to append the entry and add the cash first, then raise if the
+        result was negative — so the guard enforcing "no margin borrowing"
+        (INV-2) left the ledger holding exactly the negative cash it exists to
+        forbid, plus an entry for a trade that never happened. A rejected
+        write must leave no trace.
+        """
+        candidate_cash = self._cash + entry.amount
+        if candidate_cash < -1e-9:
             raise ValueError(
                 "ledger cash would go negative — margin borrowing is forbidden (§2, INV-2)"
             )
+        self.entries.append(entry)
+        self._cash = candidate_cash
         self._fees_paid += -entry.amount if entry.kind is EntryKind.FEE else 0.0
         self._realized_pnl += entry.realized_pnl
 
@@ -95,26 +104,73 @@ class Ledger:
         at = ensure_utc(at)
         realized = 0.0
         lot = self._positions.get(symbol)
+
+        # --- validate the WHOLE transaction before touching any state ---
+        # The position used to be written first and the cash checked second,
+        # so a rejected fill left a position nobody had paid for. Worse, the
+        # fee was a separate append: the trade leg could commit and the fee
+        # leg then raise, debiting cash without recording the fee.
+        remove_position = False
         if side_qty > 0:
             new_qty = (lot.qty if lot else 0.0) + side_qty
             new_cost = ((lot.qty * lot.avg_cost if lot else 0.0) + side_qty * price) / new_qty
-            self._positions[symbol] = PositionLot(symbol, new_qty, new_cost)
+            new_lot: Optional[PositionLot] = PositionLot(symbol, new_qty, new_cost)
         else:
             sell_qty = -side_qty
             if lot is None or lot.qty + 1e-9 < sell_qty:
                 raise ValueError(f"short selling forbidden (§2, INV-3): {symbol} qty={lot.qty if lot else 0} sell={sell_qty}")
             realized = (price - lot.avg_cost) * sell_qty
             remaining = lot.qty - sell_qty
-            if remaining <= 1e-9:
-                del self._positions[symbol]
-            else:
-                self._positions[symbol] = PositionLot(symbol, remaining, lot.avg_cost)
-        self._append(LedgerEntry(at=at, kind=EntryKind.TRADE, amount=-side_qty * price,
+            remove_position = remaining <= 1e-9
+            new_lot = None if remove_position else PositionLot(symbol, remaining, lot.avg_cost)
+
+        trade_amount = -side_qty * price
+        if self._cash + trade_amount - (fees or 0.0) < -1e-9:
+            raise ValueError(
+                "ledger cash would go negative — margin borrowing is forbidden (§2, INV-2)"
+            )
+
+        # --- commit: every leg above is now known to succeed ---
+        if remove_position:
+            del self._positions[symbol]
+        else:
+            assert new_lot is not None
+            self._positions[symbol] = new_lot
+        self._append(LedgerEntry(at=at, kind=EntryKind.TRADE, amount=trade_amount,
                                  symbol=symbol, qty=side_qty, price=price,
                                  realized_pnl=realized, note=note))
         if fees:
             self._append(LedgerEntry(at=at, kind=EntryKind.FEE, amount=-fees, symbol=symbol,
                                      note=f"fees for {note or symbol}"))
+
+    def rebase_high_water_mark(self, approved_by: str, at: Optional[datetime] = None) -> float:
+        """Reset the drawdown baseline to current equity — HUMAN ONLY (§69).
+
+        The throttle ladder (§39) is derived from drawdown, and the high-water
+        mark only ever rises. Once NO_NEW_ENTRY engages and the protective
+        stops liquidate the book, equity equals cash and stops moving — so the
+        drawdown that caused the lockout can never shrink, because shrinking it
+        requires trading and trading is what is blocked. That is a permanent,
+        silent halt that looks exactly like "no candidates today".
+
+        §5 says crossing a drawdown level must never permanently end the
+        challenge by itself, and §69 says resuming is a human's call. This is
+        that call, made explicit: it requires a named approver and leaves a
+        ledger entry, so a resumption is always attributable.
+        """
+        from packages.common.clock import utcnow
+
+        if not approved_by.strip():
+            raise ValueError("rebasing the high-water mark requires a named human approver (§69)")
+        equity_before = self.high_water_mark
+        # equity is cash + marks; without marks we can only rebase to cash, so
+        # callers pass marked equity via snapshot() first. Use cash as the floor.
+        self.high_water_mark = max(self._cash, 0.0)
+        self.entries.append(LedgerEntry(
+            at=ensure_utc(at) if at else utcnow(), kind=EntryKind.CASH, amount=0.0,
+            note=f"high-water mark rebased {equity_before:.2f} → {self.high_water_mark:.2f} "
+                 f"by {approved_by} (§69)"))
+        return self.high_water_mark
 
     # -- views --------------------------------------------------------------
     @property

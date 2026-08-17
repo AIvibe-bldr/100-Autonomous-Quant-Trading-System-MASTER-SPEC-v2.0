@@ -19,6 +19,7 @@ from packages.schemas.core import (
 from services.reconciliation.engine import ReconciliationEngine
 from services.risk.master_controller import RiskState
 from tests.conftest import SESSION_TIME
+from tests.unit.helpers import submit_approved
 from tests.unit.test_invariants import _default_view, _paper_intent
 
 
@@ -32,7 +33,7 @@ def _approved_order(pipeline, cid: str, qty: float = 1.0) -> RiskApprovedOrder:
 
 def test_order_timeout_goes_unknown_and_halts(pipeline):
     pipeline.execution.broker.fault = Fault.TIMEOUT
-    state = pipeline.execution.submit(_approved_order(pipeline, "chaos-timeout-01"))
+    state = submit_approved(pipeline, _approved_order(pipeline, "chaos-timeout-01"))
     assert state is OrderState.UNKNOWN
     assert pipeline.risk_controller.state is RiskState.HALT_NEW_ENTRIES
 
@@ -48,14 +49,14 @@ def test_order_timeout_goes_unknown_and_halts(pipeline):
 
 def test_broker_disconnect_recorded(pipeline):
     pipeline.execution.broker.fault = Fault.DISCONNECT
-    state = pipeline.execution.submit(_approved_order(pipeline, "chaos-disc-0001"))
+    state = submit_approved(pipeline, _approved_order(pipeline, "chaos-disc-0001"))
     assert state is OrderState.UNKNOWN
     assert pipeline.risk_controller.state is RiskState.FULL_BROKER_DISCONNECT
 
 
 def test_partial_fill_tracked(pipeline):
     pipeline.execution.broker.fault = Fault.PARTIAL_FILL
-    state = pipeline.execution.submit(_approved_order(pipeline, "chaos-part-0001", qty=10))
+    state = submit_approved(pipeline, _approved_order(pipeline, "chaos-part-0001", qty=10))
     assert state is OrderState.PARTIALLY_FILLED
     status = pipeline.execution.broker.get_order_status("chaos-part-0001")
     assert status.filled_qty == pytest.approx(5.0)
@@ -64,9 +65,9 @@ def test_partial_fill_tracked(pipeline):
 
 def test_duplicate_submission_structurally_blocked(pipeline):
     order = _approved_order(pipeline, "chaos-dup-00001")
-    pipeline.execution.submit(order)
+    submit_approved(pipeline, order)
     with pytest.raises(DuplicateClientOrderIdError):
-        pipeline.execution.submit(order)
+        submit_approved(pipeline, order)
     # even hitting the broker directly with the same id fails (§46)
     from packages.schemas.core import BrokerOrderRequest, OrderType
 

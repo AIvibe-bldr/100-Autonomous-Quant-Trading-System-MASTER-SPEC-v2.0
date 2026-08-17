@@ -119,15 +119,27 @@ class PaperBroker(BrokerAdapter):
         px = self._fill_price(req, quote)
         if px is None:
             return  # resting order stays ACKNOWLEDGED
-        qty = req.qty
+        # fill only what is still outstanding, so re-polling a resting or
+        # partially filled order can never over-fill it
+        remaining = req.qty - po.filled_qty
+        if remaining <= 1e-9:
+            return
+        qty = remaining
         if self.fault is Fault.PARTIAL_FILL:
-            qty = req.qty / 2
+            qty = remaining / 2
 
         cost = qty * px
         fees = cost * self._fee_bps / 10_000
+
+        def _cannot_fill() -> None:
+            # an order that already produced fills cannot be retro-rejected;
+            # its remainder simply stays resting until cancelled or expired
+            if po.filled_qty <= 1e-9:
+                po.state = OrderState.REJECTED
+
         if req.side is Action.BUY:
             if cost + fees > self._settled_cash + 1e-9:
-                po.state = OrderState.REJECTED
+                _cannot_fill()
                 return
             self._settled_cash -= cost + fees
             pos = self._positions.get(req.symbol)
@@ -138,7 +150,7 @@ class PaperBroker(BrokerAdapter):
         else:
             pos = self._positions.get(req.symbol)
             if pos is None or pos.qty + 1e-9 < qty:
-                po.state = OrderState.REJECTED  # no shorting in a cash account (§2)
+                _cannot_fill()  # no shorting in a cash account (§2)
                 return
             remaining = pos.qty - qty
             if remaining <= 1e-9:
@@ -162,6 +174,20 @@ class PaperBroker(BrokerAdapter):
         """T+1 settlement tick: move unsettled proceeds to settled cash."""
         self._settled_cash += self._unsettled_cash
         self._unsettled_cash = 0.0
+
+    def poll_resting_orders(self) -> list[BrokerFill]:
+        """Re-evaluate resting orders against current quotes.
+
+        A real broker watches resting stop/limit orders continuously; without
+        this, a protective stop submitted today could never trigger tomorrow.
+        Returns fills produced by this evaluation.
+        """
+        self._check_disconnect()
+        before = len(self._all_fills)
+        for po in list(self._orders.values()):
+            if po.state in (OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED):
+                self._execute(po)
+        return self._all_fills[before:]
 
     def cancel_order(self, client_order_id: str) -> BrokerAck:
         self._check_disconnect()
