@@ -21,6 +21,7 @@ from packages.schemas.core import (
     Action,
     BrokerFill,
     DecisionAction,
+    FinalTradeThesis,
     OrderIntent,
     OrderState,
     OrderType,
@@ -48,6 +49,7 @@ from services.decision.models import (
     MockSkepticModel,
     validate_decision,
 )
+from services.decision.thesis import build_final_trade_thesis
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
 from services.pdca.post_trade import PostTradeTracker
@@ -129,6 +131,10 @@ class TradingPipeline:
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
+    # decision_id -> the Final Trade Thesis built for that decision this session
+    # (§27); looked back up at order-placement time to carry skeptic_id into
+    # the Approved Order Snapshot without widening SizedProposal.
+    _final_theses: dict[str, FinalTradeThesis] = field(default_factory=dict, repr=False)
 
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
@@ -325,6 +331,15 @@ class TradingPipeline:
                                      source=ProposalSource.AI, decision=decision,
                                      skeptic=critique, created_at=now)
 
+            # 2b. Final Trade Thesis (§27): fuses Decision + Skeptic before the
+            # deterministic stages take over, and records how much they
+            # disagreed even though the Skeptic did not veto.
+            thesis = build_final_trade_thesis(
+                proposal, decision_id=rec.decision_id,
+                skeptic_id=getattr(self.skeptic, "name", critique.model_family))
+            self._final_theses[rec.decision_id] = thesis
+            rec.final_trade_thesis = thesis.model_dump(mode="json")
+
             # 3. Loss Control BEFORE sizing (§33)
             quote = self.market_data.quote(scan.symbol, now)
             entry_price = quote.ask
@@ -465,8 +480,10 @@ class TradingPipeline:
 
             # 6c. Immutable Approved Order Snapshot (A4) → Execution
             approved = RiskApprovedOrder(intent=intent, approval=verdict)
+            thesis = self._final_theses.get(rec.decision_id)
             snapshot = ApprovedOrderSnapshot.from_approved(
                 approved, decision_id=rec.decision_id, audit_id=audit.audit_id,
+                skeptic_id=thesis.skeptic_id if thesis else "",
                 take_profit=sized.stop_plan.profit_target)
             log_rec.approved_snapshot_hash = snapshot.hash
             log_rec.broker_submitted = True

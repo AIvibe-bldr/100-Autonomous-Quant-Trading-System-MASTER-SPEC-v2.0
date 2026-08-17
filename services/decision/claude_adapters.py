@@ -35,8 +35,10 @@ from packages.common.llm_client import (
 from packages.common.environment import Environment
 from packages.schemas.audit import AuditOutput, AuditVerdict, DetectedConflict
 from packages.schemas.core import DecisionOutput, OrderIntent, SizedProposal, SkepticOutput
+from packages.schemas.monitor import MonitorRecommendation
 from services.decision.audit import AuditContext, IndependentAuditor
 from services.decision.models import DECISION_VERSION, DecisionContext, UntrustedText
+from services.decision.monitor import MonitorContext
 
 DECISION_ADAPTER_VERSION = "claude-adapter-1.0.0"
 
@@ -62,6 +64,16 @@ class _AuditJudgment(_StrictModel):
     reasons: list[str]
     detected_conflicts: list[DetectedConflict] = []
     severity: float
+
+
+class _MonitorJudgment(_StrictModel):
+    """Anomaly narrative + recommendation only — at/services_reviewed/model/
+    model_family are filled in by the caller (§66), never trusted from
+    model output."""
+
+    findings: list[str]
+    severity: float
+    recommendation: MonitorRecommendation
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +142,28 @@ You are NOT the final safety authority: leverage, cash, settled funds, \
 exposure, duplicate orders, and short-selling limits are enforced separately \
 by a deterministic Master Risk Controller you cannot see or override. If \
 nothing is wrong, say so plainly rather than inventing a concern.
+"""
+
+_MONITOR_SYSTEM_PROMPT = """\
+You are the Monitor AI. You are consulted only when a deterministic \
+supervisor has already detected an anomaly — an unhealthy service, an \
+elevated drawdown, a non-NORMAL risk state, or a recent near-miss. Your job \
+is to read that evidence and produce a short, concrete assessment plus a \
+recommendation.
+
+You have NO broker access, cannot place or cancel any order, cannot open, \
+close, or resize any position, cannot change any Risk Rule or threshold, and \
+cannot change any system configuration. Your `recommendation` is a request \
+to a human or to a separate deterministic component that DOES hold that \
+authority — it is not an instruction that executes itself:
+- CONTINUE_MONITORING: nothing actionable, keep watching
+- NOTIFY: worth a human's attention, not urgent
+- QUEUE_HUMAN_REVIEW: a human should look at this before more decisions ride on it
+- ESCALATE_SAFE_EXIT: recommend the system move toward SAFE_EXIT — you cannot \
+trigger this yourself, only ask for it
+
+Be concrete: cite the specific services, the specific drawdown number, the \
+specific risk state. Do not speculate about causes you have no evidence for.
 """
 
 
@@ -201,6 +235,20 @@ def _build_audit_prompt(decision: DecisionOutput, sized: SizedProposal,
         "side for a long position? Is the stop width sane for the stated "
         "horizon? Report a verdict (PASS/REJECT/REVIEW) with concrete "
         "detected_conflicts (empty list if none) and an overall severity."
+    )
+
+
+def _build_monitor_prompt(ctx: MonitorContext) -> str:
+    hb = ", ".join(f"{s}={st.value}" for s, st in sorted(ctx.heartbeats.items())) or "(none reporting)"
+    positions = ", ".join(f"{s}={q:g}" for s, q in sorted(ctx.open_positions.items())) or "(none)"
+    misses = "\n".join(f"- {m}" for m in ctx.recent_near_misses) or "(none)"
+    return (
+        f"Service heartbeats: {hb}\n"
+        f"Risk state: {ctx.risk_state}\n"
+        f"Drawdown from high-water mark: {ctx.drawdown:.2%}\n"
+        f"Open positions: {positions}\n"
+        f"Recent near-misses:\n{misses}\n\n"
+        "Assess this anomaly and produce findings + severity [0,1] + a recommendation."
     )
 
 
@@ -359,6 +407,55 @@ class ClaudeAuditModel:
         }
 
 
+@dataclass
+class ClaudeMonitorModel:
+    """Monitor AI Protocol implementation (§66). Consulted only on anomaly
+    (see `services.decision.monitor.anomaly_present`) — never on every tick —
+    and holds no broker/position/risk-config/system-config access; its output
+    is narrative plus a recommendation a human or a separate deterministic
+    component acts on."""
+
+    agent: AgentModel = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.monitor)
+    client: Optional[Any] = None
+    name: str = field(init=False)
+    model_family: str = field(init=False)
+    model_id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.model_id = self.agent.model
+        self.name = self.agent.agent_id
+        self.model_family = f"{self.agent.provider.value}:{self.agent.model}"
+
+    def _client(self) -> Any:
+        return self.client or get_client()
+
+    def review(self, context: MonitorContext) -> dict[str, Any]:
+        try:
+            response = self._client().messages.parse(
+                model=self.agent.model,
+                max_tokens=self.agent.max_tokens,
+                system=_MONITOR_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": _build_monitor_prompt(context)}],
+                output_format=_MonitorJudgment,
+            )
+            judgment = response.parsed_output
+        except Exception as e:
+            raise ClaudeAPIError(f"monitor call failed: {e}") from e
+        if judgment is None:
+            raise ClaudeAPIError(
+                f"monitor call returned no parsed output "
+                f"(stop_reason={getattr(response, 'stop_reason', '?')})")
+        return {
+            "at": context.now.isoformat(),
+            "services_reviewed": tuple(sorted(context.heartbeats)),
+            "findings": tuple(judgment.findings) or ("no findings reported",),
+            "severity": max(0.0, min(1.0, judgment.severity)),
+            "recommendation": judgment.recommendation.value,
+            "model": self.name,
+            "model_family": self.model_family,
+        }
+
+
 def build_llm_stack(config: Optional[LLMModelConfig] = None,
                     client: Optional[Any] = None,
                     environment: Environment = Environment.PAPER) -> tuple[
@@ -377,3 +474,16 @@ def build_llm_stack(config: Optional[LLMModelConfig] = None,
     auditor = IndependentAuditor(model=audit_model, audit_all=True,
                                  environment=environment)
     return decision, skeptic, auditor
+
+
+def build_monitor(config: Optional[LLMModelConfig] = None,
+                  client: Optional[Any] = None) -> "MonitorSupervisor":
+    """Separate from `build_llm_stack` because the Monitor is consulted on a
+    different trigger (anomaly, §66) than the per-candidate pipeline — wiring
+    it alongside Decision/Skeptic/Audit would imply it runs every scan, which
+    it must not."""
+    from services.decision.monitor import MonitorSupervisor
+
+    cfg = config or DEFAULT_MODEL_CONFIG
+    monitor_model = ClaudeMonitorModel(agent=cfg.monitor, client=client or get_client())
+    return MonitorSupervisor(model=monitor_model)

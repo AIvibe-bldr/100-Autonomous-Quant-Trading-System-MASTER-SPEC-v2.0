@@ -198,6 +198,31 @@ class TradeProposal(StrictModel):
         return self
 
 
+class FinalTradeThesis(StrictModel):
+    """§27 pipeline stage: Decision AI → Skeptic AI → **Final Trade Thesis**
+    → Loss Control. Fuses the two agents' outputs into the one object the
+    rest of the pipeline (and the audit trail) actually carries forward,
+    naming which decision and which skeptic agent produced it — separately
+    from `TradeProposal.skeptic`, which only holds the critique content —
+    and how much they disagreed.
+    """
+
+    thesis_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    decision_id: str = Field(min_length=1)
+    skeptic_id: str = Field(min_length=1)
+    disagreement_score: float = Field(ge=0.0, le=1.0)
+    proposal: TradeProposal
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def _requires_skeptic_review(self) -> "FinalTradeThesis":
+        if self.proposal.skeptic is None:
+            raise ValueError(
+                "a Final Trade Thesis cannot exist without a Skeptic critique on "
+                "its proposal (§27)")
+        return self
+
+
 class StopType(str, enum.Enum):
     HARD = "HARD"
     ATR = "ATR"

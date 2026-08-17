@@ -55,6 +55,17 @@ Decision AI → Skeptic AI → Final Trade Thesis → Loss Control
   → Execution → Broker → Reconciliation
 ```
 
+### Final Trade Thesis
+
+`FinalTradeThesis`（`packages/schemas/core.py`）は Decision と Skeptic の出力を
+1つのauditableなオブジェクトへ統合する。`decision_id` / `skeptic_id`（reviewした
+Agentの identity。同モデル共有時でも別id）/ `disagreement_score`（0-1、
+Skeptic severityをDecision confidenceで重み付け — 自信満々な判断に対する
+反証ほど強いシグナルとして扱う）を持つ。Skeptic未レビューのProposalからは
+構築できない（`services/decision/thesis.py`）。`skeptic_id` は
+`ApprovedOrderSnapshot` まで伝播し、実行された注文の監査証跡に「どのSkeptic
+Agentがレビューしたか」が残る。
+
 ## Decision の6値（§2）
 
 `DecisionAction` = BUY / SELL / HOLD / WAIT / NO_TRADE / AVOID。
@@ -128,11 +139,26 @@ Timeout / API失敗 / Malformed JSON / Schema失敗 / モデル不在 / 内部�
 `REVIEW` 判定はLIVE自動発注に進まず、Human Review キュー
 （`services/pdca/audit_log.py` の `queue_human_review`）へ送られる。
 
-## Monitor AI
+## Monitor AI (§66)
 
-- 保有中ポジションとシステム状態の監視・異常の言語化
+```python
+class MonitorModel(Protocol):
+    def review(self, context: MonitorContext) -> dict: ...
+```
+
+- **異常時のみ**consulted（`services/decision/monitor.py` の `anomaly_present`）:
+  Heartbeat異常・Drawdown上昇・Risk State非NORMAL・Near-Miss発生のいずれか
+- 出力（`MonitorOutput`）は `findings` + `severity` + `recommendation`
+  （CONTINUE_MONITORING/NOTIFY/QUEUE_HUMAN_REVIEW/ESCALATE_SAFE_EXIT）のみ。
+  **これらは要請であって実行ではない** — Monitor自身は何も変更できない
 - 禁止: Broker発注 / Position変更 / Risk Rule変更 / System設定変更
-- 出力は通知と Human Review キューへの投入のみ
+  （スキーマにそもそも該当フィールドが存在しない。
+  `test_monitor_output_has_no_broker_position_or_config_field` で構造的に保証）
+- Auditと異なりOrder Gateに席を持たない: モデル不能・Malformed出力は
+  発注を止めず `QUEUE_HUMAN_REVIEW` に縮退する（`MonitorSupervisor`）
+- Claude実装は `ClaudeMonitorModel`（`services/decision/claude_adapters.py`）。
+  `build_monitor()` で個別に構築（Decision/Skeptic/Auditとはトリガーが異なるため
+  `build_llm_stack()` には含めない）
 
 ## Confidence Calibration (§31)
 
