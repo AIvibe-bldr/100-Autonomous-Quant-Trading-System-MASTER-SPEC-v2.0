@@ -50,6 +50,7 @@ from services.decision.models import (
     validate_decision,
 )
 from services.decision.thesis import build_final_trade_thesis
+from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
 from services.pdca.post_trade import PostTradeTracker
@@ -186,18 +187,53 @@ class TradingPipeline:
         self.decision_quality.record(snap)
 
     # -- protective exits (§33-34, §40, §43, INV-15) -------------------------
+    def _adv_shares(self, symbol: str, now: datetime, days: int = 20) -> float:
+        """Real 20-day average daily volume (§41).
+
+        The risk views used to pass a literal 1_000_000 here, which made the
+        Master Risk Controller's liquidity cap a flat 10,000 shares for every
+        symbol — looser than the sizing engine it is supposed to backstop,
+        which already uses the real ADV. A final barrier that is weaker than
+        the layer above it is not a barrier.
+        """
+        try:
+            stamped = self.market_data.bars(symbol, now, days, received_at=now)
+        except Exception:
+            return 0.0   # unknown liquidity must not read as unlimited
+        if not stamped:
+            return 0.0
+        window = stamped[-days:]
+        return sum(s.bar.volume for s in window) / len(window)
+
+    def _settled_cash(self) -> float:
+        """§14: only settled cash is spendable.
+
+        `ledger.cash` is NOT it. The ledger books sale proceeds as cash the
+        moment a fill lands, while the broker correctly holds them unsettled
+        until T+1 — so passing ledger.cash here let the risk controller approve
+        purchases against money that had not settled. The only thing catching
+        those was the broker's own guard, which rejected 116 such orders in a
+        200-session run. The broker is the authority on settlement (§49).
+        """
+        try:
+            return self.execution.broker.get_cash().settled_cash
+        except BrokerDisconnectedError:
+            # Unknown settlement state must not read as "plenty available".
+            return 0.0
+
     def _exit_risk_view(self, symbol: str, qty: float, now: datetime) -> PortfolioRiskView:
         prices = self._mark_prices({}, now)
         pos_notional = self._position_notional({}, now)
         snapshot = self.ledger.snapshot(prices)
         return PortfolioRiskView(
-            equity=snapshot.equity, settled_cash=self.ledger.cash,
+            equity=snapshot.equity, settled_cash=self._settled_cash(),
             total_exposure_notional=sum(pos_notional.values()),
             position_notional=pos_notional,
             position_qty={s: l.qty for s, l in self.ledger.positions.items()},
             theme_exposure=self._theme_exposure({}, now),
             symbol_themes=self.symbol_themes, drawdown=snapshot.drawdown,
-            stop_plan_exists=True, gap_risk_score=0.0, adv_shares=1_000_000,
+            stop_plan_exists=True, gap_risk_score=0.0,
+            adv_shares=self._adv_shares(symbol, now),
             correlation_to_book=0.0, reconciliation_ok=True,
             data_health=self.integrity.health, broker_connected=True,
             spread_pct=self._spread_pct(symbol, now),
@@ -275,6 +311,12 @@ class TradingPipeline:
     def run_session(self, as_of: datetime) -> PipelineResult:
         result = PipelineResult()
         now = as_of
+        # Per-session working state. Theses are only ever read back within the
+        # same run_session (order placement looks up the key written above it),
+        # so keeping earlier sessions' entries leaked ~10 objects/session
+        # forever AND made the §27 dashboard panel show every session ever run
+        # while claiming to show "this session".
+        self._final_theses.clear()
 
         # 0. Exit management first: resting protective stops may have triggered
         #    since the last session (§33-34, §43)
@@ -381,7 +423,7 @@ class TradingPipeline:
             snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
             level = throttle_level(snapshot.drawdown, self.risk_controller.config)
             pctx = PortfolioContext(
-                equity=snapshot.equity, settled_cash=self.ledger.cash,
+                equity=snapshot.equity, settled_cash=self._settled_cash(),
                 existing_exposure=self._position_notional(prices, now),
                 theme_exposure=self._theme_exposure(prices, now),
                 symbol_themes=self.symbol_themes,
@@ -409,7 +451,7 @@ class TradingPipeline:
         # 5. Capital Allocation (§36)
         snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
         alloc = self.allocation.allocate(sized_candidates, equity=snapshot.equity,
-                                         settled_cash=self.ledger.cash,
+                                         settled_cash=self._settled_cash(),
                                          current_exposure_notional=snapshot.positions_value)
         for sp, why in alloc.skipped:
             result.no_trade_reasons.append(f"{sp.proposal.symbol}: allocation skipped — {why}")
@@ -568,7 +610,7 @@ class TradingPipeline:
         snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
         pos_notional = self._position_notional(prices, now)
         return PortfolioRiskView(
-            equity=snapshot.equity, settled_cash=self.ledger.cash,
+            equity=snapshot.equity, settled_cash=self._settled_cash(),
             total_exposure_notional=sum(pos_notional.values()),
             position_notional=pos_notional,
             position_qty={s: l.qty for s, l in self.ledger.positions.items()},
@@ -576,7 +618,8 @@ class TradingPipeline:
             symbol_themes=self.symbol_themes,
             drawdown=snapshot.drawdown, stop_plan_exists=True,
             gap_risk_score=sized.stop_plan.gap_risk_score,
-            adv_shares=1_000_000, correlation_to_book=0.0,
+            adv_shares=self._adv_shares(sized.proposal.symbol, now),
+            correlation_to_book=0.0,
             reconciliation_ok=True, data_health=self.integrity.health,
             broker_connected=True,
             spread_pct=self._spread_pct(sized.proposal.symbol, now),

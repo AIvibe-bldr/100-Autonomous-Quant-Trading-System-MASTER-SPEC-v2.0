@@ -74,12 +74,21 @@ class Ledger:
 
     # -- mutations (append-only) -------------------------------------------
     def _append(self, entry: LedgerEntry) -> None:
-        self.entries.append(entry)
-        self._cash += entry.amount
-        if self._cash < -1e-9:
+        """Validate BEFORE mutating.
+
+        This used to append the entry and add the cash first, then raise if the
+        result was negative — so the guard enforcing "no margin borrowing"
+        (INV-2) left the ledger holding exactly the negative cash it exists to
+        forbid, plus an entry for a trade that never happened. A rejected
+        write must leave no trace.
+        """
+        candidate_cash = self._cash + entry.amount
+        if candidate_cash < -1e-9:
             raise ValueError(
                 "ledger cash would go negative — margin borrowing is forbidden (§2, INV-2)"
             )
+        self.entries.append(entry)
+        self._cash = candidate_cash
         self._fees_paid += -entry.amount if entry.kind is EntryKind.FEE else 0.0
         self._realized_pnl += entry.realized_pnl
 
@@ -95,21 +104,39 @@ class Ledger:
         at = ensure_utc(at)
         realized = 0.0
         lot = self._positions.get(symbol)
+
+        # --- validate the WHOLE transaction before touching any state ---
+        # The position used to be written first and the cash checked second,
+        # so a rejected fill left a position nobody had paid for. Worse, the
+        # fee was a separate append: the trade leg could commit and the fee
+        # leg then raise, debiting cash without recording the fee.
+        remove_position = False
         if side_qty > 0:
             new_qty = (lot.qty if lot else 0.0) + side_qty
             new_cost = ((lot.qty * lot.avg_cost if lot else 0.0) + side_qty * price) / new_qty
-            self._positions[symbol] = PositionLot(symbol, new_qty, new_cost)
+            new_lot: Optional[PositionLot] = PositionLot(symbol, new_qty, new_cost)
         else:
             sell_qty = -side_qty
             if lot is None or lot.qty + 1e-9 < sell_qty:
                 raise ValueError(f"short selling forbidden (§2, INV-3): {symbol} qty={lot.qty if lot else 0} sell={sell_qty}")
             realized = (price - lot.avg_cost) * sell_qty
             remaining = lot.qty - sell_qty
-            if remaining <= 1e-9:
-                del self._positions[symbol]
-            else:
-                self._positions[symbol] = PositionLot(symbol, remaining, lot.avg_cost)
-        self._append(LedgerEntry(at=at, kind=EntryKind.TRADE, amount=-side_qty * price,
+            remove_position = remaining <= 1e-9
+            new_lot = None if remove_position else PositionLot(symbol, remaining, lot.avg_cost)
+
+        trade_amount = -side_qty * price
+        if self._cash + trade_amount - (fees or 0.0) < -1e-9:
+            raise ValueError(
+                "ledger cash would go negative — margin borrowing is forbidden (§2, INV-2)"
+            )
+
+        # --- commit: every leg above is now known to succeed ---
+        if remove_position:
+            del self._positions[symbol]
+        else:
+            assert new_lot is not None
+            self._positions[symbol] = new_lot
+        self._append(LedgerEntry(at=at, kind=EntryKind.TRADE, amount=trade_amount,
                                  symbol=symbol, qty=side_qty, price=price,
                                  realized_pnl=realized, note=note))
         if fees:

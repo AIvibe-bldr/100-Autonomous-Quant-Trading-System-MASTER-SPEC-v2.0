@@ -14,6 +14,7 @@ Outcome and Process SEPARATED (A1-5):
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
@@ -124,11 +125,17 @@ def _direction(kind: DecisionKind) -> float:
 
 
 class DecisionQualityEngine:
-    def __init__(self, good_threshold: float = 0.02, bad_threshold: float = 0.02) -> None:
+    def __init__(self, good_threshold: float = 0.02, bad_threshold: float = 0.02,
+                 min_risk_denominator: float = 0.02) -> None:
         self._snapshots: dict[str, DecisionSnapshot] = {}
         self._evals: dict[str, DecisionEvaluation] = {}
         self.good_threshold = good_threshold
         self.bad_threshold = bad_threshold
+        # Floor for the risk-adjustment denominator. Kept separate from
+        # bad_threshold (a class boundary) and strictly positive, so a flat
+        # price path cannot divide by zero — `bad_threshold=0.0` is a legal
+        # construction and used to raise ZeroDivisionError here.
+        self.min_risk_denominator = max(min_risk_denominator, 1e-9)
 
     # -- A1-1: immutable snapshots ------------------------------------------
     def record(self, snap: DecisionSnapshot) -> None:
@@ -175,9 +182,21 @@ class DecisionQualityEngine:
                     continue
                 px = price_fn(snap.symbol, due)
                 ret = px / snap.reference_price - 1
-                prior = [o for o in ev.observations.values()]
-                mae = min([ret] + [o.mae for o in prior]) if prior else min(0.0, ret)
-                mfe = max([ret] + [o.mfe for o in prior]) if prior else max(0.0, ret)
+                # Only observations at or before this horizon may contribute to
+                # its excursions. `prior` used to mean "every observation
+                # already recorded", but "expected" is inserted last, so a 1h
+                # decision inherited the MAE of a 3-day observation — grading a
+                # short-horizon call on a drawdown that happened days after its
+                # horizon closed. That is look-ahead, in the one module whose
+                # job is to judge decisions without it.
+                prior = [o for o in ev.observations.values() if o.observed_at <= due]
+                d_dir = _direction(snap.decision) or 1.0
+                # MAE is the worst excursion *for the stance taken*: for a SELL
+                # the adverse direction is up, so raw min/max would record the
+                # favourable excursion as risk and flatter the decision.
+                signed_ret = ret * d_dir
+                mae = min([signed_ret] + [o.mae for o in prior]) if prior else min(0.0, signed_ret)
+                mfe = max([signed_ret] + [o.mfe for o in prior]) if prior else max(0.0, signed_ret)
                 bench = benchmark_fn(ensure_utc(snap.ts), due) if benchmark_fn else 0.0
                 ev.observations[label] = HorizonObservation(
                     horizon=label, price=px, ret=ret, mae=mae, mfe=mfe, observed_at=due,
@@ -199,20 +218,32 @@ class DecisionQualityEngine:
         # ---- outcome score (what happened) --------------------------------
         if d != 0.0:
             signed = obs.ret * d
-            if signed >= self.good_threshold:
+            # §15: judge against an objective yardstick, not the model's own
+            #申告レンジ — a model that claims a wide range would otherwise be
+            # graded more leniently than one that commits to a tight one.
+            # Class and score must use the SAME yardstick: grading the class on
+            # the raw return while scoring on the benchmark-adjusted one let a
+            # decision be labelled BAD and score 100 in the same breath (a
+            # stock down 5% while the index was down 20%).
+            alpha_ret = signed - obs.benchmark_ret * d
+            if alpha_ret >= self.good_threshold:
                 ev.outcome_class = OutcomeClass.GOOD
-            elif signed <= -self.bad_threshold:
+            elif alpha_ret <= -self.bad_threshold:
                 ev.outcome_class = OutcomeClass.BAD
             else:
                 ev.outcome_class = OutcomeClass.MIXED
-            # §15: score against an objective yardstick, not the model's own
-            #申告レンジ — a model that claims a wide range would otherwise be
-            # graded more leniently than one that commits to a tight one.
-            # Benchmark-adjusted, then risk-adjusted by realized adverse
-            # excursion so a win taken through a deep drawdown scores lower.
-            alpha_ret = signed - obs.benchmark_ret * d
-            risk_taken = max(abs(obs.mae), self.bad_threshold)
-            ev.outcome_score = max(0.0, min(100.0, 50 + 50 * alpha_ret / risk_taken))
+            # Risk-adjusted by realized adverse excursion so a win taken
+            # through a deep drawdown scores lower. The floor is its own
+            # constant, not `bad_threshold`: reusing the 2% class boundary as
+            # the risk floor made every drawdown-free outcome clip to 0 or 100,
+            # so a +2% and a +200% winner were indistinguishable.
+            risk_taken = max(abs(obs.mae), self.min_risk_denominator)
+            # tanh keeps the score monotonic in alpha/risk instead of clipping
+            # the moment the ratio exceeds 1. The /3 scale puts a 3:1
+            # reward-to-risk outcome near 88 rather than pinning everything
+            # above 1:1 to 100, so `average_score` still carries information.
+            ratio = alpha_ret / risk_taken
+            ev.outcome_score = max(0.0, min(100.0, 50 + 50 * math.tanh(ratio / 3.0)))
         else:
             # A1-4: WAIT / NO_TRADE / AVOID are graded too
             if obs.ret <= -self.bad_threshold:
