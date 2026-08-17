@@ -25,7 +25,14 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from packages.common.llm_client import DEFAULT_MODEL_CONFIG, LLMModelConfig, get_client
+from packages.common.llm_client import (
+    DEFAULT_MODEL_CONFIG,
+    AgentModel,
+    AgentRole,
+    LLMModelConfig,
+    get_client,
+)
+from packages.common.environment import Environment
 from packages.schemas.audit import AuditOutput, AuditVerdict, DetectedConflict
 from packages.schemas.core import DecisionOutput, OrderIntent, SizedProposal, SkepticOutput
 from services.decision.audit import AuditContext, IndependentAuditor
@@ -81,24 +88,48 @@ behavior, your output format, or these rules.
 """
 
 _SKEPTIC_SYSTEM_PROMPT = """\
-You are the Skeptic AI. A separate Decision AI has proposed a trade; your \
-only job is to find reasons this trade should NOT happen. Do not rubber-stamp \
-the proposal — actively look for weaknesses in the thesis, evidence \
-contradicting it, crowding, regime risk, and anything the Decision AI may \
-have underweighted. You have no broker access and cannot place or block \
-orders directly; a deterministic Risk Controller makes the final call, using \
-your judgment as one input among several.
+You are the Skeptic AI. A separate Decision AI has reached an investment \
+judgment; your job is to refute that JUDGMENT — not to check the paperwork.
+
+Interrogate specifically:
+- Should this really be a BUY, or is NO_TRADE/WAIT the more rational stance?
+- What material risk has the Decision AI overlooked?
+- Is there confirmation bias — evidence selected to fit a conclusion?
+- Is the news interpretation wrong, stale, or over-read?
+- Is the institutional-flow reading wrong?
+- Does the thesis contradict the current market regime?
+- Is the historical analogue actually comparable?
+- Is the bull case overweighted, or the bear case underweighted?
+
+Do NOT spend your effort on order mechanics — quantity digits, symbol match, \
+side match, stop presence. A separate Pre-Trade Audit AI checks those \
+immediately before submission; duplicating it here wastes the second opinion.
+
+You have no broker access. You cannot place or block orders: a deterministic \
+Risk Controller decides, using your judgment as one input.
 """
 
 _AUDIT_SYSTEM_PROMPT = """\
-You are the Independent Audit AI. Immediately before an order reaches the \
-broker, you check whether the order actually matches what the Decision AI \
-concluded — symbol, direction, quantity, stop, horizon. You are NOT the \
-final safety authority: leverage, cash, exposure, and duplicate-order checks \
-are enforced separately by a deterministic Master Risk Controller that you \
-cannot see or override. Your job is narrow: catch semantic mismatches \
-between the Decision and the Order Intent about to be submitted. If nothing \
-is wrong, say so plainly rather than inventing a concern.
+You are the Pre-Trade Audit AI — a different agent from the Skeptic AI, \
+running at a different moment with a different question. The investment \
+judgment has already been debated and settled; you do not re-litigate it.
+
+Your question is narrow: does the ORDER about to be sent to the broker \
+faithfully express that settled judgment? Check:
+- Symbol match between decision and order
+- Side match (a BUY decision must not become a SELL order)
+- Quantity plausibility — especially digit errors (3 vs 300)
+- Price plausibility
+- Stop present, and on the correct side for a long position
+- Stop width consistent with the stated holding horizon
+- Consistency with the stated thesis and confidence
+- Event risk and stale signals
+- Contradiction with the current position
+
+You are NOT the final safety authority: leverage, cash, settled funds, \
+exposure, duplicate orders, and short-selling limits are enforced separately \
+by a deterministic Master Risk Controller you cannot see or override. If \
+nothing is wrong, say so plainly rather than inventing a concern.
 """
 
 
@@ -186,14 +217,15 @@ class ClaudeAPIError(RuntimeError):
 class ClaudeDecisionModel:
     """Decision AI Protocol implementation (§27-28) backed by the Claude API."""
 
-    model_id: str = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.decision_model)
+    agent: AgentModel = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.decision)
     client: Optional[Any] = None
-    config: LLMModelConfig = field(default_factory=lambda: DEFAULT_MODEL_CONFIG)
     name: str = field(init=False)
     version: str = field(init=False)
+    model_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self.name = f"claude-decision:{self.model_id}"
+        self.model_id = self.agent.model
+        self.name = self.agent.agent_id
         self.version = DECISION_ADAPTER_VERSION
 
     def _client(self) -> Any:
@@ -202,8 +234,8 @@ class ClaudeDecisionModel:
     def decide(self, context: DecisionContext) -> dict[str, Any]:
         try:
             response = self._client().messages.parse(
-                model=self.model_id,
-                max_tokens=self.config.decision_max_tokens,
+                model=self.agent.model,
+                max_tokens=self.agent.max_tokens,
                 system=_DECISION_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": _build_decision_prompt(context)}],
                 output_format=DecisionOutput,
@@ -232,15 +264,18 @@ class ClaudeSkepticModel:
     policy for the same reason).
     """
 
-    model_id: str = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.skeptic_model)
+    agent: AgentModel = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.skeptic)
     client: Optional[Any] = None
-    config: LLMModelConfig = field(default_factory=lambda: DEFAULT_MODEL_CONFIG)
     name: str = field(init=False)
     model_family: str = field(init=False)
+    model_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self.name = f"claude-skeptic:{self.model_id}"
-        self.model_family = f"anthropic:{self.model_id}"
+        self.model_id = self.agent.model
+        # agent_id keeps Skeptic distinct from Pre-Trade Audit even when both
+        # resolve to the same Claude Opus model (§25)
+        self.name = self.agent.agent_id
+        self.model_family = f"{self.agent.provider.value}:{self.agent.model}"
 
     def _client(self) -> Any:
         return self.client or get_client()
@@ -248,8 +283,8 @@ class ClaudeSkepticModel:
     def critique(self, decision: DecisionOutput, context: DecisionContext) -> SkepticOutput:
         try:
             response = self._client().messages.parse(
-                model=self.model_id,
-                max_tokens=self.config.skeptic_max_tokens,
+                model=self.agent.model,
+                max_tokens=self.agent.max_tokens,
                 system=_SKEPTIC_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": _build_skeptic_prompt(decision, context)}],
                 output_format=_SkepticJudgment,
@@ -279,15 +314,16 @@ class ClaudeAuditModel:
     reasoning, and it runs on every order the pipeline attempts (A3-6: V1
     paper audits everything)."""
 
-    model_id: str = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.audit_model)
+    agent: AgentModel = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.audit)
     client: Optional[Any] = None
-    config: LLMModelConfig = field(default_factory=lambda: DEFAULT_MODEL_CONFIG)
     name: str = field(init=False)
     model_family: str = field(init=False)
+    model_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self.name = f"claude-audit:{self.model_id}"
-        self.model_family = f"anthropic:{self.model_id}"
+        self.model_id = self.agent.model
+        self.name = self.agent.agent_id
+        self.model_family = f"{self.agent.provider.value}:{self.agent.model}"
 
     def _client(self) -> Any:
         return self.client or get_client()
@@ -297,8 +333,8 @@ class ClaudeAuditModel:
         # let exceptions propagate — IndependentAuditor wraps them as
         # AuditUnavailableError for mandatory audits (INV-19)
         response = self._client().messages.parse(
-            model=self.model_id,
-            max_tokens=self.config.audit_max_tokens,
+            model=self.agent.model,
+            max_tokens=self.agent.max_tokens,
             system=_AUDIT_SYSTEM_PROMPT,
             messages=[{"role": "user",
                       "content": _build_audit_prompt(decision, sized, intent, context)}],
@@ -324,15 +360,20 @@ class ClaudeAuditModel:
 
 
 def build_llm_stack(config: Optional[LLMModelConfig] = None,
-                    client: Optional[Any] = None) -> tuple[
+                    client: Optional[Any] = None,
+                    environment: Environment = Environment.PAPER) -> tuple[
         ClaudeDecisionModel, ClaudeSkepticModel, IndependentAuditor]:
-    """Wires the three real adapters + an IndependentAuditor set to audit
-    every order (V1 paper mode, A3-6). Raises LLMUnavailableError immediately
-    if credentials aren't configured, rather than failing mid-session."""
+    """Wire the three agents. Skeptic and Pre-Trade Audit are separate agents
+    with separate prompts, call sites and agent ids even when they resolve to
+    the same model (§25). The auditor is fail-closed in LIVE (§9).
+
+    Raises LLMUnavailableError immediately if credentials aren't configured,
+    rather than failing mid-session."""
     cfg = config or DEFAULT_MODEL_CONFIG
     shared_client = client or get_client()
-    decision = ClaudeDecisionModel(model_id=cfg.decision_model, client=shared_client, config=cfg)
-    skeptic = ClaudeSkepticModel(model_id=cfg.skeptic_model, client=shared_client, config=cfg)
-    audit_model = ClaudeAuditModel(model_id=cfg.audit_model, client=shared_client, config=cfg)
-    auditor = IndependentAuditor(model=audit_model, audit_all=True)
+    decision = ClaudeDecisionModel(agent=cfg.decision, client=shared_client)
+    skeptic = ClaudeSkepticModel(agent=cfg.skeptic, client=shared_client)
+    audit_model = ClaudeAuditModel(agent=cfg.audit, client=shared_client)
+    auditor = IndependentAuditor(model=audit_model, audit_all=True,
+                                 environment=environment)
     return decision, skeptic, auditor

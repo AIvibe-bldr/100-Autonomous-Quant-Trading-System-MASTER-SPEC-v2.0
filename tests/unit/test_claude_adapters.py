@@ -15,6 +15,7 @@ import pytest
 
 from packages.schemas.audit import AuditVerdict
 from packages.schemas.core import Action, OrderIntent, OrderType, ScenarioCase, SizedProposal
+from packages.common.llm_client import AgentModel, AgentRole, Provider
 from services.decision.audit import AuditContext
 from services.decision.claude_adapters import (
     ClaudeAPIError,
@@ -76,7 +77,10 @@ def test_decision_parses_structured_output():
     decision = make_decision("AAPL")
     client = FakeAnthropicClient()
     client.messages.next_response = _FakeResponse(parsed_output=decision)
-    model = ClaudeDecisionModel(model_id="claude-sonnet-5", client=client)
+    model = ClaudeDecisionModel(
+        agent=AgentModel(role=AgentRole.DECISION, provider=Provider.ANTHROPIC,
+                         model="claude-sonnet-5"),
+        client=client)
 
     raw = model.decide(_ctx())
     assert raw["symbol"] == "AAPL"
@@ -127,12 +131,15 @@ def test_skeptic_parses_judgment():
     client.messages.next_response = _FakeResponse(
         parsed_output=_SkepticJudgment(objections=["momentum is crowded"],
                                        severity=0.4, recommends_veto=False))
-    model = ClaudeSkepticModel(model_id="claude-opus-5", client=client)
+    model = ClaudeSkepticModel(
+        agent=AgentModel(role=AgentRole.SKEPTIC, provider=Provider.ANTHROPIC,
+                         model="claude-opus-5"),
+        client=client)
     out = model.critique(make_decision("AAPL"), _ctx())
     assert out.proposal_symbol == "AAPL"
     assert out.objections == ["momentum is crowded"]
     assert out.recommends_veto is False
-    assert "claude-opus-5" in out.model_family
+    assert out.model_family == "anthropic:claude-opus-5"
 
 
 def test_skeptic_unavailable_fails_safe_to_veto():
@@ -177,12 +184,15 @@ def test_audit_parses_pass_verdict():
     client.messages.next_response = _FakeResponse(
         parsed_output=_AuditJudgment(verdict=AuditVerdict.PASS, reasons=[],
                                      detected_conflicts=[], severity=0.0))
-    model = ClaudeAuditModel(model_id="claude-haiku-4-5", client=client)
+    model = ClaudeAuditModel(
+        agent=AgentModel(role=AgentRole.PRE_TRADE_AUDIT, provider=Provider.ANTHROPIC,
+                         model="claude-opus-5"),
+        client=client)
     ctx = AuditContext(now=SESSION_TIME)
     raw = model.audit(make_decision("AAPL"), _sized(), _intent(), ctx)
     assert raw["verdict"] == "PASS"
     assert raw["client_order_id"] == "audit-adapter-0001"
-    assert raw["model"].startswith("claude-audit")
+    assert raw["model"].startswith("pre_trade_audit:")
     assert raw["reasons"] == ("no conflicts detected",)
 
 
@@ -210,8 +220,20 @@ def test_audit_failure_propagates_for_independent_auditor_to_wrap():
 
 # --- model tier separation (A3-5) -------------------------------------------
 
-def test_default_models_are_distinct_tiers():
-    d = ClaudeDecisionModel()
+def test_skeptic_and_auditor_are_separate_agents_on_the_same_model():
+    """§25: Skeptic and Pre-Trade Audit intentionally share Claude Opus, but
+    must stay separate agents — separate prompt, separate call site, separate
+    agent id — so one cannot stand in for the other."""
     s = ClaudeSkepticModel()
     a = ClaudeAuditModel()
-    assert len({d.model_id, s.model_id, a.model_id}) == 3
+    assert s.model_id == a.model_id            # same model, by design
+    assert s.name != a.name                    # different agent identity
+    assert s.agent.role is AgentRole.SKEPTIC
+    assert a.agent.role is AgentRole.PRE_TRADE_AUDIT
+
+
+def test_all_roles_have_distinct_agent_ids():
+    from packages.common.llm_client import DEFAULT_MODEL_CONFIG
+
+    ids = DEFAULT_MODEL_CONFIG.distinct_agents()
+    assert len(ids) == 6                       # one per role, no collisions

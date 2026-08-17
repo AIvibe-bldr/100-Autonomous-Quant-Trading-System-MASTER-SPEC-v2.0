@@ -81,6 +81,13 @@ class PortfolioRiskView:
     reconciliation_ok: bool
     data_health: DataHealth
     broker_connected: bool
+    # §10: these were previously enforced only in upstream engines; the Master
+    # Risk Controller re-checks them so the final authority verifies the full
+    # list itself rather than trusting a caller to have done it.
+    spread_pct: float = 0.0                    # (ask-bid)/mid at decision time
+    known_client_order_ids: frozenset[str] = frozenset()
+    signal_age_sec: float = 0.0
+    margin_requirement: float = 0.0            # must be 0 in a cash account
 
 
 @dataclass
@@ -217,6 +224,27 @@ class MasterRiskController:
         # 11. data health (§11)
         check("data_health", is_exit or view.data_health is not DataHealth.HALT_ENTRIES,
               f"data health {view.data_health.value}")
+
+        # -- §10: checks re-verified here so the final authority owns the full
+        # list, even though upstream engines also enforce them (defense in depth)
+
+        # 13. no margin: a cash account can never carry a margin requirement
+        check("no_margin", abs(view.margin_requirement) <= 1e-9,
+              f"margin requirement {view.margin_requirement:.2f} must be 0 (§2)")
+
+        # 14. duplicate order id — the execution engine rejects these too, but a
+        # duplicate must never even be approved
+        check("duplicate_order", intent.client_order_id not in view.known_client_order_ids,
+              f"client_order_id {intent.client_order_id} already used (§46)")
+
+        # 15. stale signal: an approval must not be granted on an old signal
+        check("stale_order", is_exit or view.signal_age_sec <= cfg.stale_order_after_sec,
+              f"signal age {view.signal_age_sec:.0f}s exceeds "
+              f"{cfg.stale_order_after_sec:.0f}s (§47)")
+
+        # 16. spread: a spread wide enough to eat the edge blocks entry
+        check("spread", is_exit or view.spread_pct <= cfg.max_spread_pct,
+              f"spread {view.spread_pct:.2%} exceeds cap {cfg.max_spread_pct:.2%}")
 
         failed = [c for c in checks if not c.passed]
         if failed:

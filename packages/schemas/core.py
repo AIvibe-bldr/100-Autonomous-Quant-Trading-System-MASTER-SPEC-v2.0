@@ -73,9 +73,49 @@ class Quote(StrictModel):
 # ---------------------------------------------------------------------------
 
 class Action(str, enum.Enum):
+    """Order side — what can actually be sent to a broker (§2).
+
+    Deliberately only two values: an order is a BUY or a SELL. Stances that
+    produce no order (HOLD/WAIT/NO_TRADE/AVOID) live in `DecisionAction`, so
+    a non-order stance cannot accidentally be constructed as an order side.
+    """
+
     BUY = "BUY"
     SELL = "SELL"
+
+
+class DecisionAction(str, enum.Enum):
+    """What the Decision AI concluded (§2 of the role spec).
+
+    Meanings are fixed and enforced downstream:
+      BUY      — open a new long, or add to an approved existing long
+      SELL     — reduce or close an EXISTING long only. Never a short: the
+                 Master Risk Controller enforces sell_qty <= current_long_qty,
+                 and a SELL on an unheld symbol is rejected outright.
+      HOLD     — keep the current long; emits no order
+      WAIT     — no order now; re-evaluate after a condition or interval
+      NO_TRADE — no sufficient edge right now
+      AVOID    — excluded for a period due to risk / data quality / event risk
+    """
+
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+    WAIT = "WAIT"
     NO_TRADE = "NO_TRADE"
+    AVOID = "AVOID"
+
+    @property
+    def is_order(self) -> bool:
+        """True only for stances that produce a broker order."""
+        return self in (DecisionAction.BUY, DecisionAction.SELL)
+
+    def to_order_side(self) -> "Action":
+        """Convert to an order side; raises for non-order stances so a HOLD
+        can never be mistaken for a tradeable instruction."""
+        if not self.is_order:
+            raise ValueError(f"{self.value} produces no order and has no side")
+        return Action.BUY if self is DecisionAction.BUY else Action.SELL
 
 
 class ScenarioCase(StrictModel):
@@ -89,7 +129,7 @@ class DecisionOutput(StrictModel):
     bull/base/bear each carry a target and probability."""
 
     symbol: str = Field(min_length=1, max_length=12)
-    action: Action
+    action: DecisionAction   # 6 stances; only BUY/SELL produce an order
     confidence: float = Field(ge=0.0, le=1.0)
     expected_horizon: str  # e.g. "1d" | "1w" | "1m" | "3m" | "6m"
     expected_return_range: tuple[float, float]
@@ -136,16 +176,25 @@ class ProposalSource(str, enum.Enum):
 class TradeProposal(StrictModel):
     proposal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     symbol: str
-    side: Action  # BUY or SELL only; validated below
+    side: Action  # order side; `Action` itself is BUY/SELL only
     source: ProposalSource
     decision: DecisionOutput
     skeptic: Optional[SkepticOutput] = None
     created_at: datetime
 
     @model_validator(mode="after")
-    def _side_is_tradeable(self) -> "TradeProposal":
-        if self.side is Action.NO_TRADE:
-            raise ValueError("NO_TRADE cannot become a proposal")
+    def _side_matches_decision(self) -> "TradeProposal":
+        """A proposal may only exist for an order-producing stance, and its
+        side must match what the Decision AI actually concluded — a HOLD or
+        WAIT can never become an order, and a BUY decision can never become
+        a SELL order here (that mismatch is also caught by Pre-Trade Audit)."""
+        if not self.decision.action.is_order:
+            raise ValueError(
+                f"{self.decision.action.value} produces no order and cannot become a proposal")
+        if self.decision.action.to_order_side() is not self.side:
+            raise ValueError(
+                f"proposal side {self.side.value} contradicts decision "
+                f"{self.decision.action.value}")
         return self
 
 

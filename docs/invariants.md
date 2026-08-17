@@ -49,3 +49,32 @@
 
 閾値は `packages/common/risk_config.py` の設定値。変更は Human Approval + Versioning + Test 必須（§39）。
 AIエージェントは実行時にこの値を書き換えるAPIを持たない。
+
+## §28 必須テスト対応表
+
+役割分離改訂で要求された18件。実装は `tests/unit/test_role_separation_spec.py`
+（重複するものは既存スイートにも残してある。どの層が止めるのかを役割分離の
+観点から直接主張するために再掲している）。
+
+| # | ケース | 止める層 | テスト |
+|---|---|---|---|
+| 1 | Decision BUY / Order SELL → REJECT | Pre-Trade Audit AI | `test_decision_buy_but_order_sell_is_rejected` |
+| 2 | Symbol変更 → REJECT | Pre-Trade Audit AI | `test_symbol_swap_between_decision_and_order_is_rejected` |
+| 3 | 未保有銘柄SELL → REJECT | Master Risk Controller | `test_sell_of_unheld_symbol_is_rejected` |
+| 4 | Position 10株でSELL 11株 → REJECT | Master Risk Controller | `test_sell_exceeding_held_quantity_is_rejected` |
+| 5 | Position 10株でSELL 10株 → PASS可能 | Master Risk Controller | `test_sell_of_exactly_held_quantity_can_pass` |
+| 6 | 未保有SELL判断はAVOID化（発注に至らない） | Pipeline | `test_pipeline_converts_unheld_sell_decision_into_avoid` |
+| 7 | Leverage > 1 → REJECT | Master Risk Controller | `test_leverage_above_one_is_rejected` |
+| 8 | Margin requirement発生 → REJECT | Master Risk Controller | `test_any_margin_requirement_is_rejected` |
+| 9 | Insufficient Cash → REJECT | Master Risk Controller | `test_insufficient_settled_cash_is_rejected` |
+| 10 | Missing Stop → REJECT | Master Risk Controller | `test_entry_without_stop_plan_is_rejected` |
+| 11 | Duplicate Order ID → REJECT | Master Risk Controller | `test_duplicate_client_order_id_is_rejected` |
+| 12 | 承認後のQuantity変更 → HASH MISMATCH | Approved Order Snapshot | `test_quantity_changed_after_approval_fails_hash_check` |
+| 13 | 承認後のSymbol変更 → HASH MISMATCH | Approved Order Snapshot | `test_symbol_changed_after_approval_fails_hash_check` |
+| 14 | Audit Timeout → LIVE新規Trade REJECT | Audit fail-closed | `test_audit_timeout_blocks_new_live_trade` |
+| 15 | Audit malformed JSON → REJECT | Audit fail-closed | `test_audit_malformed_json_never_passes` |
+| 16 | Broker Position mismatch → HALT_NEW_ENTRIES | Reconciliation | `test_broker_position_mismatch_halts_new_entries` |
+| 17 | External NewsにSystem Prompt攻撃文 → 挙動不変 | 構造的（経路なし） | `test_injected_news_does_not_change_risk_configuration` 他2件 |
+| 18 | BuilderがLIVE Strategy変更要求 → DENIED | Promotion Gate | `test_builder_cannot_change_a_live_strategy` |
+| 19 | JudgeがPROMOTE → 自動LIVE昇格しない | Promotion Gate | `test_judge_recommends_but_never_promotes` 他2件 |
+| 20 | Human Override → Master Risk突破不可 | Master Risk Controller | `test_human_override_cannot_bypass_master_risk` 他2件 |

@@ -43,6 +43,9 @@ class DetectedConflict(StrictModel):
     severity: float = Field(ge=0.0, le=1.0)
 
 
+AUDIT_SCHEMA_VERSION = "audit-1.1.0"
+
+
 class AuditOutput(StrictModel):
     audit_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     decision_id: str
@@ -51,6 +54,13 @@ class AuditOutput(StrictModel):
     reasons: tuple[str, ...]
     detected_conflicts: tuple[DetectedConflict, ...] = ()
     severity: float = Field(ge=0.0, le=1.0)
+    # §7: structured findings so Near-Miss analysis can categorize what the
+    # auditor actually caught, rather than parsing free text
+    semantic_mismatches: tuple[str, ...] = ()   # decision vs order contradictions
+    missing_information: tuple[str, ...] = ()   # what the auditor could not verify
+    risk_concerns: tuple[str, ...] = ()         # event risk, stale signal, sizing
+    audit_summary: str = ""
+    audit_version: str = AUDIT_SCHEMA_VERSION
     model: str
     model_family: str
     forced: bool = False
@@ -90,6 +100,7 @@ class ApprovedOrderSnapshot(StrictModel):
 
     snapshot_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_order_id: str
+    order_intent_id: str = ""    # §11: the intent this snapshot froze
     symbol: str
     side: Action
     qty: float = Field(gt=0)
@@ -100,6 +111,7 @@ class ApprovedOrderSnapshot(StrictModel):
     time_in_force: str = "DAY"
     strategy_id: str = ""
     decision_id: str = ""
+    skeptic_id: str = ""         # §11: which Skeptic review this order carries
     risk_approval_id: str = ""
     audit_id: str = ""
     created_at: datetime
@@ -117,14 +129,17 @@ class ApprovedOrderSnapshot(StrictModel):
     @classmethod
     def from_approved(cls, order: RiskApprovedOrder, decision_id: str = "",
                       audit_id: str = "", take_profit: Optional[float] = None,
-                      strategy_id: str = "", at: Optional[datetime] = None) -> "ApprovedOrderSnapshot":
+                      strategy_id: str = "", skeptic_id: str = "",
+                      at: Optional[datetime] = None) -> "ApprovedOrderSnapshot":
         i = order.intent
         h = cls.compute_hash(i.symbol, i.side, i.qty, i.order_type, i.limit_price,
                              i.stop_price, take_profit, "DAY", i.client_order_id)
-        return cls(client_order_id=i.client_order_id, symbol=i.symbol, side=i.side,
+        return cls(client_order_id=i.client_order_id, order_intent_id=i.proposal_id,
+                   symbol=i.symbol, side=i.side,
                    qty=i.qty, order_type=i.order_type, limit_price=i.limit_price,
                    stop_price=i.stop_price, take_profit=take_profit,
                    strategy_id=strategy_id, decision_id=decision_id,
+                   skeptic_id=skeptic_id,
                    risk_approval_id=order.approval.approval_id, audit_id=audit_id,
                    created_at=at or i.created_at, hash=h)
 

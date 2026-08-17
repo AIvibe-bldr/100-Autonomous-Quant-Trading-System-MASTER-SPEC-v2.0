@@ -31,6 +31,21 @@ class AlphaStage(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
+class JudgeRecommendation(str, enum.Enum):
+    """§14: the Judge recommends; it never promotes.
+
+    Promotion is a separate gate (statistical validation → OOS →
+    walk-forward → shadow → safety tests → promotion gate → human approval),
+    so the Judge's strongest possible output is PROMOTE_RECOMMENDED.
+    """
+
+    PROMOTE_RECOMMENDED = "PROMOTE_RECOMMENDED"
+    SHADOW = "SHADOW"
+    RESEARCH_MORE = "RESEARCH_MORE"
+    DORMANT = "DORMANT"
+    REJECT = "REJECT"
+
+
 class Alpha(Protocol):
     name: str
     version: str
@@ -84,6 +99,10 @@ class JudgeVerdict:
     backtest: BacktestResult | None = None
     oos_return: float = 0.0
     p_value: float = 1.0
+    # §14: the Judge's actual output is a recommendation. `stage` records how
+    # far the alpha got through the evaluation ladder; it never reaches
+    # PROMOTED here — only the promotion gate can set that.
+    recommendation: JudgeRecommendation = JudgeRecommendation.RESEARCH_MORE
 
 
 @dataclass
@@ -104,11 +123,13 @@ class AlphaJudge:
         verdict.backtest = bt
         if bt.trades < self.min_trades:
             verdict.stage = AlphaStage.REJECTED
+            verdict.recommendation = JudgeRecommendation.RESEARCH_MORE
             verdict.reasons.append(
                 f"insufficient sample: {bt.trades} < {self.min_trades} trades (§24)")
             return verdict
         if bt.total_return <= 0:
             verdict.stage = AlphaStage.REJECTED
+            verdict.recommendation = JudgeRecommendation.REJECT
             verdict.reasons.append("negative return after transaction costs (§24)")
             return verdict
 
@@ -124,6 +145,7 @@ class AlphaJudge:
         verdict.oos_return = sum(oos_returns) / len(oos_returns)
         if verdict.oos_return <= 0:
             verdict.stage = AlphaStage.REJECTED
+            verdict.recommendation = JudgeRecommendation.REJECT
             verdict.reasons.append(f"out-of-sample mean return {verdict.oos_return:.2%} <= 0")
             return verdict
 
@@ -133,11 +155,17 @@ class AlphaJudge:
         verdict.p_value = monte_carlo_p_value(per_trade)
         if verdict.p_value > self.max_p_value:
             verdict.stage = AlphaStage.REJECTED
+            verdict.recommendation = JudgeRecommendation.DORMANT
             verdict.reasons.append(f"monte carlo p={verdict.p_value:.2f} — likely luck (§24)")
             return verdict
 
-        verdict.stage = AlphaStage.SHADOW  # never straight to live (§23)
-        verdict.reasons.append("passed backtest, walk-forward and luck test → shadow")
+        # §14/§23: the strongest verdict the Judge can reach is a
+        # recommendation to shadow-then-promote — never PROMOTED itself.
+        verdict.stage = AlphaStage.SHADOW
+        verdict.recommendation = JudgeRecommendation.PROMOTE_RECOMMENDED
+        verdict.reasons.append(
+            "passed backtest, walk-forward and luck test → recommend shadow, "
+            "then promotion gate + human approval")
         return verdict
 
 

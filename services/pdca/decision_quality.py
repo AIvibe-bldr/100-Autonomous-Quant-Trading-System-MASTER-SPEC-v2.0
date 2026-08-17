@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from packages.common.clock import ensure_utc
+from packages.schemas.core import DecisionAction
 
 TRACK_HORIZONS: dict[str, timedelta] = {
     "1h": timedelta(hours=1), "1d": timedelta(days=1), "3d": timedelta(days=3),
@@ -32,13 +33,10 @@ EXTENDED_HORIZONS: dict[str, timedelta] = {
 _HORIZON_ALIASES = {**TRACK_HORIZONS, **EXTENDED_HORIZONS}
 
 
-class DecisionKind(str, enum.Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-    HOLD = "HOLD"
-    WAIT = "WAIT"
-    NO_TRADE = "NO_TRADE"
-    AVOID = "AVOID"
+# The stance a decision took and the stance we grade are the same concept —
+# keep one definition so Decision AI output and Decision Quality can never
+# drift apart. DecisionKind stays as the name used throughout PDCA.
+DecisionKind = DecisionAction
 
 
 class OutcomeClass(str, enum.Enum):
@@ -97,6 +95,7 @@ class HorizonObservation:
     mae: float                       # max adverse excursion up to this horizon
     mfe: float                       # max favorable excursion up to this horizon
     observed_at: datetime
+    benchmark_ret: float = 0.0       # §15: index return over the same window
 
 
 @dataclass
@@ -151,8 +150,14 @@ class DecisionQualityEngine:
 
     # -- A1-2: tracking ------------------------------------------------------
     def track(self, now: datetime, price_fn: Callable[[str, datetime], float],
-              include_extended: bool = False) -> int:
-        """Observe matured horizons for every recorded decision."""
+              include_extended: bool = False,
+              benchmark_fn: Optional[Callable[[datetime, datetime], float]] = None) -> int:
+        """Observe matured horizons for every recorded decision.
+
+        `benchmark_fn(from, to)` returns the index return over that window so
+        outcome scoring can be benchmark-adjusted (§15). Without it the
+        benchmark is 0.0 — i.e. raw return, which flatters decisions made in
+        a rising market."""
         now = ensure_utc(now)
         horizons = dict(TRACK_HORIZONS)
         if include_extended:
@@ -173,8 +178,10 @@ class DecisionQualityEngine:
                 prior = [o for o in ev.observations.values()]
                 mae = min([ret] + [o.mae for o in prior]) if prior else min(0.0, ret)
                 mfe = max([ret] + [o.mfe for o in prior]) if prior else max(0.0, ret)
+                bench = benchmark_fn(ensure_utc(snap.ts), due) if benchmark_fn else 0.0
                 ev.observations[label] = HorizonObservation(
-                    horizon=label, price=px, ret=ret, mae=mae, mfe=mfe, observed_at=due)
+                    horizon=label, price=px, ret=ret, mae=mae, mfe=mfe, observed_at=due,
+                    benchmark_ret=bench)
                 observed += 1
             self._evaluate(snap, ev)
         return observed
@@ -198,9 +205,14 @@ class DecisionQualityEngine:
                 ev.outcome_class = OutcomeClass.BAD
             else:
                 ev.outcome_class = OutcomeClass.MIXED
-            lo, hi = snap.expected_return_range
-            span = max(1e-9, hi - lo)
-            ev.outcome_score = max(0.0, min(100.0, 50 + 50 * signed / span))
+            # §15: score against an objective yardstick, not the model's own
+            #申告レンジ — a model that claims a wide range would otherwise be
+            # graded more leniently than one that commits to a tight one.
+            # Benchmark-adjusted, then risk-adjusted by realized adverse
+            # excursion so a win taken through a deep drawdown scores lower.
+            alpha_ret = signed - obs.benchmark_ret * d
+            risk_taken = max(abs(obs.mae), self.bad_threshold)
+            ev.outcome_score = max(0.0, min(100.0, 50 + 50 * alpha_ret / risk_taken))
         else:
             # A1-4: WAIT / NO_TRADE / AVOID are graded too
             if obs.ret <= -self.bad_threshold:

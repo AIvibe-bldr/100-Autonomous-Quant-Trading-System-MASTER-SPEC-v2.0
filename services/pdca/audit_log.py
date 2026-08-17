@@ -56,6 +56,24 @@ class NearMiss:
 
 
 @dataclass
+class HumanReviewItem:
+    """§8: an audit REVIEW verdict parks the order here instead of sending it.
+
+    Nothing in this module can approve an item — resolution is a human action
+    recorded via `resolve_human_review`, and a resolved item still has to go
+    back through Audit + Risk as a new order intent (§12).
+    """
+
+    at: datetime
+    client_order_id: str
+    decision_id: str
+    reasons: list[str] = field(default_factory=list)
+    severity: float = 0.0
+    resolved_by: str = ""
+    resolution: str = ""      # "" while pending
+
+
+@dataclass
 class PreTradeRecord:
     """A5: one row per order attempt, filled in as the pipeline progresses."""
 
@@ -79,6 +97,7 @@ class PreTradeAuditLog:
     def __init__(self) -> None:
         self.records: dict[str, PreTradeRecord] = {}
         self.near_misses: list[NearMiss] = []
+        self.human_review_queue: list[HumanReviewItem] = []
 
     # -- A5 -----------------------------------------------------------------
     def open(self, client_order_id: str, decision_id: str, at: datetime,
@@ -107,6 +126,32 @@ class PreTradeAuditLog:
         self.near_misses.append(NearMiss(at=ensure_utc(at), kind=kind, stage=stage,
                                          decision_id=decision_id,
                                          client_order_id=client_order_id, detail=detail))
+
+    # -- §8: REVIEW verdict --------------------------------------------------
+    def queue_human_review(self, client_order_id: str, decision_id: str, at: datetime,
+                           reasons: list[str], severity: float) -> HumanReviewItem:
+        """Park an order for human review. It is NOT sent to the broker."""
+        item = HumanReviewItem(at=ensure_utc(at), client_order_id=client_order_id,
+                               decision_id=decision_id, reasons=list(reasons),
+                               severity=severity)
+        self.human_review_queue.append(item)
+        return item
+
+    def resolve_human_review(self, client_order_id: str, resolved_by: str,
+                             resolution: str) -> None:
+        """Record a human's decision. Resolving does NOT release the order —
+        acting on it requires a fresh order intent through Audit + Risk (§12)."""
+        if not resolved_by:
+            raise PermissionError("human review requires a named reviewer (§8)")
+        for item in self.human_review_queue:
+            if item.client_order_id == client_order_id and not item.resolution:
+                item.resolved_by = resolved_by
+                item.resolution = resolution
+                return
+        raise KeyError(f"no pending review for {client_order_id}")
+
+    def pending_human_reviews(self) -> list[HumanReviewItem]:
+        return [i for i in self.human_review_queue if not i.resolution]
 
     def record_audit_rejection(self, audit_result: dict[str, Any], at: datetime,
                                decision_id: str, client_order_id: str) -> None:

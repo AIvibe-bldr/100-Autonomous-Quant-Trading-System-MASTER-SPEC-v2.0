@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from packages.schemas.core import (
     Action,
+    DecisionAction,
     DecisionOutput,
     ProposalSource,
     ScenarioCase,
@@ -81,7 +82,8 @@ class HumanIntentAnalyzer:
         """The human's trade enters the SAME pipeline as AI trades (§78)."""
         decision = DecisionOutput(
             symbol=intent.symbol,
-            action=Action.BUY if intent.action is IntentAction.WANT_BUY else Action.SELL,
+            action=(DecisionAction.BUY if intent.action is IntentAction.WANT_BUY
+                    else DecisionAction.SELL),
             confidence=0.5,  # human intent gets neutral confidence; calibration applies
             expected_horizon="1w",
             expected_return_range=(-0.08, 0.12),
@@ -99,8 +101,10 @@ class HumanIntentAnalyzer:
 class OverrideRecord:
     symbol: str
     at: datetime
-    ai_action: Action
-    human_action: Action
+    # stances, not order sides: an override is often "AI said WAIT, human
+    # said BUY", which only DecisionAction can express
+    ai_action: DecisionAction
+    human_action: DecisionAction
     ai_pnl: Optional[float] = None       # what the AI's choice would have made
     human_pnl: Optional[float] = None    # what the human's choice made
 

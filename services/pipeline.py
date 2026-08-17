@@ -20,6 +20,7 @@ from packages.common.provenance import ProvenanceStore
 from packages.schemas.core import (
     Action,
     BrokerFill,
+    DecisionAction,
     OrderIntent,
     OrderState,
     OrderType,
@@ -88,6 +89,7 @@ class PipelineResult:
     allocated: int = 0
     audit_passed: int = 0
     audit_rejected: int = 0
+    audit_review: int = 0        # §8: queued for human review, never auto-sent
     risk_passed: int = 0
     risk_rejected: int = 0
     orders_filled: int = 0
@@ -170,7 +172,10 @@ class TradingPipeline:
             symbol_themes=self.symbol_themes, drawdown=snapshot.drawdown,
             stop_plan_exists=True, gap_risk_score=0.0, adv_shares=1_000_000,
             correlation_to_book=0.0, reconciliation_ok=True,
-            data_health=self.integrity.health, broker_connected=True)
+            data_health=self.integrity.health, broker_connected=True,
+            spread_pct=self._spread_pct(symbol, now),
+            known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
+            signal_age_sec=0.0, margin_requirement=0.0)
 
     def place_protective_stop(self, symbol: str, qty: float, stop: StopPlan,
                               now: datetime, decision_id: str = "") -> bool:
@@ -281,7 +286,24 @@ class TradingPipeline:
                 rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
                 continue
             rec.output = decision.model_dump(mode="json")
-            if decision.action is not Action.BUY:
+            # §2: a SELL is only ever a reduction of an EXISTING long. A SELL
+            # on an unheld symbol is a Decision AI error, not a trade — it is
+            # rejected here and recorded, before any order can be built.
+            if decision.action is DecisionAction.SELL:
+                held = self.ledger.position_qty(scan.symbol)
+                if held <= 0:
+                    result.no_trade_reasons.append(
+                        f"{scan.symbol}: SELL decision on unheld symbol rejected — "
+                        f"shorting is forbidden (§2); AVOID/WAIT/NO_TRADE expected")
+                    self.audit_log.record_near_miss(
+                        Stage.AUDIT, NearMissKind.WRONG_SIDE, now, rec.decision_id,
+                        detail=f"SELL decision for unheld {scan.symbol}")
+                    self._record_decision(rec.decision_id, scan.symbol,
+                                          DecisionKind.AVOID, now, scan.last_close,
+                                          decision=decision)
+                    continue
+
+            if decision.action is not DecisionAction.BUY:
                 # A1-4: NO_TRADE decisions are tracked and graded too
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.NO_TRADE,
                                       now, scan.last_close, decision=decision)
@@ -392,12 +414,24 @@ class TradingPipeline:
                 continue
             log_rec.audit_result = audit.model_dump(mode="json")
             if audit.verdict is not AuditVerdict.PASS:
-                result.audit_rejected += 1
-                result.no_trade_reasons.append(
-                    f"{symbol}: audit {audit.verdict.value} — {'; '.join(audit.reasons)}")
-                self.audit_log.record_audit_rejection(log_rec.audit_result, now,
-                                                      rec.decision_id,
-                                                      intent.client_order_id)
+                # §8: REVIEW is not the same as REJECT — it goes to a human
+                # rather than being silently discarded. Either way the order
+                # does not proceed automatically.
+                if audit.verdict is AuditVerdict.REVIEW:
+                    result.audit_review += 1
+                    self.audit_log.queue_human_review(
+                        intent.client_order_id, rec.decision_id, now,
+                        reasons=list(audit.reasons), severity=audit.severity)
+                    result.no_trade_reasons.append(
+                        f"{symbol}: audit REVIEW — queued for human review: "
+                        f"{'; '.join(audit.reasons)}")
+                else:
+                    result.audit_rejected += 1
+                    result.no_trade_reasons.append(
+                        f"{symbol}: audit REJECT — {'; '.join(audit.reasons)}")
+                    self.audit_log.record_audit_rejection(log_rec.audit_result, now,
+                                                          rec.decision_id,
+                                                          intent.client_order_id)
                 self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
@@ -506,4 +540,11 @@ class TradingPipeline:
             gap_risk_score=sized.stop_plan.gap_risk_score,
             adv_shares=1_000_000, correlation_to_book=0.0,
             reconciliation_ok=True, data_health=self.integrity.health,
-            broker_connected=True)
+            broker_connected=True,
+            spread_pct=self._spread_pct(sized.proposal.symbol, now),
+            known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
+            signal_age_sec=0.0, margin_requirement=0.0)
+
+    def _spread_pct(self, symbol: str, now: datetime) -> float:
+        quote = self.market_data.quote(symbol, now)
+        return quote.spread / quote.mid if quote.mid > 0 else 1.0

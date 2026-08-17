@@ -13,7 +13,7 @@ from packages.common.experiments import (
     ExperimentRegistry,
 )
 from packages.common.ledger import Ledger
-from packages.schemas.core import Action, ProposalSource, ScenarioCase, StopType
+from packages.schemas.core import Action, DecisionAction, ProposalSource, ScenarioCase, StopType
 from services.decision.forecast import Forecast, ForecastTracker
 from services.decision.human_intent import (
     HumanIntent,
@@ -176,8 +176,8 @@ def test_human_vs_ai_analytics():
     analytics = HumanVsAiAnalytics()
     for i in range(12):
         analytics.record_override(OverrideRecord(
-            symbol="AAPL", at=SESSION_TIME, ai_action=Action.NO_TRADE,
-            human_action=Action.BUY, ai_pnl=0.0, human_pnl=1.0))
+            symbol="AAPL", at=SESSION_TIME, ai_action=DecisionAction.NO_TRADE,
+            human_action=DecisionAction.BUY, ai_pnl=0.0, human_pnl=1.0))
     s = analytics.summary()
     assert s["human_value_added"] == pytest.approx(12.0)
     assert s["research_candidate"] is True  # §79: persistent edge → research

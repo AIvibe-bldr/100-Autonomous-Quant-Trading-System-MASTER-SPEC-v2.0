@@ -39,6 +39,9 @@ class RiskConfig:
     # Gap / overnight risk (§40)
     max_gap_risk_score: float = 0.75
 
+    # Spread cap (§10) — a spread this wide eats the expected edge
+    max_spread_pct: float = 0.01
+
     # Stale order control (§47)
     stale_order_after_sec: float = 300.0
 

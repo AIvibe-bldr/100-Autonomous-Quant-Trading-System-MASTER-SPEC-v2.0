@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.common.clock import FrozenClock
-from packages.common.llm_client import DEFAULT_MODEL_CONFIG, LLMModelConfig, credentials_available
+from packages.common.llm_client import DEFAULT_MODEL_CONFIG, credentials_available
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.reconciliation.engine import ReconciliationEngine
 from tests.conftest import SYMBOLS, build_pipeline
@@ -33,9 +33,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--cash", type=float, default=670.0)
-    parser.add_argument("--decision-model", default=None)
-    parser.add_argument("--skeptic-model", default=None)
-    parser.add_argument("--audit-model", default=None)
     args = parser.parse_args()
 
     universe = UniverseManager()
@@ -47,16 +44,15 @@ def main() -> None:
     if credentials_available():
         from services.decision.claude_adapters import build_llm_stack
 
-        cfg = LLMModelConfig(
-            decision_model=args.decision_model or DEFAULT_MODEL_CONFIG.decision_model,
-            skeptic_model=args.skeptic_model or DEFAULT_MODEL_CONFIG.skeptic_model,
-            audit_model=args.audit_model or DEFAULT_MODEL_CONFIG.audit_model)
+        cfg = DEFAULT_MODEL_CONFIG
         decision, skeptic, auditor = build_llm_stack(config=cfg)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor)
-        print(f"=== LIVE Claude API: decision={cfg.decision_model} "
-              f"skeptic={cfg.skeptic_model} audit={cfg.audit_model} ===")
+        print(f"=== LIVE Claude API ===\n"
+              f"  Decision AI : {cfg.decision.agent_id}\n"
+              f"  Skeptic AI  : {cfg.skeptic.agent_id}\n"
+              f"  Audit AI    : {cfg.audit.agent_id}  (separate agent, same model)")
     else:
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
         print("=== No Anthropic credentials found — using deterministic Mock "

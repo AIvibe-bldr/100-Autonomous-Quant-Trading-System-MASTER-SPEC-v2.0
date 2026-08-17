@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Protocol
 
 from packages.common.clock import ensure_utc
+from packages.common.environment import Environment
 from packages.schemas.audit import (
     AuditOutput,
     AuditVerdict,
@@ -176,22 +177,42 @@ def audit_required(t: AuditTriggerContext, high_vol_threshold: float = 0.04,
 @dataclass
 class IndependentAuditor:
     """Wraps an AuditModel with validation, unavailability policy and logging
-    hooks.  audit_all=True in V1 paper mode (A3-6)."""
+    hooks.
+
+    **LIVE is fail-closed (§9).** In `Environment.LIVE` every order is audited
+    regardless of `audit_all` or the trigger conditions, and *any* failure —
+    timeout, API error, malformed JSON, schema failure, unavailability — blocks
+    the trade. An unaudited order can never reach a live broker, so there is no
+    configuration of this class that lets one through.
+
+    In PAPER/RESEARCH the same failures are exercised as test scenarios: V1
+    paper still audits everything (`audit_all=True`, A3-6) to collect data,
+    but an audit that is neither mandatory nor available degrades to a logged
+    skip rather than halting the research run.
+    """
 
     model: Optional[AuditModel]
     audit_all: bool = True
+    environment: Environment = Environment.PAPER
+
+    def _is_mandatory(self, triggers: AuditTriggerContext) -> bool:
+        # LIVE: audit is unconditional — never a function of config or triggers
+        if self.environment.is_live:
+            return True
+        return self.audit_all or audit_required(triggers)
 
     def audit(self, decision: DecisionOutput, sized: SizedProposal, intent: OrderIntent,
               context: AuditContext,
               triggers: AuditTriggerContext = AuditTriggerContext()) -> AuditOutput:
-        mandatory = self.audit_all or audit_required(triggers)
+        mandatory = self._is_mandatory(triggers)
         now = ensure_utc(context.now)
 
         if self.model is None:
             if mandatory:
                 # INV-19: no auditor + mandatory audit = no trade
                 raise AuditUnavailableError(
-                    "audit model unavailable — high-risk trade blocked (A3-6)")
+                    "audit model unavailable — trade blocked (A3-6; "
+                    f"environment={self.environment.value})")
             return AuditOutput(decision_id=sized.proposal.proposal_id,
                                client_order_id=intent.client_order_id,
                                verdict=AuditVerdict.PASS,
@@ -201,14 +222,19 @@ class IndependentAuditor:
 
         try:
             raw = self.model.audit(decision, sized, intent, context)
-        except Exception as e:  # model call failed entirely
+        except Exception as e:  # timeout / API failure / internal error (§9)
             if mandatory:
                 raise AuditUnavailableError(str(e)) from e
             raise
         try:
             out = validate_audit_output(raw)
-        except MalformedAuditError:
-            # INV-20: malformed audit output is a REJECT, never a silent pass
+        except MalformedAuditError as e:
+            # §9: in LIVE, malformed output is an audit failure — block rather
+            # than let a REJECT verdict be mistaken for a completed audit.
+            if self.environment.is_live:
+                raise AuditUnavailableError(
+                    f"malformed audit output in LIVE — trade blocked: {e}") from e
+            # INV-20: elsewhere a malformed audit is a REJECT, never a silent pass
             return AuditOutput(decision_id=sized.proposal.proposal_id,
                                client_order_id=intent.client_order_id,
                                verdict=AuditVerdict.REJECT,
