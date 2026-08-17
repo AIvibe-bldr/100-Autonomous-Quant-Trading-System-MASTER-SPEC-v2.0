@@ -271,8 +271,14 @@ class TradingPipeline:
         log_rec.broker_submitted = True
         state = self.execution.submit(approved, snapshot=snapshot)
         log_rec.final_state = state.value
+        # Adding to a held position places a SECOND resting stop for the new
+        # shares; the first one stays live at the broker. Accumulate the risk
+        # so the anti-martingale guard sees the position's total risk rather
+        # than only the most recent lot's.
+        prior = self.open_stops.get(symbol)
+        prior_risk = prior[3] if prior else 0.0
         self.open_stops[symbol] = (intent.client_order_id, stop, stop.entry_price,
-                                   qty * stop.stop_distance)
+                                   prior_risk + qty * stop.stop_distance)
         return True
 
     def manage_open_positions(self, now: datetime) -> tuple[int, int]:
@@ -287,13 +293,22 @@ class TradingPipeline:
                 self.ledger.record_fill(f.symbol, f.qty, f.price, f.fees, f.ts,
                                         note=f.client_order_id)
                 continue
+            # Realized P&L must come from the ledger's weighted average cost,
+            # NOT from the shadow entry price in open_stops. open_stops is
+            # keyed by symbol, so buying more of a held name overwrote the
+            # first stop's entry price, and the whole exit was then priced off
+            # the later entry — feeding the anti-martingale guard (§37/INV-10)
+            # a loss figure that diverged from the ledger by 13% over 200
+            # sessions. The ledger already holds the correct basis.
+            lot_before = self.ledger.positions.get(f.symbol)
+            avg_cost = lot_before.avg_cost if lot_before else f.price
             self.ledger.record_fill(f.symbol, -f.qty, f.price, f.fees, f.ts,
                                     note=f.client_order_id)
             entry = self.open_stops.get(f.symbol)
             realized = 0.0
             if entry is not None:
-                _, stop, entry_px, risk_amount = entry
-                realized = (f.price - entry_px) * f.qty
+                _, stop, _entry_px, risk_amount = entry
+                realized = (f.price - avg_cost) * f.qty - f.fees
                 # §37/INV-10: feed the anti-martingale guard with the outcome
                 self.sizing.record_trade_result(realized_pnl=realized,
                                                 risk_amount=risk_amount)

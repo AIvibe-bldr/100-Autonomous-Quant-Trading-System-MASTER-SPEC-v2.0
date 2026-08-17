@@ -78,3 +78,37 @@ AIエージェントは実行時にこの値を書き換えるAPIを持たない
 | 18 | BuilderがLIVE Strategy変更要求 → DENIED | Promotion Gate | `test_builder_cannot_change_a_live_strategy` |
 | 19 | JudgeがPROMOTE → 自動LIVE昇格しない | Promotion Gate | `test_judge_recommends_but_never_promotes` 他2件 |
 | 20 | Human Override → Master Risk突破不可 | Master Risk Controller | `test_human_override_cannot_bypass_master_risk` 他2件 |
+
+## セキュリティ／正当性レビューで発見・修正した欠陥
+
+3方向のレビュー（安全境界・新規コード正当性・長期実行の会計整合性）で発見し、
+すべて再現確認のうえ修正した。回帰は `tests/unit/test_security_review_regressions.py`。
+
+| # | 重大度 | 欠陥 | 修正 |
+|---|---|---|---|
+| SEC-1 | CRITICAL | `IndependentAuditor.environment` がPAPER既定でPipelineと非連動 → LIVEで監査なし発注 | environment必須化＋`__post_init__`で環境混在を構築時拒否 |
+| SEC-2 | CRITICAL | 署名が`order_type`/価格を含まず、engineがsnapshotを自作 → 承認済MARKETがLIMIT/STOPに化ける | `intent_hash`を全執行フィールドに拡張し署名対象化。snapshotは呼出側必須＋approval紐付け検証 |
+| SEC-3 | HIGH | 無価格MARKET注文で`order_value=0` → 金額系4チェックが自明に通過 | 価格不明は`priceable_order`でREJECT |
+| SEC-4 | HIGH | `check_stale_orders`が保護Stopを取消（INV-15違反） | `is_protective_exit`を除外 |
+| SEC-5 | HIGH | Drawdownスロットルが解除不能ラッチ（HWM単調＋建玉消滅でequity固定） | 人間承認必須の`rebase_high_water_mark`＋`/health`にthrottleとロックアウトを露出 |
+| SEC-6 | HIGH | `settled_cash`に未決済金が混入（§14がPaperBroker任せ） | Brokerの`settled_cash`を参照。切断時は0扱い |
+| — | HIGH | `Ledger._append`が検証前に変更しロールバックなし → INV-2違反状態を残す | 全レグを検証してからコミット |
+| — | HIGH | `outcome_class`は生リターン、`outcome_score`はbenchmark調整後 → BADかつ100点が発生 | 両者を同一尺度（alpha_ret）に統一 |
+| — | MED | MAE/MFEが方向未調整 → SELLで有利方向がリスク分母に | 方向調整後の符号で算出 |
+| — | MED | `expected`horizonが後続horizonのMAEを継承（先読み） | `observed_at <= due`のみ参照 |
+| SEC-7 | MED | `open_stops`のsymbolキー上書きでアンチマルチンゲール入力が13%乖離 | realizedをLedgerの`avg_cost`から算出、riskは累積 |
+| SEC-8 | MED | `adv_shares`がリテラル1,000,000で§41が形骸化 | 実ADVを配線 |
+| SEC-9 | MED | `_final_theses`がセッション跨ぎで蓄積（18セッションで177件表示） | `run_session`冒頭でクリア |
+| SEC-10 | HIGH | Mockの`get_quote`と`get_bars`が別価格過程 → Stopが一度も発火せず関連テストが空振り | 共通エポックからの単一ウォークに統合＋ボラティリティドラッグ補正 |
+
+### 変異テストで露呈した無効テスト
+
+「本番コードを壊しても全テストが通る」箇所が複数あった。特に:
+
+- Master Risk Controller のチェック15 (`stale_order`) / 16 (`spread`) は**テストが1件も存在しなかった**
+- `test_pipeline_populates_snapshot_skeptic_id` は `assert any(sid for sid in seen)` で、
+  `skeptic_id` にリテラルを入れても通っていた
+- `Ledger._append` のガードは `record_fill` 側の検証追加で到達不能になっていたため、
+  `deposit` 経由の負残高テストを別途追加
+
+現在は上記すべてに対して変異注入で kill を確認済み。

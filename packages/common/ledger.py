@@ -143,6 +143,35 @@ class Ledger:
             self._append(LedgerEntry(at=at, kind=EntryKind.FEE, amount=-fees, symbol=symbol,
                                      note=f"fees for {note or symbol}"))
 
+    def rebase_high_water_mark(self, approved_by: str, at: Optional[datetime] = None) -> float:
+        """Reset the drawdown baseline to current equity — HUMAN ONLY (§69).
+
+        The throttle ladder (§39) is derived from drawdown, and the high-water
+        mark only ever rises. Once NO_NEW_ENTRY engages and the protective
+        stops liquidate the book, equity equals cash and stops moving — so the
+        drawdown that caused the lockout can never shrink, because shrinking it
+        requires trading and trading is what is blocked. That is a permanent,
+        silent halt that looks exactly like "no candidates today".
+
+        §5 says crossing a drawdown level must never permanently end the
+        challenge by itself, and §69 says resuming is a human's call. This is
+        that call, made explicit: it requires a named approver and leaves a
+        ledger entry, so a resumption is always attributable.
+        """
+        from packages.common.clock import utcnow
+
+        if not approved_by.strip():
+            raise ValueError("rebasing the high-water mark requires a named human approver (§69)")
+        equity_before = self.high_water_mark
+        # equity is cash + marks; without marks we can only rebase to cash, so
+        # callers pass marked equity via snapshot() first. Use cash as the floor.
+        self.high_water_mark = max(self._cash, 0.0)
+        self.entries.append(LedgerEntry(
+            at=ensure_utc(at) if at else utcnow(), kind=EntryKind.CASH, amount=0.0,
+            note=f"high-water mark rebased {equity_before:.2f} → {self.high_water_mark:.2f} "
+                 f"by {approved_by} (§69)"))
+        return self.high_water_mark
+
     # -- views --------------------------------------------------------------
     @property
     def cash(self) -> float:

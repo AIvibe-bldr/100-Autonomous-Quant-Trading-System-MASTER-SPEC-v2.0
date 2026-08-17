@@ -64,11 +64,25 @@ def create_app(pipeline: TradingPipeline,
     @app.get("/health")
     def health() -> dict[str, Any]:
         """§97 + §73: environment badge and MASTER STOP state are always visible."""
+        from services.risk.master_controller import ThrottleLevel, throttle_level
+
+        snap = pipeline.ledger.snapshot(_prices())
+        throttle = throttle_level(snap.drawdown, pipeline.risk_controller.config)
+        # The drawdown throttle is derived from drawdown, NOT from risk_state,
+        # so a system locked out at NO_NEW_ENTRY previously reported
+        # risk_state=NORMAL and was indistinguishable from a quiet day. Surface
+        # it, and say plainly when only a human can clear it (§39, §69).
+        entries_blocked = throttle in (ThrottleLevel.NO_NEW_ENTRY,
+                                       ThrottleLevel.REVIEW_SAFE_MODE)
         return {
             "environment": pipeline.environment.value,   # PAPER / LIVE badge (§73)
             "risk_state": pipeline.risk_controller.state.value,
             "data_health": pipeline.integrity.health.value,
             "master_stop_available": True,               # §97: MASTER STOP常設
+            "drawdown": snap.drawdown,
+            "throttle_level": throttle.value,
+            "new_entries_blocked": entries_blocked,
+            "requires_human_to_resume": entries_blocked and not pipeline.ledger.positions,
         }
 
     @app.get("/portfolio")

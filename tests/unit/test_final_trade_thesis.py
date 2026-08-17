@@ -164,8 +164,13 @@ def test_pipeline_populates_snapshot_skeptic_id_from_the_thesis(pipeline, monkey
     if result.orders_filled == 0:
         pytest.skip("no order reached execution this session")
     assert seen
-    # a BUY entry carries the reviewing Skeptic's id; the automatic protective
-    # stop placed right after it is not a Decision/Skeptic product and
-    # legitimately carries none — so at least one call must be non-empty,
-    # not every call
-    assert any(sid for sid in seen)
+    # `any(sid for sid in seen)` was the original assertion and it did not test
+    # the stated property at all: any non-empty string passed, so replacing the
+    # pipeline's `skeptic_id=thesis.skeptic_id` with a literal left the whole
+    # suite green. Assert the actual identity instead.
+    expected = {t.skeptic_id for t in pipeline.final_theses().values()}
+    assert expected, "no thesis was built, so this test would prove nothing"
+    entry_ids = [sid for sid in seen if sid]
+    assert entry_ids, "no snapshot carried a skeptic id"
+    assert set(entry_ids) <= expected, (
+        f"snapshot skeptic_id {set(entry_ids)} is not one the thesis recorded {expected}")
