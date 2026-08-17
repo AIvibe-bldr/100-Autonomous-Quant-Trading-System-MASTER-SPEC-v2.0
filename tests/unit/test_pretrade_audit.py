@@ -65,7 +65,8 @@ def _intent(symbol: str = "AAPL", side: Action = Action.BUY, qty: float = 3.0,
 
 
 def _auditor() -> IndependentAuditor:
-    return IndependentAuditor(model=MockAuditModel(), audit_all=True)
+    return IndependentAuditor(model=MockAuditModel(), environment=Environment.PAPER,
+                              audit_all=True)
 
 
 CTX = AuditContext(now=SESSION_TIME)
@@ -138,7 +139,8 @@ def test_malformed_audit_rejected():
         def audit(self, decision, sized, intent, context):
             return {"verdict": "YES_TOTALLY_FINE", "garbage": True}
 
-    auditor = IndependentAuditor(model=BrokenModel(), audit_all=True)
+    auditor = IndependentAuditor(model=BrokenModel(), environment=Environment.PAPER,
+                               audit_all=True)
     out = auditor.audit(make_decision("AAPL"), _sized(), _intent(), CTX)
     assert out.verdict is AuditVerdict.REJECT  # malformed → REJECT, never pass
 
@@ -146,7 +148,7 @@ def test_malformed_audit_rejected():
 # --- A8: Audit AI unavailable → high-risk trade blocked (INV-19) ----------
 
 def test_audit_unavailable_blocks_high_risk():
-    auditor = IndependentAuditor(model=None, audit_all=False)
+    auditor = IndependentAuditor(model=None, environment=Environment.PAPER, audit_all=False)
     high_risk = AuditTriggerContext(volatility=0.10)  # high volatility → mandatory
     assert audit_required(high_risk)
     with pytest.raises(AuditUnavailableError):
@@ -172,8 +174,24 @@ def test_hash_mismatch_rejected(pipeline):
     order_large = _approved(pipeline, "hash-test-00002", qty=10.0)
     # snapshot approved for the 3-share order must not authorize the 10-share order
     snapshot_small = ApprovedOrderSnapshot.from_approved(order_small)
-    with pytest.raises(OrderTamperError, match="re-audit"):
+    with pytest.raises(OrderTamperError):
         pipeline.execution.submit(order_large, snapshot=snapshot_small)
+
+
+def test_order_type_change_after_approval_rejected(pipeline):
+    """INV-17 over the FULL execution field list, not just side and quantity.
+
+    An approved MARKET buy resubmitted as a LIMIT — or as a resting STOP the
+    controller never reviewed — used to sail through: the signature covered
+    neither `order_type` nor any price field."""
+    from packages.schemas.core import OrderType
+
+    approved = _approved(pipeline, "hash-test-00007", qty=1.0)
+    for update in ({"order_type": OrderType.LIMIT, "limit_price": 500.0},
+                   {"order_type": OrderType.STOP, "stop_price": 5.0}):
+        with pytest.raises(ValueError, match="execution-relevant field changed"):
+            RiskApprovedOrder(intent=approved.intent.model_copy(update=update),
+                              approval=approved.approval)
 
 
 def test_modified_order_requires_reaudit(pipeline):

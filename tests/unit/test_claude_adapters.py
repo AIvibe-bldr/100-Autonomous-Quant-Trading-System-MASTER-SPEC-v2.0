@@ -208,12 +208,13 @@ def test_audit_failure_propagates_for_independent_auditor_to_wrap():
     """IndependentAuditor (audit_all=True in V1) converts any exception here
     into AuditUnavailableError — verified in test_pretrade_audit.py. Here we
     just confirm the adapter itself doesn't swallow the error."""
+    from packages.common.environment import Environment
     from services.decision.audit import IndependentAuditor, AuditUnavailableError
 
     client = FakeAnthropicClient()
     client.messages.next_exception = RuntimeError("overloaded")
     model = ClaudeAuditModel(client=client)
-    auditor = IndependentAuditor(model=model, audit_all=True)
+    auditor = IndependentAuditor(model=model, environment=Environment.PAPER, audit_all=True)
     with pytest.raises(AuditUnavailableError):
         auditor.audit(make_decision("AAPL"), _sized(), _intent(), AuditContext(now=SESSION_TIME))
 

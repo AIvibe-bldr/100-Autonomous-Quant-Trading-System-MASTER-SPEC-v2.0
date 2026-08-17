@@ -91,7 +91,8 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         risk_controller=risk, execution=execution, ledger=ledger,
         provenance=ProvenanceStore(env),
         # V1 paper mode: audit every order to collect data (A3-6)
-        auditor=auditor or IndependentAuditor(model=MockAuditModel(), audit_all=True),
+        auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
+                                              audit_all=True),
         symbol_themes=THEMES)
 
 

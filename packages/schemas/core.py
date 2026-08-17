@@ -7,6 +7,7 @@ rejected, numeric bounds are enforced, and malformed payloads raise —
 from __future__ import annotations
 
 import enum
+import hashlib
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -308,6 +309,35 @@ class OrderIntent(StrictModel):
     created_at: datetime
 
 
+def canonical_order_payload(symbol: str, side: "Action", qty: float,
+                            order_type: "OrderType", limit_price: Optional[float],
+                            stop_price: Optional[float], take_profit: Optional[float],
+                            time_in_force: str, client_order_id: str) -> str:
+    """Canonical string form of everything that determines what the broker does.
+
+    Defined here, next to OrderIntent, because it is the order's identity —
+    both the risk approval signature (§42) and the Approved Order Snapshot
+    hash (A4/INV-17) must derive from the SAME field list, or one of them
+    leaves a gap the other believes is covered.
+    """
+    return "|".join([
+        symbol, side.value, f"{qty:.10g}", order_type.value,
+        "" if limit_price is None else f"{limit_price:.10g}",
+        "" if stop_price is None else f"{stop_price:.10g}",
+        "" if take_profit is None else f"{take_profit:.10g}",
+        time_in_force, client_order_id,
+    ])
+
+
+def order_intent_hash(intent: "OrderIntent", take_profit: Optional[float] = None,
+                      time_in_force: str = "DAY") -> str:
+    """SHA-256 over an intent's execution-relevant fields (§42)."""
+    return hashlib.sha256(canonical_order_payload(
+        intent.symbol, intent.side, intent.qty, intent.order_type, intent.limit_price,
+        intent.stop_price, take_profit, time_in_force,
+        intent.client_order_id).encode()).hexdigest()
+
+
 class RiskCheck(StrictModel):
     name: str
     passed: bool
@@ -320,6 +350,15 @@ class RiskApproval(StrictModel):
     The signature binds the approval to the exact order parameters; the
     Execution Engine independently verifies it, so nothing upstream of the
     risk controller (including any AI) can conjure an executable order (§7).
+
+    `intent_hash` is what makes "exact" true. The signature used to cover only
+    approval_id/client_order_id/symbol/side/qty, which left order_type,
+    limit_price, stop_price, take_profit and time_in_force unbound — an
+    approved MARKET buy could be resubmitted as a LIMIT buy at any price, or
+    as a resting STOP order the controller had never seen, and every
+    signature check still passed. `intent_hash` is the canonical order hash
+    (the same one ApprovedOrderSnapshot uses) computed at approval time, so
+    changing ANY execution-relevant field now invalidates the approval.
     """
 
     approval_id: str
@@ -327,6 +366,7 @@ class RiskApproval(StrictModel):
     symbol: str
     side: Action
     qty: float
+    intent_hash: str
     checks: tuple[RiskCheck, ...]
     risk_state: str
     approved_at: datetime
@@ -349,6 +389,15 @@ class RiskApprovedOrder(StrictModel):
         a, i = self.approval, self.intent
         if (a.client_order_id, a.symbol, a.side, a.qty) != (i.client_order_id, i.symbol, i.side, i.qty):
             raise ValueError("risk approval does not match order intent")
+        # The four fields above are the ones the approval carries in the clear;
+        # comparing only those let order_type/limit_price/stop_price be swapped
+        # after approval. The hash covers the full execution field list, so a
+        # tampered intent can no longer be paired with a genuine approval at all.
+        if a.intent_hash != order_intent_hash(i):
+            raise ValueError(
+                "risk approval does not cover these order parameters — an "
+                "execution-relevant field changed after approval; re-risk and "
+                "re-audit required (§42, INV-17)")
         return self
 
 

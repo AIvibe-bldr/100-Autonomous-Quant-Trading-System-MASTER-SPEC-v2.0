@@ -20,7 +20,13 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from packages.schemas.core import Action, OrderIntent, OrderType, RiskApprovedOrder
+from packages.schemas.core import (
+    Action,
+    OrderIntent,
+    OrderType,
+    RiskApprovedOrder,
+    canonical_order_payload,
+)
 
 
 class StrictModel(BaseModel):
@@ -82,17 +88,11 @@ def validate_audit_output(raw: dict[str, Any]) -> AuditOutput:
 # Immutable approved order snapshot (A4)
 # ---------------------------------------------------------------------------
 
-def _canonical(symbol: str, side: Action, qty: float, order_type: OrderType,
-               limit_price: Optional[float], stop_price: Optional[float],
-               take_profit: Optional[float], time_in_force: str,
-               client_order_id: str) -> str:
-    return "|".join([
-        symbol, side.value, f"{qty:.10g}", order_type.value,
-        "" if limit_price is None else f"{limit_price:.10g}",
-        "" if stop_price is None else f"{stop_price:.10g}",
-        "" if take_profit is None else f"{take_profit:.10g}",
-        time_in_force, client_order_id,
-    ])
+# The canonical form lives in packages/schemas/core.py alongside OrderIntent so
+# that the risk-approval signature and this snapshot hash cannot drift onto
+# different field lists — a field covered by only one of them is a field the
+# other silently leaves open.
+_canonical = canonical_order_payload
 
 
 class ApprovedOrderSnapshot(StrictModel):

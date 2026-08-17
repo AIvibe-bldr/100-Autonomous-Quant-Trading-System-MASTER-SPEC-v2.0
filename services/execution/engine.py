@@ -72,8 +72,20 @@ class ExecutionEngine:
             raise DuplicateClientOrderIdError(intent.client_order_id)
 
         # A4 / INV-17: the intent must re-hash to the approved snapshot.
-        # If no snapshot is supplied, freeze one now from the approved order.
-        snapshot = snapshot or ApprovedOrderSnapshot.from_approved(order)
+        #
+        # The snapshot is REQUIRED. Minting one here from the incoming order
+        # made the check self-fulfilling: a tampered intent produced a snapshot
+        # of the tampered intent, which matched itself. A witness the accused
+        # writes is not a witness.
+        if snapshot is None:
+            raise OrderTamperError(
+                f"{intent.client_order_id}: no approved order snapshot supplied — "
+                f"execution cannot mint its own (A4-2, INV-18)")
+        if snapshot.risk_approval_id != order.approval.approval_id:
+            raise OrderTamperError(
+                f"{intent.client_order_id}: snapshot was frozen against approval "
+                f"{snapshot.risk_approval_id}, not {order.approval.approval_id} — "
+                f"approval/snapshot mismatch (A4)")
         if not snapshot.matches_intent(intent):
             raise OrderTamperError(
                 f"{intent.client_order_id}: order fields do not match approved "
@@ -171,12 +183,20 @@ class ExecutionEngine:
         return sm.get(client_order_id).state
 
     def check_stale_orders(self) -> list[str]:
-        """Stale Order Control (§47): re-evaluate resting entry orders."""
+        """Stale Order Control (§47): re-evaluate resting **entry** orders.
+
+        Protective stops are excluded deliberately. A resting stop sits in
+        ACKNOWLEDGED for the entire life of the position — that is what it is
+        *for* — so age-based cancellation would reliably strip every open
+        position of its stop and violate INV-15 ("the planned stop must exist
+        at the broker"). Staleness is a property of an entry whose signal has
+        decayed, not of a stop whose job has not happened yet.
+        """
         stale: list[str] = []
         now = self.clock.now()
         for cid, order in self._submitted.items():
             rec = self.state_machine.get(cid)
-            if rec.state is OrderState.ACKNOWLEDGED:
+            if rec.state is OrderState.ACKNOWLEDGED and not order.intent.is_protective_exit:
                 age = (now - order.intent.created_at).total_seconds()
                 if age > self.risk_controller.config.stale_order_after_sec:
                     self.broker.cancel_order(cid)

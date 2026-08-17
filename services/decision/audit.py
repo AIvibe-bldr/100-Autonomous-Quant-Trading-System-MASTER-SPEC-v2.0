@@ -191,9 +191,15 @@ class IndependentAuditor:
     skip rather than halting the research run.
     """
 
+    # `environment` has NO default on purpose. It used to default to PAPER,
+    # which meant an auditor wired into a LIVE pipeline silently kept
+    # PAPER semantics and the fail-closed guarantee below became a lie —
+    # unaudited orders reached a live-flagged broker carrying a synthesized
+    # PASS. Callers must state the environment; TradingPipeline additionally
+    # cross-checks it against its own (§73).
     model: Optional[AuditModel]
+    environment: Environment
     audit_all: bool = True
-    environment: Environment = Environment.PAPER
 
     def _is_mandatory(self, triggers: AuditTriggerContext) -> bool:
         # LIVE: audit is unconditional — never a function of config or triggers

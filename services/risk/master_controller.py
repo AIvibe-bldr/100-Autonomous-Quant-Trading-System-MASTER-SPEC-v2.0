@@ -28,6 +28,7 @@ from packages.schemas.core import (
     RiskApproval,
     RiskCheck,
     RiskRejection,
+    order_intent_hash,
 )
 from services.data_validation.integrity import DataHealth
 
@@ -119,13 +120,17 @@ class MasterRiskController:
         return True, ""
 
     # -- signature ----------------------------------------------------------
-    def _sign(self, intent: OrderIntent, approval_id: str) -> str:
-        msg = f"{approval_id}|{intent.client_order_id}|{intent.symbol}|{intent.side.value}|{intent.qty}"
+    def _sign(self, intent: OrderIntent, approval_id: str, intent_hash: str) -> str:
+        # intent_hash covers order_type/limit_price/stop_price/take_profit/TIF
+        # as well; without it the signature bound only side and quantity and an
+        # approved MARKET buy could be replayed as a LIMIT or STOP order.
+        msg = (f"{approval_id}|{intent.client_order_id}|{intent.symbol}|"
+               f"{intent.side.value}|{intent.qty}|{intent_hash}")
         return hmac.new(self._signing_key, msg.encode(), hashlib.sha256).hexdigest()
 
     def verify_signature(self, approval: RiskApproval) -> bool:
         msg = (f"{approval.approval_id}|{approval.client_order_id}|{approval.symbol}|"
-               f"{approval.side.value}|{approval.qty}")
+               f"{approval.side.value}|{approval.qty}|{approval.intent_hash}")
         expected = hmac.new(self._signing_key, msg.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, approval.signature)
 
@@ -142,6 +147,17 @@ class MasterRiskController:
 
         px = entry_price or intent.limit_price or intent.stop_price or 0.0
         order_value = intent.qty * px
+
+        # A price of 0 is not "free", it is "unknown". Every notional check
+        # below multiplies by px, so an unpriced BUY used to pass leverage,
+        # cash, exposure and position-size vacuously — a $1M order on a $5k
+        # account was approved and signed. An unknown price must reject.
+        if intent.side is Action.BUY and px <= 0:
+            check("priceable_order", False,
+                  "no entry/limit/stop price available — notional checks cannot "
+                  "be evaluated, so the order cannot be approved (§42)")
+        else:
+            check("priceable_order", True, f"reference price {px:.4f}")
 
         throttle = throttle_level(view.drawdown, cfg)
 
@@ -256,11 +272,13 @@ class MasterRiskController:
             return rejection
 
         approval_id = str(uuid.uuid4())
+        intent_hash = order_intent_hash(intent)
         approval = RiskApproval(approval_id=approval_id,
                                 client_order_id=intent.client_order_id,
                                 symbol=intent.symbol, side=intent.side, qty=intent.qty,
+                                intent_hash=intent_hash,
                                 checks=tuple(checks), risk_state=self.state.value,
                                 approved_at=now,
-                                signature=self._sign(intent, approval_id))
+                                signature=self._sign(intent, approval_id, intent_hash))
         self.decisions_log.append(approval)
         return approval

@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 from packages.common.clock import Clock
-from packages.common.environment import Environment
+from packages.common.environment import Environment, require_same_environment
 from packages.common.ledger import Ledger
 from packages.common.provenance import ProvenanceStore
 from packages.schemas.core import (
@@ -121,8 +121,11 @@ class TradingPipeline:
     execution: ExecutionEngine
     ledger: Ledger
     provenance: ProvenanceStore
-    auditor: IndependentAuditor = field(default_factory=lambda: IndependentAuditor(model=None,
-                                                                                  audit_all=False))
+    # Required, and never defaulted: the previous default_factory produced
+    # `IndependentAuditor(model=None, audit_all=False)` — the single most
+    # permissive configuration possible — so any caller that forgot to pass an
+    # auditor silently got "every order passes, audited by nobody".
+    auditor: IndependentAuditor
     audit_log: PreTradeAuditLog = field(default_factory=PreTradeAuditLog)
     decision_quality: DecisionQualityEngine = field(default_factory=DecisionQualityEngine)
     post_trade: PostTradeTracker = field(default_factory=PostTradeTracker)
@@ -135,6 +138,18 @@ class TradingPipeline:
     # (§27); looked back up at order-placement time to carry skeptic_id into
     # the Approved Order Snapshot without widening SizedProposal.
     _final_theses: dict[str, FinalTradeThesis] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """§73: reject a mixed-environment component graph at construction.
+
+        `require_same_environment` existed but had no production caller, so
+        nothing noticed that `IndependentAuditor` carried its own environment.
+        A LIVE pipeline holding a PAPER auditor is exactly the configuration
+        that turns the LIVE fail-closed audit into a fail-open one, so it must
+        be impossible to build rather than merely discouraged.
+        """
+        require_same_environment(self.environment, self.execution.environment,
+                                 self.auditor.environment)
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
         """Read-only view for callers outside the pipeline (the status API's

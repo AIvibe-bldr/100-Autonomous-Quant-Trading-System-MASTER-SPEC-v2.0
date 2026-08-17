@@ -88,7 +88,8 @@ def test_decision_buy_but_order_sell_is_rejected():
     order, and a SELL of a held position is perfectly legal to it.  Only the
     audit, which compares the order against the decision that produced it, can
     tell that the order does not mean what the decision said."""
-    auditor = IndependentAuditor(model=MockAuditModel(), audit_all=True)
+    auditor = IndependentAuditor(model=MockAuditModel(), environment=Environment.PAPER,
+                                 audit_all=True)
     out = auditor.audit(make_decision("AAPL", action=Action.BUY), _sized(),
                         _intent(side=Action.SELL), CTX)
     assert out.verdict is AuditVerdict.REJECT
@@ -97,7 +98,8 @@ def test_decision_buy_but_order_sell_is_rejected():
 
 def test_symbol_swap_between_decision_and_order_is_rejected():
     """Symbol変更 → REJECT."""
-    auditor = IndependentAuditor(model=MockAuditModel(), audit_all=True)
+    auditor = IndependentAuditor(model=MockAuditModel(), environment=Environment.PAPER,
+                                 audit_all=True)
     out = auditor.audit(make_decision("AAPL"), _sized("AAPL"), _intent(symbol="TSLA"), CTX)
     assert out.verdict is AuditVerdict.REJECT
     assert any(c.check == "symbol_match" for c in out.detected_conflicts)
@@ -246,13 +248,39 @@ def _approved(pipeline, cid: str, qty: float, symbol: str = "AAPL") -> RiskAppro
     return RiskApprovedOrder(intent=intent, approval=verdict)
 
 
-def test_quantity_changed_after_approval_fails_hash_check(pipeline):
-    """Risk Approval後にQuantity変更 → HASH MISMATCH → REJECT."""
-    approved_3 = _approved(pipeline, "spec28-hash-0001", qty=3.0)
+def test_quantity_changed_after_approval_is_rejected_at_construction(pipeline):
+    """Risk Approval後にQuantity変更 → REJECT.
+
+    The approval now carries `intent_hash` over the full execution field list,
+    so a mutated intent can no longer even be paired with its approval — the
+    rejection happens when `RiskApprovedOrder` is built, before anything
+    downstream gets a chance to be fooled."""
+    approved = _approved(pipeline, "spec28-hash-0001", qty=3.0)
+    # qty is one of the four fields the approval carries in the clear, so the
+    # cleartext comparison catches it first; order_type/price changes are the
+    # ones that need the hash (see test_order_type_change_after_approval_rejected)
+    with pytest.raises(ValueError, match="does not match order intent"):
+        RiskApprovedOrder(intent=approved.intent.model_copy(update={"qty": 9.0}),
+                          approval=approved.approval)
+
+
+def test_snapshot_from_a_different_approval_is_rejected(pipeline):
+    """A snapshot only authorizes the approval it was frozen against."""
+    approved_3 = _approved(pipeline, "spec28-hash-0001b", qty=3.0)
     snapshot_3 = ApprovedOrderSnapshot.from_approved(approved_3)
-    tampered = _approved(pipeline, "spec28-hash-0002", qty=9.0)
-    with pytest.raises(OrderTamperError, match="re-audit"):
-        pipeline.execution.submit(tampered, snapshot=snapshot_3)
+    other = _approved(pipeline, "spec28-hash-0002", qty=9.0)
+    with pytest.raises(OrderTamperError, match="approval/snapshot mismatch"):
+        pipeline.execution.submit(other, snapshot=snapshot_3)
+
+
+def test_execution_cannot_mint_its_own_snapshot(pipeline):
+    """A4-2/INV-18: the engine must be handed a witness, not write one.
+
+    Minting a snapshot from the order under inspection made the hash check
+    self-fulfilling — the tampered order hashed to a snapshot of itself."""
+    approved = _approved(pipeline, "spec28-hash-0003", qty=1.0)
+    with pytest.raises(OrderTamperError, match="cannot mint its own"):
+        pipeline.execution.submit(approved)
 
 
 def test_symbol_changed_after_approval_fails_hash_check(pipeline):
@@ -558,7 +586,8 @@ def test_human_proposal_has_no_privileged_field():
 def test_unanimous_ai_approval_still_loses_to_master_risk(pipeline):
     """AIが全員PASSしてもMaster RiskがREJECTなら発注禁止 — the authority
     hierarchy is not a vote."""
-    auditor = IndependentAuditor(model=MockAuditModel(), audit_all=True)
+    auditor = IndependentAuditor(model=MockAuditModel(), environment=Environment.PAPER,
+                                 audit_all=True)
     audit = auditor.audit(make_decision("AAPL"), _sized(), _intent(), CTX)
     assert audit.verdict is AuditVerdict.PASS          # every AI is happy
 

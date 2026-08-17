@@ -128,13 +128,15 @@ def test_approved_order_snapshot_carries_skeptic_id():
     from packages.schemas.audit import ApprovedOrderSnapshot
     from packages.schemas.core import (
         Action, OrderIntent, OrderType, RiskApproval, RiskApprovedOrder,
+        order_intent_hash,
     )
 
     intent = OrderIntent(client_order_id="thesis-snap-0001", proposal_id="p1", symbol="AAPL",
                          side=Action.BUY, qty=1.0, order_type=OrderType.MARKET,
                          environment=Environment.PAPER, created_at=SESSION_TIME)
     approval = RiskApproval(approval_id="a1", client_order_id=intent.client_order_id,
-                            symbol="AAPL", side=Action.BUY, qty=1.0, checks=(),
+                            symbol="AAPL", side=Action.BUY, qty=1.0,
+                            intent_hash=order_intent_hash(intent), checks=(),
                             risk_state="NORMAL", approved_at=SESSION_TIME, signature="sig")
     approved = RiskApprovedOrder(intent=intent, approval=approval)
     snap = ApprovedOrderSnapshot.from_approved(approved, decision_id="d1",
