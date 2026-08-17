@@ -88,7 +88,9 @@ System Health / PAPER・LIVEバッジ / MASTER STOP状態表示）。Next.js/Typ
 
 read-onlyエンドポイント: `/health`（環境バッジ・Risk状態 §73,97）/ `/portfolio`（Simple Mode §86、
 Two P&L §81）/ `/chart`（§87）/ `/holdings`（§88-89）/ `/themes`（§90）/ `/session`
-（ファネルとNO TRADE理由 §93）/ `/features`（§94）/ `/risk-config`（閲覧のみ §39）。
+（ファネルとNO TRADE理由 §93）/ `/decision-quality`（ADDENDUM A2）/ `/order-safety`（ADDENDUM A7）/
+`/final-trade-theses`（Decision×Skeptic統合とdisagreement_score §27）/
+`/monitor`（Monitor AI、異常検知時のみconsult §66）/ `/features`（§94）/ `/risk-config`（閲覧のみ §39）。
 **書き込み系エンドポイントは存在しない**（テストで強制）。
 
 ## 実LLM接続（Decision AI / Skeptic AI / Audit AI）

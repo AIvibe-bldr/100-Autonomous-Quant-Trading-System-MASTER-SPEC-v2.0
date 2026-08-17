@@ -54,6 +54,18 @@
   .status-err { color: var(--red); }
   .master-stop { background: #da363322; border: 1px solid var(--red); color: var(--red);
                  font-weight: 700; padding: 6px 16px; border-radius: 6px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 10px;
+           font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+  .badge-ok { background: #3fb95022; color: var(--green); border: 1px solid var(--green); }
+  .badge-notify { background: #1f6feb22; color: var(--blue); border: 1px solid var(--blue); }
+  .badge-review { background: #d2992222; color: var(--amber); border: 1px solid var(--amber); }
+  .badge-escalate { background: #da363322; color: var(--red); border: 1px solid var(--red); }
+  .thesis-row { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  .thesis-row:last-child { border-bottom: none; }
+  .thesis-head { display: flex; justify-content: space-between; align-items: center;
+                 font-size: 13px; }
+  .thesis-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .thesis-obj { color: var(--muted); font-size: 12px; margin-top: 4px; }
   footer { color: var(--muted); font-size: 11px; text-align: center; margin-top: 12px; }
 </style>
 </head>
@@ -118,6 +130,23 @@
   </div>
 </section>
 
+<section><h2>Final Trade Thesis (§27)</h2>
+  <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    Decision AI × Skeptic AI の統合結果。disagreement_score は Skeptic の
+    severity を Decision の confidence で重み付けした値（自信満々な判断への
+    反証ほど強いシグナル）。
+  </div>
+  <div id="theses"></div>
+</section>
+
+<section><h2>Monitor AI (§66)</h2>
+  <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    異常検知時のみconsult（Broker発注・Position変更・Risk Rule変更・System設定変更は
+    一切不可 — recommendationは要請であり実行ではない）。
+  </div>
+  <div id="monitor"></div>
+</section>
+
 <section><h2>System Health (§97)</h2><div id="health"></div></section>
 
 <footer>read-only dashboard — 設定変更・発注機能は存在しません（§39, §78）</footer>
@@ -148,10 +177,18 @@ function drawChart(series) {
   ctx.stroke();
 }
 
+function recBadge(rec) {
+  const cls = rec === "CONTINUE_MONITORING" ? "badge-ok"
+            : rec === "NOTIFY" ? "badge-notify"
+            : rec === "QUEUE_HUMAN_REVIEW" ? "badge-review"
+            : "badge-escalate";
+  return `<span class="badge ${cls}">${rec}</span>`;
+}
+
 async function refresh() {
-  const [health, p, chart, holdings, themes, session, dq, os] = await Promise.all([
+  const [health, p, chart, holdings, themes, session, dq, os, theses, mon] = await Promise.all([
     j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session"),
-    j("/decision-quality"), j("/order-safety")]);
+    j("/decision-quality"), j("/order-safety"), j("/final-trade-theses"), j("/monitor")]);
 
   const env = $("env");
   env.textContent = health.environment;                     // §73: 常時表示
@@ -222,6 +259,31 @@ async function refresh() {
   const recon = $("osRecon");
   recon.textContent = os.broker_reconciliation;
   recon.className = "value " + (os.broker_reconciliation === "OK" ? "pos" : "neg");
+
+  // Final Trade Thesis (§27)
+  $("theses").innerHTML = theses.length ? theses.map(t => `
+    <div class="thesis-row">
+      <div class="thesis-head">
+        <span><b>${t.symbol}</b> ${t.action} · confidence ${fmt(t.confidence*100,0)}%</span>
+        <span>disagreement ${fmt(t.disagreement_score*100,0)}%</span>
+      </div>
+      <div class="thesis-meta">decision_id=${t.decision_id} · skeptic_id=${t.skeptic_id}
+        ${t.skeptic_severity !== null ? "· skeptic severity " + fmt(t.skeptic_severity*100,0) + "%" : ""}</div>
+      ${t.skeptic_objections.length ? `<div class="thesis-obj">反証: ${t.skeptic_objections.join(" / ")}</div>` : ""}
+    </div>`).join("")
+    : `<div style="color:var(--muted)">このセッションで生き残ったBUY候補はありません</div>`;
+
+  // Monitor AI (§66)
+  const mDiv = $("monitor");
+  if (!mon.consulted) {
+    mDiv.innerHTML = `${recBadge(mon.recommendation)}
+      <span style="color:var(--muted);margin-left:8px">${mon.findings[0]}</span>`;
+  } else {
+    mDiv.innerHTML = `${recBadge(mon.recommendation)}
+      <span style="margin-left:8px">severity ${fmt(mon.severity*100,0)}%</span>
+      <span style="color:var(--muted);margin-left:8px">(${mon.model})</span>
+      <ul class="reasons">${mon.findings.map(f => `<li>· ${f}</li>`).join("")}</ul>`;
+  }
 
   const dh = health.data_health;
   $("health").innerHTML =

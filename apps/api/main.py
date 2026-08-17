@@ -20,16 +20,26 @@ DASHBOARD_HTML = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
 
 from packages.common.risk_config import RiskConfig
 from services.cost_manager.engine import OperatingCostEngine
+from services.decision.monitor import (
+    MockMonitorModel,
+    MonitorContext,
+    MonitorSupervisor,
+    anomaly_present,
+)
 from services.feature_manager.store import FeatureStatus, FeatureStore
 from services.pipeline import PipelineResult, TradingPipeline
+from services.supervisor.heartbeat import HeartbeatRegistry
 
 
 def create_app(pipeline: TradingPipeline,
                cost_engine: Optional[OperatingCostEngine] = None,
-               feature_store: Optional[FeatureStore] = None) -> FastAPI:
+               feature_store: Optional[FeatureStore] = None,
+               monitor: Optional[MonitorSupervisor] = None,
+               heartbeats: Optional[HeartbeatRegistry] = None) -> FastAPI:
     app = FastAPI(title="Quant Trading Platform — Status API", version="0.1.0")
     cost_engine = cost_engine or OperatingCostEngine()
     feature_store = feature_store or FeatureStore()
+    monitor = monitor or MonitorSupervisor(model=MockMonitorModel())
     last_result: dict[str, Any] = {"result": None}
     equity_series: list[dict[str, Any]] = []
 
@@ -181,6 +191,59 @@ def create_app(pipeline: TradingPipeline,
             "OK" if pipeline.risk_controller.state.value == "NORMAL" else
             pipeline.risk_controller.state.value)
         return summary
+
+    @app.get("/final-trade-theses")
+    def final_trade_theses() -> list[dict[str, Any]]:
+        """Final Trade Thesis panel (§27): each surviving BUY candidate this
+        session, showing which Skeptic agent reviewed it and how much the
+        Decision AI and Skeptic AI disagreed (`disagreement_score`) even
+        though the Skeptic did not veto."""
+        out = []
+        for thesis in pipeline.final_theses().values():
+            decision = thesis.proposal.decision
+            skeptic = thesis.proposal.skeptic
+            out.append({
+                "decision_id": thesis.decision_id,
+                "skeptic_id": thesis.skeptic_id,
+                "symbol": thesis.proposal.symbol,
+                "action": decision.action.value,
+                "confidence": decision.confidence,
+                "disagreement_score": thesis.disagreement_score,
+                "skeptic_severity": skeptic.severity if skeptic else None,
+                "skeptic_objections": list(skeptic.objections) if skeptic else [],
+                "created_at": thesis.created_at.isoformat(),
+            })
+        out.sort(key=lambda t: t["created_at"], reverse=True)
+        return out
+
+    @app.get("/monitor")
+    def monitor_status() -> dict[str, Any]:
+        """Monitor AI panel (§66). Consulted only on anomaly — an unhealthy
+        heartbeat, elevated drawdown, non-NORMAL risk state, or a recent
+        near-miss — never on every refresh, so a quiet system costs no model
+        call here either (`anomaly_present`)."""
+        now = pipeline.clock.now()
+        snap = pipeline.ledger.snapshot(_prices())
+        recent_misses = tuple(
+            f"{m.kind.value}: {m.detail}" if m.detail else m.kind.value
+            for m in pipeline.audit_log.near_misses[-5:])
+        ctx = MonitorContext(
+            now=now,
+            heartbeats=heartbeats.snapshot() if heartbeats else {},
+            risk_state=pipeline.risk_controller.state.value,
+            drawdown=snap.drawdown,
+            open_positions={s: lot.qty for s, lot in pipeline.ledger.positions.items()},
+            recent_near_misses=recent_misses)
+        if not anomaly_present(ctx):
+            # §66: nothing to report, and no model call spent reporting it
+            return {"consulted": False, "recommendation": "CONTINUE_MONITORING",
+                    "severity": 0.0,
+                    "findings": ["no anomaly detected — Monitor AI not consulted (§66)"],
+                    "risk_state": ctx.risk_state, "drawdown": ctx.drawdown}
+        out = monitor.review(ctx)
+        result = out.model_dump(mode="json")
+        result["consulted"] = True
+        return result
 
     @app.get("/risk-config")
     def risk_config() -> dict[str, Any]:

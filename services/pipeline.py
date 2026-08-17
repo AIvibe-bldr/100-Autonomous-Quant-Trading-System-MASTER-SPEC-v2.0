@@ -136,6 +136,12 @@ class TradingPipeline:
     # the Approved Order Snapshot without widening SizedProposal.
     _final_theses: dict[str, FinalTradeThesis] = field(default_factory=dict, repr=False)
 
+    def final_theses(self) -> dict[str, FinalTradeThesis]:
+        """Read-only view for callers outside the pipeline (the status API's
+        Final Trade Thesis panel, §27) — a copy, so nothing external can
+        mutate pipeline state through it."""
+        return dict(self._final_theses)
+
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
                          had_stop_plan: bool = False, skeptic_consulted: bool = False,

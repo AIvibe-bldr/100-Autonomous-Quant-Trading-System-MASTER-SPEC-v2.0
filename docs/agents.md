@@ -76,6 +76,11 @@ Skeptic severityをDecision confidenceで重み付け — 自信満々な判断�
 `ApprovedOrderSnapshot` まで伝播し、実行された注文の監査証跡に「どのSkeptic
 Agentがレビューしたか」が残る。
 
+ダッシュボード表示は `/final-trade-theses`（`apps/api/main.py`、
+`TradingPipeline.final_theses()` の読み取り専用ビュー経由）。
+symbol・action・confidence・disagreement_score・skeptic_id・Skepticの反証を
+セッション内の各候補について一覧表示する。
+
 ## Decision の6値（§2）
 
 `DecisionAction` = BUY / SELL / HOLD / WAIT / NO_TRADE / AVOID。
@@ -174,6 +179,10 @@ class MonitorModel(Protocol):
 - Claude実装は `ClaudeMonitorModel`（`services/decision/claude_adapters.py`）。
   `build_monitor()` で個別に構築（Decision/Skeptic/Auditとはトリガーが異なるため
   `build_llm_stack()` には含めない）
+- ダッシュボード表示は `/monitor`（`apps/api/main.py`）: 異常なしの場合は
+  `anomaly_present()` の判定のみでモデルを一切呼ばず `CONTINUE_MONITORING` を返す
+  （§66の「異常時のみconsult」というコスト契約をAPI層でも維持）。異常時のみ
+  実際に `MonitorSupervisor.review()` を呼び、findings/severity/recommendationを表示
 
 ## Confidence Calibration (§31)
 
