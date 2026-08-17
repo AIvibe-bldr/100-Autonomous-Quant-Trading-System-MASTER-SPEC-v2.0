@@ -1,12 +1,20 @@
-"""Paper trading demo using the REAL Claude API for Decision / Skeptic /
-Audit AI (MASTER SPEC §27-31, ADDENDUM A3), instead of the deterministic
+"""Paper trading demo using the REAL LLM APIs for Decision / Skeptic /
+Audit AI (MASTER SPEC §25, §27-31, ADDENDUM A3), instead of the deterministic
 Mocks used everywhere else in this repo.
 
 Requires `pip install anthropic` and Anthropic credentials (ANTHROPIC_API_KEY,
-or `ant auth login`). Without credentials this falls back to the Mock stack
-automatically and says so — the script always runs.
+or `ant auth login`) — Skeptic AI and Audit AI are Claude Opus, non-negotiably
+(§25), so Anthropic credentials gate the whole real-LLM path. Without them
+this falls back to the Mock stack automatically and says so — the script
+always runs.
 
-Usage:  python3 scripts/run_llm_paper_demo.py [--days N] [--decision-model ID]
+Decision AI is separately specified as GPT-5.6 Sol on OpenAI (§25):
+`build_llm_stack` picks it automatically when `OPENAI_API_KEY` (plus
+`pip install openai`) is also configured, and falls back to the same Claude
+model as Skeptic/Audit otherwise — see `resolve_decision_agent` in
+packages/common/llm_client.py.
+
+Usage:  python3 scripts/run_llm_paper_demo.py [--days N]
 
 Model tiers default to a cost-aware split (see packages/common/llm_client.py):
 Decision AI runs on every scanned candidate, Skeptic AI only on BUY
@@ -49,8 +57,11 @@ def main() -> None:
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor)
-        print(f"=== LIVE Claude API ===\n"
-              f"  Decision AI : {cfg.decision.agent_id}\n"
+        # decision.name reflects whichever provider build_llm_stack actually
+        # resolved (OpenAI if configured, Claude fallback otherwise) — never
+        # trust cfg.decision.agent_id here, it only names the fallback (§25)
+        print(f"=== LIVE LLM APIs ===\n"
+              f"  Decision AI : {decision.name}\n"
               f"  Skeptic AI  : {cfg.skeptic.agent_id}\n"
               f"  Audit AI    : {cfg.audit.agent_id}  (separate agent, same model)")
     else:

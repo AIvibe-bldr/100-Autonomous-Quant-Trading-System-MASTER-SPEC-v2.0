@@ -41,6 +41,16 @@ Skeptic と Pre-Trade Audit は**同じモデルを共有するが別Agent**で�
 （`packages/common/llm_client.py` の `AgentModel.agent_id`）。
 一方が他方の代わりを務めることはできない。
 
+Decision AI の Provider は自動解決される（`llm_client.resolve_decision_agent`）:
+`OPENAI_API_KEY` が設定済みなら OpenAI（`OpenAIDecisionModel`、
+`services/decision/openai_adapters.py`）、未設定なら Claude
+（`ClaudeDecisionModel`）にフォールバックする。`build_llm_stack()` がこの解決を
+行うため、呼び出し側はどちらが選ばれたかを気にする必要がない。
+どちらのProviderでも**同一の system prompt / user prompt構築**
+（`services/decision/prompts.py`）を使うため、Provider切替が判断内容の
+差異を生まない。Skeptic / Pre-Trade Audit / Monitor は Claude Opus 固定
+（フォールバック先ではなく、これ自体が仕様上の割当）。
+
 Scanner / Loss計算 / Position Sizing / Capital Allocation / Risk Controller /
 AI Orchestrator / Order Hash / Execution / Reconciliation / Settlement /
 Supervisor / Outcome数値採点は**Pythonの決定論コード**であり、LLMは関与しない。
@@ -90,9 +100,14 @@ class DecisionModel(Protocol):
   expected_return_range, bull/base/bear case, key_evidence, counter_evidence,
   risk_factors, invalidation_conditions, unknowns, decision_version
 - pydantic 検証に失敗した出力は Reject し、リトライ回数上限つきで再要求
-- 実モデル（GPT系等を想定 §27）は `DecisionModel` 実装として差し替え。V1は決定論的Mockが既定。
-  実LLM実装は `services/decision/claude_adapters.py`（Claude API、`client.messages.parse`による
-  Structured Outputs）。認証情報の有無で自動的にMock/実LLMを切替可能（`packages/common/llm_client.py`）
+- 実モデルは `DecisionModel` Protocol実装として差し替え可能。V1は決定論的Mockが既定
+- 実LLM実装は2種類、`build_llm_stack()` が自動選択（`services/decision/claude_adapters.py`）:
+  - `OpenAIDecisionModel`（`services/decision/openai_adapters.py`）— 仕様通りのGPT-5.6 Sol。
+    `beta.chat.completions.parse` によるStructured Outputs。`OPENAI_API_KEY` 設定時に選ばれる
+  - `ClaudeDecisionModel`（`claude_adapters.py`）— OpenAI未設定時のフォールバック。
+    `client.messages.parse` によるStructured Outputs
+  - 両者は `services/decision/prompts.py` の同一 system/user prompt を使用
+- 認証情報の有無で自動的にMock/実LLMを切替可能（`packages/common/llm_client.credentials_available`）
 
 ## Skeptic AI (§29)
 

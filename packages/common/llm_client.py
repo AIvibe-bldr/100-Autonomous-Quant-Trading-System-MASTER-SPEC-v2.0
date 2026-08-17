@@ -20,12 +20,19 @@ Two things live here:
 | Judge AI          | GPT-5.6 Sol       | recommends, never promotes                  |
 | Builder / Research| Claude Fable 5    | alpha & feature generation                  |
 
-Decision AI and Judge AI are specified as GPT-5.6 Sol. Until an OpenAI
-credential is configured this module resolves them to a Claude model of
-equivalent tier so the system runs end-to-end; `DECISION_PROVIDER_TARGET`
-records the intended provider so the substitution is visible rather than
-silent. No module here imports `packages.broker_adapters` — no AI role ever
-receives broker credentials (§26-10).
+Decision AI and Judge AI are specified as GPT-5.6 Sol on OpenAI. For Decision
+AI, `resolve_decision_agent()` is the real seam: it picks OpenAI when
+`OPENAI_API_KEY` is configured (`services/decision/openai_adapters.py`) and
+falls back to a Claude model of equivalent tier otherwise, so the system
+still runs end-to-end without one; `DECISION_PROVIDER_TARGET` records the
+intended provider so the substitution is visible rather than silent. Judge AI
+has a slot here (`LLMModelConfig.judge`) but no adapter calls it yet —
+`AlphaJudge` (services/alpha_factory/factory.py) is fully deterministic
+Python today (backtest / walk-forward / Monte Carlo gates), consistent with
+§14's "the Judge recommends mechanically" but short of the GPT-5.6 Sol
+assignment named in the spec. No module here imports
+`packages.broker_adapters` — no AI role ever receives broker credentials
+(§26-10).
 """
 from __future__ import annotations
 
@@ -42,6 +49,13 @@ class LLMUnavailableError(RuntimeError):
     Callers already treat an unavailable model as a hard stop for mandatory
     checks (INV-19, §9) — this exception is what triggers that path.
     """
+
+
+class LLMCallError(RuntimeError):
+    """A call to a provider's API failed (network, refusal, malformed
+    structured output). Provider-specific adapters raise a subclass of this
+    (`ClaudeAPIError`, `OpenAIAPIError`) so callers that don't care which
+    provider is behind a given role can catch one type."""
 
 
 class Provider(str, enum.Enum):
@@ -168,3 +182,18 @@ def get_client(provider: Provider = Provider.ANTHROPIC) -> Any:
             "no Anthropic credentials found — set ANTHROPIC_API_KEY or run "
             "`ant auth login`")
     return anthropic.Anthropic()
+
+
+def resolve_decision_agent(config: "LLMModelConfig | None" = None) -> AgentModel:
+    """§25: Decision AI is specified as GPT-5.6 Sol on OpenAI. If an OpenAI
+    credential is actually configured, use it; otherwise fall back to the
+    Claude model `config.decision` already names, so the system still runs
+    end-to-end rather than raising for a provider nobody has set up yet.
+    The substitution is a return value here, not a silent default, so
+    callers (and their logs) can see which provider actually served the
+    role for a given run."""
+    cfg = config or DEFAULT_MODEL_CONFIG
+    if credentials_available(Provider.OPENAI):
+        return AgentModel(role=AgentRole.DECISION, provider=Provider.OPENAI,
+                          model=OPENAI_DECISION_MODEL, max_tokens=cfg.decision.max_tokens)
+    return cfg.decision

@@ -402,10 +402,10 @@ def test_injected_news_is_rendered_as_quoted_data_not_instructions():
     """The prompt builder must fence external text and tell the model it is
     data.  If this ever regressed to plain concatenation the injection would
     at least become *plausible*, so the fencing is worth asserting."""
-    from services.decision.claude_adapters import _render_news
+    from services.decision.prompts import render_news
 
-    rendered = _render_news([UntrustedText(source="wire", url="https://example.invalid/x",
-                                           text=INJECTION)])
+    rendered = render_news([UntrustedText(source="wire", url="https://example.invalid/x",
+                                          text=INJECTION)])
     assert "<untrusted_external_data" in rendered
     assert "</untrusted_external_data>" in rendered
     assert INJECTION in rendered          # present, but as fenced content
