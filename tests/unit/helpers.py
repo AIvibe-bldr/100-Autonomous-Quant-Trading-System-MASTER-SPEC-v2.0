@@ -15,6 +15,20 @@ from packages.schemas.core import (
 TS = datetime(2026, 8, 11, 15, 0, tzinfo=timezone.utc)
 
 
+def submit_approved(pipeline, order):
+    """Submit with the snapshot the pipeline would have frozen.
+
+    `ExecutionEngine.submit` requires a snapshot — it no longer mints one,
+    because a snapshot minted from the order being checked can only ever
+    agree with it. Tests that just need an order through the door use this;
+    tests about tampering pass a deliberately mismatched snapshot instead.
+    """
+    from packages.schemas.audit import ApprovedOrderSnapshot
+
+    return pipeline.execution.submit(
+        order, snapshot=ApprovedOrderSnapshot.from_approved(order))
+
+
 def make_decision(symbol: str = "AAPL", action: Action = Action.BUY) -> DecisionOutput:
     return DecisionOutput(
         symbol=symbol, action=action, confidence=0.7, expected_horizon="1w",

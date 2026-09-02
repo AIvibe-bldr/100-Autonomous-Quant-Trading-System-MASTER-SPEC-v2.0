@@ -28,6 +28,7 @@ from packages.schemas.core import (
     RiskApproval,
     RiskCheck,
     RiskRejection,
+    order_intent_hash,
 )
 from services.data_validation.integrity import DataHealth
 
@@ -81,6 +82,13 @@ class PortfolioRiskView:
     reconciliation_ok: bool
     data_health: DataHealth
     broker_connected: bool
+    # §10: these were previously enforced only in upstream engines; the Master
+    # Risk Controller re-checks them so the final authority verifies the full
+    # list itself rather than trusting a caller to have done it.
+    spread_pct: float = 0.0                    # (ask-bid)/mid at decision time
+    known_client_order_ids: frozenset[str] = frozenset()
+    signal_age_sec: float = 0.0
+    margin_requirement: float = 0.0            # must be 0 in a cash account
 
 
 @dataclass
@@ -112,13 +120,17 @@ class MasterRiskController:
         return True, ""
 
     # -- signature ----------------------------------------------------------
-    def _sign(self, intent: OrderIntent, approval_id: str) -> str:
-        msg = f"{approval_id}|{intent.client_order_id}|{intent.symbol}|{intent.side.value}|{intent.qty}"
+    def _sign(self, intent: OrderIntent, approval_id: str, intent_hash: str) -> str:
+        # intent_hash covers order_type/limit_price/stop_price/take_profit/TIF
+        # as well; without it the signature bound only side and quantity and an
+        # approved MARKET buy could be replayed as a LIMIT or STOP order.
+        msg = (f"{approval_id}|{intent.client_order_id}|{intent.symbol}|"
+               f"{intent.side.value}|{intent.qty}|{intent_hash}")
         return hmac.new(self._signing_key, msg.encode(), hashlib.sha256).hexdigest()
 
     def verify_signature(self, approval: RiskApproval) -> bool:
         msg = (f"{approval.approval_id}|{approval.client_order_id}|{approval.symbol}|"
-               f"{approval.side.value}|{approval.qty}")
+               f"{approval.side.value}|{approval.qty}|{approval.intent_hash}")
         expected = hmac.new(self._signing_key, msg.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, approval.signature)
 
@@ -135,6 +147,17 @@ class MasterRiskController:
 
         px = entry_price or intent.limit_price or intent.stop_price or 0.0
         order_value = intent.qty * px
+
+        # A price of 0 is not "free", it is "unknown". Every notional check
+        # below multiplies by px, so an unpriced BUY used to pass leverage,
+        # cash, exposure and position-size vacuously — a $1M order on a $5k
+        # account was approved and signed. An unknown price must reject.
+        if intent.side is Action.BUY and px <= 0:
+            check("priceable_order", False,
+                  "no entry/limit/stop price available — notional checks cannot "
+                  "be evaluated, so the order cannot be approved (§42)")
+        else:
+            check("priceable_order", True, f"reference price {px:.4f}")
 
         throttle = throttle_level(view.drawdown, cfg)
 
@@ -218,6 +241,27 @@ class MasterRiskController:
         check("data_health", is_exit or view.data_health is not DataHealth.HALT_ENTRIES,
               f"data health {view.data_health.value}")
 
+        # -- §10: checks re-verified here so the final authority owns the full
+        # list, even though upstream engines also enforce them (defense in depth)
+
+        # 13. no margin: a cash account can never carry a margin requirement
+        check("no_margin", abs(view.margin_requirement) <= 1e-9,
+              f"margin requirement {view.margin_requirement:.2f} must be 0 (§2)")
+
+        # 14. duplicate order id — the execution engine rejects these too, but a
+        # duplicate must never even be approved
+        check("duplicate_order", intent.client_order_id not in view.known_client_order_ids,
+              f"client_order_id {intent.client_order_id} already used (§46)")
+
+        # 15. stale signal: an approval must not be granted on an old signal
+        check("stale_order", is_exit or view.signal_age_sec <= cfg.stale_order_after_sec,
+              f"signal age {view.signal_age_sec:.0f}s exceeds "
+              f"{cfg.stale_order_after_sec:.0f}s (§47)")
+
+        # 16. spread: a spread wide enough to eat the edge blocks entry
+        check("spread", is_exit or view.spread_pct <= cfg.max_spread_pct,
+              f"spread {view.spread_pct:.2%} exceeds cap {cfg.max_spread_pct:.2%}")
+
         failed = [c for c in checks if not c.passed]
         if failed:
             rejection = RiskRejection(client_order_id=intent.client_order_id,
@@ -228,11 +272,13 @@ class MasterRiskController:
             return rejection
 
         approval_id = str(uuid.uuid4())
+        intent_hash = order_intent_hash(intent)
         approval = RiskApproval(approval_id=approval_id,
                                 client_order_id=intent.client_order_id,
                                 symbol=intent.symbol, side=intent.side, qty=intent.qty,
+                                intent_hash=intent_hash,
                                 checks=tuple(checks), risk_state=self.state.value,
                                 approved_at=now,
-                                signature=self._sign(intent, approval_id))
+                                signature=self._sign(intent, approval_id, intent_hash))
         self.decisions_log.append(approval)
         return approval

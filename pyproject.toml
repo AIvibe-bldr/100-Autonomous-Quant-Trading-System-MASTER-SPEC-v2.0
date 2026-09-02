@@ -9,7 +9,25 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-api = ["fastapi>=0.110", "uvicorn>=0.29"]
+api = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]
+llm = ["anthropic>=0.60", "openai>=1.40"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# This repo has no single top-level package — packages/, services/, apps/,
+# scripts/ and tests/ are all top-level directories used directly via
+# pythonpath (see [tool.pytest.ini_options] below), which is why running
+# tests never required `pip install -e .` in the first place. But the README
+# also documents `pip install -e '.[llm]'` as an alternative to installing
+# the LLM SDKs directly, and without this section setuptools' automatic
+# package discovery finds multiple candidate top-level packages and refuses
+# to guess, so that command fails outright. Listing the actual importable
+# packages here (not scripts/ or tests/, which are entry points and test
+# code, not a library) makes `pip install -e .` work as documented.
+include = ["packages*", "services*", "apps*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

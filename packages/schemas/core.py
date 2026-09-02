@@ -7,6 +7,7 @@ rejected, numeric bounds are enforced, and malformed payloads raise —
 from __future__ import annotations
 
 import enum
+import hashlib
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -73,9 +74,49 @@ class Quote(StrictModel):
 # ---------------------------------------------------------------------------
 
 class Action(str, enum.Enum):
+    """Order side — what can actually be sent to a broker (§2).
+
+    Deliberately only two values: an order is a BUY or a SELL. Stances that
+    produce no order (HOLD/WAIT/NO_TRADE/AVOID) live in `DecisionAction`, so
+    a non-order stance cannot accidentally be constructed as an order side.
+    """
+
     BUY = "BUY"
     SELL = "SELL"
+
+
+class DecisionAction(str, enum.Enum):
+    """What the Decision AI concluded (§2 of the role spec).
+
+    Meanings are fixed and enforced downstream:
+      BUY      — open a new long, or add to an approved existing long
+      SELL     — reduce or close an EXISTING long only. Never a short: the
+                 Master Risk Controller enforces sell_qty <= current_long_qty,
+                 and a SELL on an unheld symbol is rejected outright.
+      HOLD     — keep the current long; emits no order
+      WAIT     — no order now; re-evaluate after a condition or interval
+      NO_TRADE — no sufficient edge right now
+      AVOID    — excluded for a period due to risk / data quality / event risk
+    """
+
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+    WAIT = "WAIT"
     NO_TRADE = "NO_TRADE"
+    AVOID = "AVOID"
+
+    @property
+    def is_order(self) -> bool:
+        """True only for stances that produce a broker order."""
+        return self in (DecisionAction.BUY, DecisionAction.SELL)
+
+    def to_order_side(self) -> "Action":
+        """Convert to an order side; raises for non-order stances so a HOLD
+        can never be mistaken for a tradeable instruction."""
+        if not self.is_order:
+            raise ValueError(f"{self.value} produces no order and has no side")
+        return Action.BUY if self is DecisionAction.BUY else Action.SELL
 
 
 class ScenarioCase(StrictModel):
@@ -89,7 +130,7 @@ class DecisionOutput(StrictModel):
     bull/base/bear each carry a target and probability."""
 
     symbol: str = Field(min_length=1, max_length=12)
-    action: Action
+    action: DecisionAction   # 6 stances; only BUY/SELL produce an order
     confidence: float = Field(ge=0.0, le=1.0)
     expected_horizon: str  # e.g. "1d" | "1w" | "1m" | "3m" | "6m"
     expected_return_range: tuple[float, float]
@@ -136,16 +177,50 @@ class ProposalSource(str, enum.Enum):
 class TradeProposal(StrictModel):
     proposal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     symbol: str
-    side: Action  # BUY or SELL only; validated below
+    side: Action  # order side; `Action` itself is BUY/SELL only
     source: ProposalSource
     decision: DecisionOutput
     skeptic: Optional[SkepticOutput] = None
     created_at: datetime
 
     @model_validator(mode="after")
-    def _side_is_tradeable(self) -> "TradeProposal":
-        if self.side is Action.NO_TRADE:
-            raise ValueError("NO_TRADE cannot become a proposal")
+    def _side_matches_decision(self) -> "TradeProposal":
+        """A proposal may only exist for an order-producing stance, and its
+        side must match what the Decision AI actually concluded — a HOLD or
+        WAIT can never become an order, and a BUY decision can never become
+        a SELL order here (that mismatch is also caught by Pre-Trade Audit)."""
+        if not self.decision.action.is_order:
+            raise ValueError(
+                f"{self.decision.action.value} produces no order and cannot become a proposal")
+        if self.decision.action.to_order_side() is not self.side:
+            raise ValueError(
+                f"proposal side {self.side.value} contradicts decision "
+                f"{self.decision.action.value}")
+        return self
+
+
+class FinalTradeThesis(StrictModel):
+    """§27 pipeline stage: Decision AI → Skeptic AI → **Final Trade Thesis**
+    → Loss Control. Fuses the two agents' outputs into the one object the
+    rest of the pipeline (and the audit trail) actually carries forward,
+    naming which decision and which skeptic agent produced it — separately
+    from `TradeProposal.skeptic`, which only holds the critique content —
+    and how much they disagreed.
+    """
+
+    thesis_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    decision_id: str = Field(min_length=1)
+    skeptic_id: str = Field(min_length=1)
+    disagreement_score: float = Field(ge=0.0, le=1.0)
+    proposal: TradeProposal
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def _requires_skeptic_review(self) -> "FinalTradeThesis":
+        if self.proposal.skeptic is None:
+            raise ValueError(
+                "a Final Trade Thesis cannot exist without a Skeptic critique on "
+                "its proposal (§27)")
         return self
 
 
@@ -234,6 +309,35 @@ class OrderIntent(StrictModel):
     created_at: datetime
 
 
+def canonical_order_payload(symbol: str, side: "Action", qty: float,
+                            order_type: "OrderType", limit_price: Optional[float],
+                            stop_price: Optional[float], take_profit: Optional[float],
+                            time_in_force: str, client_order_id: str) -> str:
+    """Canonical string form of everything that determines what the broker does.
+
+    Defined here, next to OrderIntent, because it is the order's identity —
+    both the risk approval signature (§42) and the Approved Order Snapshot
+    hash (A4/INV-17) must derive from the SAME field list, or one of them
+    leaves a gap the other believes is covered.
+    """
+    return "|".join([
+        symbol, side.value, f"{qty:.10g}", order_type.value,
+        "" if limit_price is None else f"{limit_price:.10g}",
+        "" if stop_price is None else f"{stop_price:.10g}",
+        "" if take_profit is None else f"{take_profit:.10g}",
+        time_in_force, client_order_id,
+    ])
+
+
+def order_intent_hash(intent: "OrderIntent", take_profit: Optional[float] = None,
+                      time_in_force: str = "DAY") -> str:
+    """SHA-256 over an intent's execution-relevant fields (§42)."""
+    return hashlib.sha256(canonical_order_payload(
+        intent.symbol, intent.side, intent.qty, intent.order_type, intent.limit_price,
+        intent.stop_price, take_profit, time_in_force,
+        intent.client_order_id).encode()).hexdigest()
+
+
 class RiskCheck(StrictModel):
     name: str
     passed: bool
@@ -246,6 +350,15 @@ class RiskApproval(StrictModel):
     The signature binds the approval to the exact order parameters; the
     Execution Engine independently verifies it, so nothing upstream of the
     risk controller (including any AI) can conjure an executable order (§7).
+
+    `intent_hash` is what makes "exact" true. The signature used to cover only
+    approval_id/client_order_id/symbol/side/qty, which left order_type,
+    limit_price, stop_price, take_profit and time_in_force unbound — an
+    approved MARKET buy could be resubmitted as a LIMIT buy at any price, or
+    as a resting STOP order the controller had never seen, and every
+    signature check still passed. `intent_hash` is the canonical order hash
+    (the same one ApprovedOrderSnapshot uses) computed at approval time, so
+    changing ANY execution-relevant field now invalidates the approval.
     """
 
     approval_id: str
@@ -253,6 +366,7 @@ class RiskApproval(StrictModel):
     symbol: str
     side: Action
     qty: float
+    intent_hash: str
     checks: tuple[RiskCheck, ...]
     risk_state: str
     approved_at: datetime
@@ -275,6 +389,15 @@ class RiskApprovedOrder(StrictModel):
         a, i = self.approval, self.intent
         if (a.client_order_id, a.symbol, a.side, a.qty) != (i.client_order_id, i.symbol, i.side, i.qty):
             raise ValueError("risk approval does not match order intent")
+        # The four fields above are the ones the approval carries in the clear;
+        # comparing only those let order_type/limit_price/stop_price be swapped
+        # after approval. The hash covers the full execution field list, so a
+        # tampered intent can no longer be paired with a genuine approval at all.
+        if a.intent_hash != order_intent_hash(i):
+            raise ValueError(
+                "risk approval does not cover these order parameters — an "
+                "execution-relevant field changed after approval; re-risk and "
+                "re-audit required (§42, INV-17)")
         return self
 
 

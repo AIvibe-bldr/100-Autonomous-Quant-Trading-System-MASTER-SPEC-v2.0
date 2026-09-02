@@ -14,12 +14,14 @@ from datetime import datetime
 from typing import Optional
 
 from packages.common.clock import Clock
-from packages.common.environment import Environment
+from packages.common.environment import Environment, require_same_environment
 from packages.common.ledger import Ledger
 from packages.common.provenance import ProvenanceStore
 from packages.schemas.core import (
     Action,
     BrokerFill,
+    DecisionAction,
+    FinalTradeThesis,
     OrderIntent,
     OrderState,
     OrderType,
@@ -28,10 +30,18 @@ from packages.schemas.core import (
     RiskApprovedOrder,
     RiskRejection,
     SizedProposal,
+    StopPlan,
     TradeProposal,
 )
+from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
 from services.capital_allocation.engine import CapitalAllocationEngine
+from services.cost_manager.engine import OperatingCostEngine
 from services.data_validation.integrity import DataIntegrityEngine
+from services.decision.audit import (
+    AuditContext,
+    AuditUnavailableError,
+    IndependentAuditor,
+)
 from services.decision.models import (
     CalibrationTracker,
     DecisionContext,
@@ -40,7 +50,16 @@ from services.decision.models import (
     MockSkepticModel,
     validate_decision,
 )
+from services.decision.thesis import build_final_trade_thesis
+from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
+from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
+from services.pdca.post_trade import PostTradeTracker
+from services.pdca.decision_quality import (
+    DecisionKind,
+    DecisionQualityEngine,
+    DecisionSnapshot,
+)
 from services.loss_control.engine import LossControlEngine, NoStopPlanError
 from services.market_data.service import MarketDataService
 from services.market_data.universe import UniverseManager
@@ -68,8 +87,13 @@ class PipelineResult:
     decision_candidates: int = 0
     skeptic_vetoes: int = 0
     stop_planned: int = 0
+    protective_stops_placed: int = 0
+    stops_triggered: int = 0
     sized: int = 0
     allocated: int = 0
+    audit_passed: int = 0
+    audit_rejected: int = 0
+    audit_review: int = 0        # §8: queued for human review, never auto-sent
     risk_passed: int = 0
     risk_rejected: int = 0
     orders_filled: int = 0
@@ -99,13 +123,237 @@ class TradingPipeline:
     execution: ExecutionEngine
     ledger: Ledger
     provenance: ProvenanceStore
+    # Required, and never defaulted: the previous default_factory produced
+    # `IndependentAuditor(model=None, audit_all=False)` — the single most
+    # permissive configuration possible — so any caller that forgot to pass an
+    # auditor silently got "every order passes, audited by nobody".
+    auditor: IndependentAuditor
+    audit_log: PreTradeAuditLog = field(default_factory=PreTradeAuditLog)
+    decision_quality: DecisionQualityEngine = field(default_factory=DecisionQualityEngine)
+    post_trade: PostTradeTracker = field(default_factory=PostTradeTracker)
+    # Optional (§80-83): when set, every fill's fee is also recorded here for
+    # the cost breakdown/Data ROI picture. The fee already reduced trading_pnl
+    # via the ledger the moment the fill landed — this is visibility, not a
+    # second charge (see OperatingCostEngine.total() / trading_fees_total()).
+    cost_engine: Optional[OperatingCostEngine] = None
     symbol_themes: dict[str, list[str]] = field(default_factory=dict)
     max_new_positions: int = 5
     _order_seq: int = 0
+    # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
+    open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
+    # decision_id -> the Final Trade Thesis built for that decision this session
+    # (§27); looked back up at order-placement time to carry skeptic_id into
+    # the Approved Order Snapshot without widening SizedProposal.
+    _final_theses: dict[str, FinalTradeThesis] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """§73: reject a mixed-environment component graph at construction.
+
+        `require_same_environment` existed but had no production caller, so
+        nothing noticed that `IndependentAuditor` carried its own environment.
+        A LIVE pipeline holding a PAPER auditor is exactly the configuration
+        that turns the LIVE fail-closed audit into a fail-open one, so it must
+        be impossible to build rather than merely discouraged.
+        """
+        require_same_environment(self.environment, self.execution.environment,
+                                 self.auditor.environment)
+
+    def final_theses(self) -> dict[str, FinalTradeThesis]:
+        """Read-only view for callers outside the pipeline (the status API's
+        Final Trade Thesis panel, §27) — a copy, so nothing external can
+        mutate pipeline state through it."""
+        return dict(self._final_theses)
+
+    def _record_fill(self, symbol: str, side_qty: float, price: float, fees: float,
+                     ts: datetime, note: str = "") -> None:
+        """Book a fill on the ledger and, if a cost engine is attached, record
+        its fee for the §80-83 cost breakdown. One call site so every fill —
+        entry, resting-order sync, or stop-out — reports its fee the same way;
+        previously `ledger.record_fill` was called directly from three places
+        and none of them made the fee visible anywhere but trading_pnl."""
+        self.ledger.record_fill(symbol, side_qty, price, fees, ts, note=note)
+        if self.cost_engine is not None:
+            self.cost_engine.record_transaction_fee(
+                at=ts, amount=fees, note=note or symbol)
+
+    def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
+                         now, reference_price: float, decision=None,
+                         had_stop_plan: bool = False, skeptic_consulted: bool = False,
+                         regime: str = "UNKNOWN") -> None:
+        """A1-1: immutable decision snapshot for EVERY decision kind."""
+        from services.data_validation.integrity import DataHealth
+
+        snap = DecisionSnapshot(
+            decision_id=f"{decision_id}:{kind.value}",
+            symbol=symbol, ts=now, reference_price=reference_price, decision=kind,
+            confidence=decision.confidence if decision else 0.5,
+            expected_horizon=decision.expected_horizon if decision else "1w",
+            expected_return_range=(tuple(decision.expected_return_range)
+                                   if decision else (-0.05, 0.05)),
+            scenarios=({"bull": decision.bull_case.model_dump(mode="json"),
+                        "base": decision.base_case.model_dump(mode="json"),
+                        "bear": decision.bear_case.model_dump(mode="json")}
+                       if decision else {}),
+            thesis=decision.base_case.description if decision else "",
+            invalidation_conditions=(tuple(decision.invalidation_conditions)
+                                     if decision else ()),
+            regime=regime,
+            model=self.decision_model.name, model_version=self.decision_model.version,
+            rule_compliant=True, had_stop_plan=had_stop_plan,
+            skeptic_consulted=skeptic_consulted,
+            data_health_ok=self.integrity.health is not DataHealth.HALT_ENTRIES)
+        self.decision_quality.record(snap)
+
+    # -- protective exits (§33-34, §40, §43, INV-15) -------------------------
+    def _adv_shares(self, symbol: str, now: datetime, days: int = 20) -> float:
+        """Real 20-day average daily volume (§41).
+
+        The risk views used to pass a literal 1_000_000 here, which made the
+        Master Risk Controller's liquidity cap a flat 10,000 shares for every
+        symbol — looser than the sizing engine it is supposed to backstop,
+        which already uses the real ADV. A final barrier that is weaker than
+        the layer above it is not a barrier.
+        """
+        try:
+            stamped = self.market_data.bars(symbol, now, days, received_at=now)
+        except Exception:
+            return 0.0   # unknown liquidity must not read as unlimited
+        if not stamped:
+            return 0.0
+        window = stamped[-days:]
+        return sum(s.bar.volume for s in window) / len(window)
+
+    def _settled_cash(self) -> float:
+        """§14: only settled cash is spendable.
+
+        `ledger.cash` is NOT it. The ledger books sale proceeds as cash the
+        moment a fill lands, while the broker correctly holds them unsettled
+        until T+1 — so passing ledger.cash here let the risk controller approve
+        purchases against money that had not settled. The only thing catching
+        those was the broker's own guard, which rejected 116 such orders in a
+        200-session run. The broker is the authority on settlement (§49).
+        """
+        try:
+            return self.execution.broker.get_cash().settled_cash
+        except BrokerDisconnectedError:
+            # Unknown settlement state must not read as "plenty available".
+            return 0.0
+
+    def _exit_risk_view(self, symbol: str, qty: float, now: datetime) -> PortfolioRiskView:
+        prices = self._mark_prices({}, now)
+        pos_notional = self._position_notional({}, now)
+        snapshot = self.ledger.snapshot(prices)
+        return PortfolioRiskView(
+            equity=snapshot.equity, settled_cash=self._settled_cash(),
+            total_exposure_notional=sum(pos_notional.values()),
+            position_notional=pos_notional,
+            position_qty={s: l.qty for s, l in self.ledger.positions.items()},
+            theme_exposure=self._theme_exposure({}, now),
+            symbol_themes=self.symbol_themes, drawdown=snapshot.drawdown,
+            stop_plan_exists=True, gap_risk_score=0.0,
+            adv_shares=self._adv_shares(symbol, now),
+            correlation_to_book=0.0, reconciliation_ok=True,
+            data_health=self.integrity.health, broker_connected=True,
+            spread_pct=self._spread_pct(symbol, now),
+            known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
+            signal_age_sec=0.0, margin_requirement=0.0)
+
+    def place_protective_stop(self, symbol: str, qty: float, stop: StopPlan,
+                              now: datetime, decision_id: str = "") -> bool:
+        """Submit a resting protective STOP SELL so the planned stop actually
+        exists at the broker (§33-34).  Risk-reducing exits stay permitted even
+        under MASTER STOP (§43)."""
+        if qty <= 0:
+            return False
+        self._order_seq += 1
+        intent = OrderIntent(
+            client_order_id=make_client_order_id(self.environment, f"stop{symbol}",
+                                                 self._order_seq),
+            proposal_id=f"protective-{symbol}", symbol=symbol, side=Action.SELL,
+            qty=qty, order_type=OrderType.STOP, stop_price=stop.stop_price,
+            environment=self.environment, is_protective_exit=True, created_at=now)
+        verdict = self.risk_controller.review(intent, self._exit_risk_view(symbol, qty, now))
+        if isinstance(verdict, RiskRejection):
+            self.audit_log.record_near_miss(Stage.RISK, NearMissKind.NO_STOP, now,
+                                            decision_id, intent.client_order_id,
+                                            detail="; ".join(verdict.reasons))
+            return False
+        approved = RiskApprovedOrder(intent=intent, approval=verdict)
+        snapshot = ApprovedOrderSnapshot.from_approved(approved, decision_id=decision_id)
+        log_rec = self.audit_log.open(intent.client_order_id, decision_id, now,
+                                      {"symbol": symbol, "side": "SELL",
+                                       "qty": qty, "protective": True})
+        log_rec.protective_exit = True   # semantic audit N/A: no decision to compare
+        log_rec.risk_result = {"passed": True, "approval_id": verdict.approval_id}
+        log_rec.approved_snapshot_hash = snapshot.hash
+        log_rec.broker_submitted = True
+        state = self.execution.submit(approved, snapshot=snapshot)
+        log_rec.final_state = state.value
+        # Adding to a held position places a SECOND resting stop for the new
+        # shares; the first one stays live at the broker. Accumulate the risk
+        # so the anti-martingale guard sees the position's total risk rather
+        # than only the most recent lot's.
+        prior = self.open_stops.get(symbol)
+        prior_risk = prior[3] if prior else 0.0
+        self.open_stops[symbol] = (intent.client_order_id, stop, stop.entry_price,
+                                   prior_risk + qty * stop.stop_distance)
+        return True
+
+    def manage_open_positions(self, now: datetime) -> tuple[int, int]:
+        """Session-start exit management: let resting stops trigger, book the
+        fills, and feed the learning loops.  Returns (stops_triggered, synced)."""
+        fills = self.execution.sync_open_orders()
+        triggered = 0
+        for f in fills:
+            if f.side is not Action.SELL:
+                # a resting BUY (e.g. a limit entry) that fills later must still
+                # reach the ledger, or ledger and broker drift apart (§48)
+                self._record_fill(f.symbol, f.qty, f.price, f.fees, f.ts,
+                                  note=f.client_order_id)
+                continue
+            # Realized P&L must come from the ledger's weighted average cost,
+            # NOT from the shadow entry price in open_stops. open_stops is
+            # keyed by symbol, so buying more of a held name overwrote the
+            # first stop's entry price, and the whole exit was then priced off
+            # the later entry — feeding the anti-martingale guard (§37/INV-10)
+            # a loss figure that diverged from the ledger by 13% over 200
+            # sessions. The ledger already holds the correct basis.
+            lot_before = self.ledger.positions.get(f.symbol)
+            avg_cost = lot_before.avg_cost if lot_before else f.price
+            self._record_fill(f.symbol, -f.qty, f.price, f.fees, f.ts,
+                              note=f.client_order_id)
+            entry = self.open_stops.get(f.symbol)
+            realized = 0.0
+            if entry is not None:
+                _, stop, _entry_px, risk_amount = entry
+                realized = (f.price - avg_cost) * f.qty - f.fees
+                # §37/INV-10: feed the anti-martingale guard with the outcome
+                self.sizing.record_trade_result(realized_pnl=realized,
+                                                risk_amount=risk_amount)
+                # §50: grade the stop afterwards
+                self.post_trade.track(f.symbol, f.price, f.ts, kind="STOP")
+                if self.ledger.position_qty(f.symbol) <= 1e-9:
+                    self.open_stops.pop(f.symbol, None)
+            # A1-4: the SELL is a decision and is graded too
+            self._record_decision(f"exit-{f.symbol}-{f.ts.date()}", f.symbol,
+                                  DecisionKind.SELL, now, f.price,
+                                  had_stop_plan=True, skeptic_consulted=False)
+            triggered += 1
+        return triggered, len(fills)
 
     def run_session(self, as_of: datetime) -> PipelineResult:
         result = PipelineResult()
         now = as_of
+        # Per-session working state. Theses are only ever read back within the
+        # same run_session (order placement looks up the key written above it),
+        # so keeping earlier sessions' entries leaked ~10 objects/session
+        # forever AND made the §27 dashboard panel show every session ever run
+        # while claiming to show "this session".
+        self._final_theses.clear()
+
+        # 0. Exit management first: resting protective stops may have triggered
+        #    since the last session (§33-34, §43)
+        result.stops_triggered, _ = self.manage_open_positions(now)
 
         # 1. Universe + Scanner (§12, §21)
         symbols = self.universe.symbols_as_of(now.date())
@@ -140,7 +388,27 @@ class TradingPipeline:
                 rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
                 continue
             rec.output = decision.model_dump(mode="json")
-            if decision.action is not Action.BUY:
+            # §2: a SELL is only ever a reduction of an EXISTING long. A SELL
+            # on an unheld symbol is a Decision AI error, not a trade — it is
+            # rejected here and recorded, before any order can be built.
+            if decision.action is DecisionAction.SELL:
+                held = self.ledger.position_qty(scan.symbol)
+                if held <= 0:
+                    result.no_trade_reasons.append(
+                        f"{scan.symbol}: SELL decision on unheld symbol rejected — "
+                        f"shorting is forbidden (§2); AVOID/WAIT/NO_TRADE expected")
+                    self.audit_log.record_near_miss(
+                        Stage.AUDIT, NearMissKind.WRONG_SIDE, now, rec.decision_id,
+                        detail=f"SELL decision for unheld {scan.symbol}")
+                    self._record_decision(rec.decision_id, scan.symbol,
+                                          DecisionKind.AVOID, now, scan.last_close,
+                                          decision=decision)
+                    continue
+
+            if decision.action is not DecisionAction.BUY:
+                # A1-4: NO_TRADE decisions are tracked and graded too
+                self._record_decision(rec.decision_id, scan.symbol, DecisionKind.NO_TRADE,
+                                      now, scan.last_close, decision=decision)
                 continue
             result.decision_candidates += 1
 
@@ -150,11 +418,23 @@ class TradingPipeline:
                 result.skeptic_vetoes += 1
                 result.no_trade_reasons.append(
                     f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
+                self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
+                                      now, scan.last_close, decision=decision,
+                                      skeptic_consulted=True)
                 continue
 
             proposal = TradeProposal(symbol=scan.symbol, side=Action.BUY,
                                      source=ProposalSource.AI, decision=decision,
                                      skeptic=critique, created_at=now)
+
+            # 2b. Final Trade Thesis (§27): fuses Decision + Skeptic before the
+            # deterministic stages take over, and records how much they
+            # disagreed even though the Skeptic did not veto.
+            thesis = build_final_trade_thesis(
+                proposal, decision_id=rec.decision_id,
+                skeptic_id=getattr(self.skeptic, "name", critique.model_family))
+            self._final_theses[rec.decision_id] = thesis
+            rec.final_trade_thesis = thesis.model_dump(mode="json")
 
             # 3. Loss Control BEFORE sizing (§33)
             quote = self.market_data.quote(scan.symbol, now)
@@ -165,6 +445,9 @@ class TradingPipeline:
                 stop = self.loss_control.plan(proposal, list(scan.bars), entry_price, gap)
             except NoStopPlanError as e:
                 result.no_trade_reasons.append(f"{scan.symbol}: no stop plan — {e}")
+                self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
+                                      now, scan.last_close, decision=decision,
+                                      skeptic_consulted=True)
                 continue
             result.stop_planned += 1
             rec.stop_plan = stop.model_dump(mode="json")
@@ -173,7 +456,7 @@ class TradingPipeline:
             snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
             level = throttle_level(snapshot.drawdown, self.risk_controller.config)
             pctx = PortfolioContext(
-                equity=snapshot.equity, settled_cash=self.ledger.cash,
+                equity=snapshot.equity, settled_cash=self._settled_cash(),
                 existing_exposure=self._position_notional(prices, now),
                 theme_exposure=self._theme_exposure(prices, now),
                 symbol_themes=self.symbol_themes,
@@ -184,6 +467,9 @@ class TradingPipeline:
                 sized = self.sizing.size(proposal, stop, quote, pctx, calibrated)
             except SizingRejected as e:
                 result.no_trade_reasons.append(f"{scan.symbol}: sizing rejected — {e}")
+                self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
+                                      now, scan.last_close, decision=decision,
+                                      had_stop_plan=True, skeptic_consulted=True)
                 continue
             result.sized += 1
             rec.position_size = {"qty": sized.qty, "risk_amount": sized.risk_amount,
@@ -198,49 +484,135 @@ class TradingPipeline:
         # 5. Capital Allocation (§36)
         snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
         alloc = self.allocation.allocate(sized_candidates, equity=snapshot.equity,
-                                         settled_cash=self.ledger.cash,
+                                         settled_cash=self._settled_cash(),
                                          current_exposure_notional=snapshot.positions_value)
         for sp, why in alloc.skipped:
             result.no_trade_reasons.append(f"{sp.proposal.symbol}: allocation skipped — {why}")
+            rec = self.provenance.get(f"{sp.proposal.symbol}-{now.date()}")
+            self._record_decision(rec.decision_id, sp.proposal.symbol, DecisionKind.WAIT,
+                                  now, sp.stop_plan.entry_price, decision=sp.proposal.decision,
+                                  had_stop_plan=True, skeptic_consulted=True)
         result.allocated = len(alloc.accepted)
 
-        # 6. Master Risk Controller → Execution (§42, §44)
+        # 6. Audit AI → Master Risk Controller → Snapshot → Execution (A3-A4, §42, §44)
         for sized in alloc.accepted[: self.max_new_positions]:
             self._order_seq += 1
+            symbol = sized.proposal.symbol
             intent = OrderIntent(
                 client_order_id=make_client_order_id(self.environment,
                                                      sized.proposal.proposal_id, self._order_seq),
-                proposal_id=sized.proposal.proposal_id, symbol=sized.proposal.symbol,
+                proposal_id=sized.proposal.proposal_id, symbol=symbol,
                 side=Action.BUY, qty=sized.qty, order_type=OrderType.MARKET,
                 environment=self.environment, created_at=now)
+            rec = self.provenance.get(f"{symbol}-{now.date()}")
+            log_rec = self.audit_log.open(intent.client_order_id, rec.decision_id, now,
+                                          {"symbol": symbol, "side": "BUY",
+                                           "qty": sized.qty})
 
+            # 6a. Independent Audit AI (A3) — semantic gate BEFORE deterministic risk
+            try:
+                audit = self.auditor.audit(sized.proposal.decision, sized, intent,
+                                           AuditContext(now=now))
+            except AuditUnavailableError as e:
+                result.no_trade_reasons.append(f"{symbol}: audit unavailable — {e}")
+                self.audit_log.record_near_miss(Stage.AUDIT, NearMissKind.OTHER, now,
+                                                rec.decision_id, intent.client_order_id,
+                                                detail=str(e))
+                self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
+                                      sized.stop_plan.entry_price,
+                                      decision=sized.proposal.decision,
+                                      had_stop_plan=True, skeptic_consulted=True)
+                continue
+            log_rec.audit_result = audit.model_dump(mode="json")
+            if audit.verdict is not AuditVerdict.PASS:
+                # §8: REVIEW is not the same as REJECT — it goes to a human
+                # rather than being silently discarded. Either way the order
+                # does not proceed automatically.
+                if audit.verdict is AuditVerdict.REVIEW:
+                    result.audit_review += 1
+                    self.audit_log.queue_human_review(
+                        intent.client_order_id, rec.decision_id, now,
+                        reasons=list(audit.reasons), severity=audit.severity)
+                    result.no_trade_reasons.append(
+                        f"{symbol}: audit REVIEW — queued for human review: "
+                        f"{'; '.join(audit.reasons)}")
+                else:
+                    result.audit_rejected += 1
+                    result.no_trade_reasons.append(
+                        f"{symbol}: audit REJECT — {'; '.join(audit.reasons)}")
+                    self.audit_log.record_audit_rejection(log_rec.audit_result, now,
+                                                          rec.decision_id,
+                                                          intent.client_order_id)
+                self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
+                                      sized.stop_plan.entry_price,
+                                      decision=sized.proposal.decision,
+                                      had_stop_plan=True, skeptic_consulted=True)
+                continue
+            result.audit_passed += 1
+
+            # 6b. deterministic Master Risk Controller — the FINAL barrier (A3-4)
             view = self._risk_view(sized, prices, now)
             verdict = self.risk_controller.review(intent, view,
                                                   entry_price=sized.stop_plan.entry_price)
-            rec = self.provenance.get(f"{sized.proposal.symbol}-{now.date()}")
             if isinstance(verdict, RiskRejection):
                 result.risk_rejected += 1
                 result.no_trade_reasons.append(
-                    f"{sized.proposal.symbol}: risk rejected — {'; '.join(verdict.reasons)}")
+                    f"{symbol}: risk rejected — {'; '.join(verdict.reasons)}")
                 rec.risk_decision = {"passed": False, "reasons": list(verdict.reasons)}
+                log_rec.risk_result = {"passed": False, "reasons": list(verdict.reasons)}
+                self.audit_log.record_near_miss(Stage.RISK, NearMissKind.OTHER, now,
+                                                rec.decision_id, intent.client_order_id,
+                                                detail="; ".join(verdict.reasons))
+                self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
+                                      sized.stop_plan.entry_price,
+                                      decision=sized.proposal.decision,
+                                      had_stop_plan=True, skeptic_consulted=True)
                 continue
             assert isinstance(verdict, RiskApproval)
             result.risk_passed += 1
             rec.risk_decision = {"passed": True, "approval_id": verdict.approval_id,
                                  "checks": [c.name for c in verdict.checks]}
+            log_rec.risk_result = {"passed": True, "approval_id": verdict.approval_id}
 
-            state = self.execution.submit(RiskApprovedOrder(intent=intent, approval=verdict))
+            # 6c. Immutable Approved Order Snapshot (A4) → Execution
+            approved = RiskApprovedOrder(intent=intent, approval=verdict)
+            thesis = self._final_theses.get(rec.decision_id)
+            snapshot = ApprovedOrderSnapshot.from_approved(
+                approved, decision_id=rec.decision_id, audit_id=audit.audit_id,
+                skeptic_id=thesis.skeptic_id if thesis else "",
+                take_profit=sized.stop_plan.profit_target)
+            log_rec.approved_snapshot_hash = snapshot.hash
+            log_rec.broker_submitted = True
+            self._record_decision(rec.decision_id, symbol, DecisionKind.BUY, now,
+                                  sized.stop_plan.entry_price,
+                                  decision=sized.proposal.decision,
+                                  had_stop_plan=True, skeptic_consulted=True)
+
+            state = self.execution.submit(approved, snapshot=snapshot)
+            log_rec.final_state = state.value
             rec.order_ref = intent.client_order_id
             if state in (OrderState.FILLED, OrderState.PARTIALLY_FILLED):
+                filled_qty = 0.0
                 for f in self.execution.broker.get_fills(since=now.replace(year=2000)):
                     if f.client_order_id == intent.client_order_id:
-                        self.ledger.record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
-                                                f.price, f.fees, f.ts,
-                                                note=intent.client_order_id)
+                        filled_qty += f.qty
+                        self._record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
+                                          f.price, f.fees, f.ts,
+                                          note=intent.client_order_id)
                         rec.fill_refs.append(f.broker_fill_id)
+                        log_rec.fills.append(f.broker_fill_id)
                         result.fills.append(f)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
+                # the planned stop must EXIST at the broker, not just on paper
+                # (§33-34, INV-15): place it immediately after the entry fills
+                if self.place_protective_stop(symbol, filled_qty, sized.stop_plan, now,
+                                              decision_id=rec.decision_id):
+                    result.protective_stops_placed += 1
+                else:
+                    result.no_trade_reasons.append(
+                        f"{symbol}: protective stop could not be placed — position "
+                        f"is unprotected, review required")
             else:
                 rec.result = {"state": state.value}
                 result.no_trade_reasons.append(
@@ -271,7 +643,7 @@ class TradingPipeline:
         snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
         pos_notional = self._position_notional(prices, now)
         return PortfolioRiskView(
-            equity=snapshot.equity, settled_cash=self.ledger.cash,
+            equity=snapshot.equity, settled_cash=self._settled_cash(),
             total_exposure_notional=sum(pos_notional.values()),
             position_notional=pos_notional,
             position_qty={s: l.qty for s, l in self.ledger.positions.items()},
@@ -279,6 +651,14 @@ class TradingPipeline:
             symbol_themes=self.symbol_themes,
             drawdown=snapshot.drawdown, stop_plan_exists=True,
             gap_risk_score=sized.stop_plan.gap_risk_score,
-            adv_shares=1_000_000, correlation_to_book=0.0,
+            adv_shares=self._adv_shares(sized.proposal.symbol, now),
+            correlation_to_book=0.0,
             reconciliation_ok=True, data_health=self.integrity.health,
-            broker_connected=True)
+            broker_connected=True,
+            spread_pct=self._spread_pct(sized.proposal.symbol, now),
+            known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
+            signal_age_sec=0.0, margin_requirement=0.0)
+
+    def _spread_pct(self, symbol: str, now: datetime) -> float:
+        quote = self.market_data.quote(symbol, now)
+        return quote.spread / quote.mid if quote.mid > 0 else 1.0
