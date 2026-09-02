@@ -49,6 +49,15 @@ class TwoPnL:
         return self.trading_pnl - self.operating_costs
 
 
+# Trading/broker fees are already deducted from the broker account balance —
+# Ledger._append subtracts them from cash the moment a fill lands, so they are
+# baked into `trading_pnl` before it ever reaches this engine. Recording them
+# here too (via record_transaction_fee, for the §80-83 cost breakdown/Data ROI
+# picture) must never also subtract them a second time in two_pnl(), or
+# project_net_pnl would double-count every fee paid.
+_ALREADY_IN_TRADING_PNL = frozenset({CostCategory.TRANSACTION_FEE, CostCategory.BROKER_FEE})
+
+
 class OperatingCostEngine:
     def __init__(self) -> None:
         self.entries: list[CostEntry] = []
@@ -58,10 +67,31 @@ class OperatingCostEngine:
             raise ValueError("costs are non-negative")
         self.entries.append(entry)
 
+    def record_transaction_fee(self, at: datetime, amount: float, note: str = "") -> None:
+        """Record a per-trade broker/transaction fee for visibility in the cost
+        breakdown (by_category). Purely informational: total() and two_pnl()
+        exclude this category because the fee already reduced trading_pnl via
+        the ledger — recording it is not a second charge."""
+        if amount <= 0:
+            return
+        self.record(CostEntry(at=at, category=CostCategory.TRANSACTION_FEE,
+                              amount=amount, note=note))
+
     def total(self) -> float:
-        return sum(e.amount for e in self.entries)
+        """Operating costs actually deducted in two_pnl(). Excludes
+        transaction/broker fees, which are already netted into trading_pnl —
+        see `_ALREADY_IN_TRADING_PNL`."""
+        return sum(e.amount for e in self.entries if e.category not in _ALREADY_IN_TRADING_PNL)
+
+    def trading_fees_total(self) -> float:
+        """Transaction/broker fees recorded for visibility — already reflected
+        in trading_pnl, not part of `total()`."""
+        return sum(e.amount for e in self.entries if e.category in _ALREADY_IN_TRADING_PNL)
 
     def by_category(self) -> dict[CostCategory, float]:
+        """Full breakdown incl. transaction/broker fees — for display only.
+        Do not sum this and subtract it from trading_pnl; use total() for
+        that (see two_pnl)."""
         out: dict[CostCategory, float] = {}
         for e in self.entries:
             out[e.category] = out.get(e.category, 0.0) + e.amount

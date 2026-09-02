@@ -35,6 +35,7 @@ from packages.schemas.core import (
 )
 from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
 from services.capital_allocation.engine import CapitalAllocationEngine
+from services.cost_manager.engine import OperatingCostEngine
 from services.data_validation.integrity import DataIntegrityEngine
 from services.decision.audit import (
     AuditContext,
@@ -130,6 +131,11 @@ class TradingPipeline:
     audit_log: PreTradeAuditLog = field(default_factory=PreTradeAuditLog)
     decision_quality: DecisionQualityEngine = field(default_factory=DecisionQualityEngine)
     post_trade: PostTradeTracker = field(default_factory=PostTradeTracker)
+    # Optional (§80-83): when set, every fill's fee is also recorded here for
+    # the cost breakdown/Data ROI picture. The fee already reduced trading_pnl
+    # via the ledger the moment the fill landed — this is visibility, not a
+    # second charge (see OperatingCostEngine.total() / trading_fees_total()).
+    cost_engine: Optional[OperatingCostEngine] = None
     symbol_themes: dict[str, list[str]] = field(default_factory=dict)
     max_new_positions: int = 5
     _order_seq: int = 0
@@ -157,6 +163,18 @@ class TradingPipeline:
         Final Trade Thesis panel, §27) — a copy, so nothing external can
         mutate pipeline state through it."""
         return dict(self._final_theses)
+
+    def _record_fill(self, symbol: str, side_qty: float, price: float, fees: float,
+                     ts: datetime, note: str = "") -> None:
+        """Book a fill on the ledger and, if a cost engine is attached, record
+        its fee for the §80-83 cost breakdown. One call site so every fill —
+        entry, resting-order sync, or stop-out — reports its fee the same way;
+        previously `ledger.record_fill` was called directly from three places
+        and none of them made the fee visible anywhere but trading_pnl."""
+        self.ledger.record_fill(symbol, side_qty, price, fees, ts, note=note)
+        if self.cost_engine is not None:
+            self.cost_engine.record_transaction_fee(
+                at=ts, amount=fees, note=note or symbol)
 
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
@@ -290,8 +308,8 @@ class TradingPipeline:
             if f.side is not Action.SELL:
                 # a resting BUY (e.g. a limit entry) that fills later must still
                 # reach the ledger, or ledger and broker drift apart (§48)
-                self.ledger.record_fill(f.symbol, f.qty, f.price, f.fees, f.ts,
-                                        note=f.client_order_id)
+                self._record_fill(f.symbol, f.qty, f.price, f.fees, f.ts,
+                                  note=f.client_order_id)
                 continue
             # Realized P&L must come from the ledger's weighted average cost,
             # NOT from the shadow entry price in open_stops. open_stops is
@@ -302,8 +320,8 @@ class TradingPipeline:
             # sessions. The ledger already holds the correct basis.
             lot_before = self.ledger.positions.get(f.symbol)
             avg_cost = lot_before.avg_cost if lot_before else f.price
-            self.ledger.record_fill(f.symbol, -f.qty, f.price, f.fees, f.ts,
-                                    note=f.client_order_id)
+            self._record_fill(f.symbol, -f.qty, f.price, f.fees, f.ts,
+                              note=f.client_order_id)
             entry = self.open_stops.get(f.symbol)
             realized = 0.0
             if entry is not None:
@@ -578,9 +596,9 @@ class TradingPipeline:
                 for f in self.execution.broker.get_fills(since=now.replace(year=2000)):
                     if f.client_order_id == intent.client_order_id:
                         filled_qty += f.qty
-                        self.ledger.record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
-                                                f.price, f.fees, f.ts,
-                                                note=intent.client_order_id)
+                        self._record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
+                                          f.price, f.fees, f.ts,
+                                          note=intent.client_order_id)
                         rec.fill_refs.append(f.broker_fill_id)
                         log_rec.fills.append(f.broker_fill_id)
                         result.fills.append(f)

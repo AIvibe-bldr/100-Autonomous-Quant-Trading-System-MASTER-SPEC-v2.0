@@ -37,7 +37,16 @@ def create_app(pipeline: TradingPipeline,
                monitor: Optional[MonitorSupervisor] = None,
                heartbeats: Optional[HeartbeatRegistry] = None) -> FastAPI:
     app = FastAPI(title="Quant Trading Platform — Status API", version="0.1.0")
-    cost_engine = cost_engine or OperatingCostEngine()
+    # The pipeline records each fill's fee into whichever cost_engine it holds
+    # (see TradingPipeline._record_fill) — so the API must read from THAT
+    # instance, not a second one of its own, or transaction fees would be
+    # recorded but never show up here. If the pipeline has none yet, give it
+    # the one passed in (or a fresh one) so fees start flowing.
+    if pipeline.cost_engine is not None:
+        cost_engine = pipeline.cost_engine
+    else:
+        cost_engine = cost_engine or OperatingCostEngine()
+        pipeline.cost_engine = cost_engine
     feature_store = feature_store or FeatureStore()
     monitor = monitor or MonitorSupervisor(model=MockMonitorModel())
     last_result: dict[str, Any] = {"result": None}
@@ -105,6 +114,12 @@ def create_app(pipeline: TradingPipeline,
             "trading_pnl": two.trading_pnl,               # §81: two P&L separated
             "operating_costs": two.operating_costs,
             "project_net_pnl": two.project_net_pnl,
+            # §80-83 cost breakdown. transaction_fees_total is already inside
+            # trading_pnl above (the ledger deducts fees at fill time) — it is
+            # shown here for visibility only and is NOT part of
+            # operating_costs, so project_net_pnl never double-counts it.
+            "transaction_fees_total": cost_engine.trading_fees_total(),
+            "cost_breakdown": {c.value: v for c, v in cost_engine.by_category().items()},
         }
 
     @app.get("/chart")

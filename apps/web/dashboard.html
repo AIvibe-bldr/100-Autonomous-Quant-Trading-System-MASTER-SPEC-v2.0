@@ -119,6 +119,17 @@
   <div id="dqCal" style="color:var(--muted);font-size:12px;margin-top:4px"></div>
 </section>
 
+<section><h2>コスト内訳 (§80-83)</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Operating Costs</div><div class="value" id="costOperating">—</div></div>
+    <div class="card"><div class="label">うち取引手数料</div><div class="value" id="costFees">—</div></div>
+  </div>
+  <div style="color:var(--muted);font-size:11px;margin:4px 0 8px">
+    取引手数料はTrading P&amp;Lに既に反映済みです（二重控除ではありません）。ここでは内訳として表示しています。
+  </div>
+  <div id="costCategories" style="color:var(--muted);font-size:12px"></div>
+</section>
+
 <section><h2>発注安全性 (ADDENDUM A7)</h2>
   <div class="grid">
     <div class="card"><div class="label">Pre-Trade Audits</div><div class="value" id="osAudits">—</div></div>
@@ -206,6 +217,14 @@ async function refresh() {
   $("dd").textContent = fmt(p.drawdown * 100, 1) + "%";
   signed($("tpnl"), p.trading_pnl, money);
   signed($("npnl"), p.project_net_pnl, money);
+
+  // コスト内訳 (§80-83)
+  $("costOperating").textContent = money(p.operating_costs);
+  $("costFees").textContent = money(p.transaction_fees_total);
+  const catEntries = Object.entries(p.cost_breakdown || {});
+  $("costCategories").textContent = catEntries.length
+    ? catEntries.map(([cat, v]) => `${cat} ${money(v)}`).join(" · ")
+    : "コスト記録なし";
 
   drawChart(chart);
 
