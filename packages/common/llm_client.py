@@ -147,11 +147,16 @@ DEFAULT_MODEL_CONFIG = LLMModelConfig()
 def credentials_available(provider: Provider = Provider.ANTHROPIC) -> bool:
     """Best-effort pre-check so callers can pick Mocks instead of building a
     client that will immediately fail. The SDK remains the authority on
-    whether a credential actually works."""
+    whether a credential actually works.
+
+    Anthropic credentials are read from `MY_ANTHROPIC_API_KEY`, not the SDK's
+    default `ANTHROPIC_API_KEY` — this repo's own cloud runtime already
+    reserves `ANTHROPIC_API_KEY` for its own authentication, so the app must
+    not rely on it being present or meaningful here."""
     if provider is Provider.OPENAI:
         return bool(os.environ.get("OPENAI_API_KEY"))
     return bool(
-        os.environ.get("ANTHROPIC_API_KEY")
+        os.environ.get("MY_ANTHROPIC_API_KEY")
         or os.environ.get("ANTHROPIC_AUTH_TOKEN")
         or os.environ.get("ANTHROPIC_PROFILE")
         or os.path.exists(os.path.expanduser("~/.config/anthropic"))
@@ -179,8 +184,11 @@ def get_client(provider: Provider = Provider.ANTHROPIC) -> Any:
             "anthropic package not installed — run `pip install anthropic`") from e
     if not credentials_available(Provider.ANTHROPIC):
         raise LLMUnavailableError(
-            "no Anthropic credentials found — set ANTHROPIC_API_KEY or run "
+            "no Anthropic credentials found — set MY_ANTHROPIC_API_KEY or run "
             "`ant auth login`")
+    api_key = os.environ.get("MY_ANTHROPIC_API_KEY")
+    if api_key:
+        return anthropic.Anthropic(api_key=api_key)
     return anthropic.Anthropic()
 
 
