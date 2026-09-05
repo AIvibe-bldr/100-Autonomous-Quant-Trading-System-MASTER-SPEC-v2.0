@@ -2,7 +2,7 @@
 Audit AI (MASTER SPEC §25, §27-31, ADDENDUM A3), instead of the deterministic
 Mocks used everywhere else in this repo.
 
-Requires `pip install anthropic` and Anthropic credentials (ANTHROPIC_API_KEY,
+Requires `pip install anthropic` and Anthropic credentials (MY_ANTHROPIC_API_KEY,
 or `ant auth login`) — Skeptic AI and Audit AI are Claude Opus, non-negotiably
 (§25), so Anthropic credentials gate the whole real-LLM path. Without them
 this falls back to the Mock stack automatically and says so — the script
@@ -67,7 +67,7 @@ def main() -> None:
     else:
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
         print("=== No Anthropic credentials found — using deterministic Mock "
-              "Decision/Skeptic/Audit AI instead (set ANTHROPIC_API_KEY to use "
+              "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")
 
     for day in range(args.days):
