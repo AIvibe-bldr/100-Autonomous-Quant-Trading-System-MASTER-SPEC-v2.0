@@ -29,6 +29,7 @@ class ProvenanceRecord:
     prompt_version: str = ""
     output: Optional[dict[str, Any]] = None
     skeptic_output: Optional[dict[str, Any]] = None
+    final_trade_thesis: Optional[dict[str, Any]] = None
     risk_decision: Optional[dict[str, Any]] = None
     stop_plan: Optional[dict[str, Any]] = None
     position_size: Optional[dict[str, Any]] = None

@@ -31,9 +31,13 @@ Position Sizing (services/position-sizing)     … AIが自由に決めない
         ↓
 Capital Allocation (services/capital-allocation) … Total Exposure <= 100%
         ↓
+Independent Audit AI (services/decision/audit)  … 意味的整合の監査（ADDENDUM A3）
+        ↓                                          Decision≠Order方向等をREJECT
 Master Risk Controller (services/risk)  … deterministic・AI禁止・PASSしない注文は送らない
+        ↓                                  ＝ 最終防壁（AuditはAIなので最終責任を持たない）
+Immutable Approved Order Snapshot        … hash固定（ADDENDUM A4）。Field変更→再Audit+再Risk
         ↓
-Execution Engine (services/execution)   … deterministic・LLM禁止
+Execution Engine (services/execution)   … deterministic・LLM禁止・Snapshot hash一致のみ送信
         ↓
 Broker (packages/broker-adapters)       … Adapter Interface、V1はPaper
         ↓
@@ -83,5 +87,11 @@ Broker API を呼べるのは Execution Engine のみで、Execution Engine は
 
 ## Two P&L (§81)
 
-- **Trading P&L**: Broker口座内の運用結果（Ledgerから算出）
+- **Trading P&L**: Broker口座内の運用結果（Ledgerから算出）。取引手数料は約定時に
+  `Ledger._append` がcashから即時控除するため、**Trading P&Lには既に反映済み**
 - **Project Net P&L**: Trading P&L − System Operating Costs（cost-manager が控除表示）
+- **取引手数料の可視化（§80-83）**: `OperatingCostEngine.record_transaction_fee()` で
+  `CostCategory.TRANSACTION_FEE` として記録され、`/portfolio` の `cost_breakdown` /
+  `transaction_fees_total` で内訳として確認できる。ただしTrading P&Lに既に含まれているため
+  `total()`（Operating Costsの実際の控除額）からは除外し、**二重控除を防止**している
+  （`TradingPipeline._record_fill` が全ての約定経路を一本化して記録）

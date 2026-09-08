@@ -32,6 +32,7 @@ from services.execution.engine import UnauthorizedOrderError, make_client_order_
 from services.position_sizing.engine import PositionSizingEngine
 from services.risk.master_controller import ThrottleLevel, throttle_level
 from tests.conftest import SESSION_TIME, build_pipeline
+from tests.unit.helpers import submit_approved
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -115,16 +116,24 @@ def test_ai_cannot_reach_broker_imports():
 
 
 def test_ai_cannot_reach_broker_signature(pipeline):
-    from packages.schemas.core import RiskApprovedOrder, RiskCheck
+    """A forged approval must not execute even when it is internally consistent.
+
+    The forgery below carries a correct `intent_hash` — i.e. it describes the
+    order truthfully — so the only thing standing between it and the broker is
+    the HMAC, which is exactly what this asserts."""
+    from packages.schemas.audit import ApprovedOrderSnapshot
+    from packages.schemas.core import RiskApprovedOrder, RiskCheck, order_intent_hash
 
     intent = _paper_intent("inv6-order-0001")
     forged = RiskApproval(approval_id="forged", client_order_id=intent.client_order_id,
                           symbol=intent.symbol, side=intent.side, qty=intent.qty,
+                          intent_hash=order_intent_hash(intent),
                           checks=(RiskCheck(name="fake", passed=True),),
                           risk_state="NORMAL", approved_at=SESSION_TIME,
                           signature="00" * 32)
+    order = RiskApprovedOrder(intent=intent, approval=forged)
     with pytest.raises(UnauthorizedOrderError):
-        pipeline.execution.submit(RiskApprovedOrder(intent=intent, approval=forged))
+        pipeline.execution.submit(order, snapshot=ApprovedOrderSnapshot.from_approved(order))
 
 
 # INV-7: duplicate client order IDs impossible
@@ -136,9 +145,9 @@ def test_duplicate_client_order_id_rejected(pipeline):
     from packages.schemas.core import RiskApprovedOrder
 
     order = RiskApprovedOrder(intent=intent, approval=verdict)
-    pipeline.execution.submit(order)
+    submit_approved(pipeline, order)
     with pytest.raises(DuplicateClientOrderIdError):
-        pipeline.execution.submit(order)
+        submit_approved(pipeline, order)
 
 
 # INV-8: human override cannot bypass risk — overrides flow through the same review
@@ -166,7 +175,7 @@ def test_environment_mismatch_order_rejected(pipeline):
         from packages.schemas.core import RiskApprovedOrder
 
         with pytest.raises(UnauthorizedOrderError, match="environment"):
-            pipeline.execution.submit(RiskApprovedOrder(intent=intent, approval=verdict))
+            submit_approved(pipeline, RiskApprovedOrder(intent=intent, approval=verdict))
 
 
 # INV-10: no martingale — risk budget cannot grow after a loss

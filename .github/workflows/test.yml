@@ -1,0 +1,30 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # api/llm extras pull in fastapi+httpx (used by TestClient in
+          # tests/unit/test_status_api.py) and the anthropic/openai SDKs
+          # (tests inject fake clients — no network or API key needed).
+          pip install -e '.[dev,api,llm]'
+
+      - name: Run tests
+        run: python -m pytest

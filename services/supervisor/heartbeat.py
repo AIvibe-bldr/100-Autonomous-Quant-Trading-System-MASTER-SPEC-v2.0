@@ -1,9 +1,10 @@
 """Heartbeat registry (MASTER SPEC §66-68).
 
 Every service reports status / last_success / latency / error_rate /
-queue_depth / data_age.  The supervisor is a deterministic monitor; an
-Opus-class Monitor AI is only consulted on anomaly (§66) and is out of V1
-scope.
+queue_depth / data_age.  This registry is the deterministic monitor; the
+Opus-class Monitor AI (services/decision/monitor.py) is a separate,
+higher-level layer consulted only when `anomaly_present()` sees a bad
+reading here — it narrates and recommends, it does not replace this check.
 """
 from __future__ import annotations
 

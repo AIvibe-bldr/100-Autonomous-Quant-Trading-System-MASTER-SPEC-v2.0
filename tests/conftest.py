@@ -12,7 +12,9 @@ from packages.common.provenance import ProvenanceStore
 from packages.common.risk_config import RiskConfig
 from packages.broker_adapters.paper import PaperBroker
 from services.capital_allocation.engine import CapitalAllocationEngine
+from services.cost_manager.engine import OperatingCostEngine
 from services.data_validation.integrity import DataIntegrityEngine
+from services.decision.audit import IndependentAuditor, MockAuditModel
 from services.decision.models import CalibrationTracker, MockDecisionModel, MockSkepticModel
 from services.execution.engine import ExecutionEngine
 from services.execution.state_machine import OrderStateMachine
@@ -59,7 +61,14 @@ def universe() -> UniverseManager:
 
 def build_pipeline(clock: FrozenClock, universe: UniverseManager,
                    initial_cash: float = 1000.0,
-                   config: RiskConfig | None = None) -> TradingPipeline:
+                   config: RiskConfig | None = None,
+                   decision_model=None, skeptic_model=None,
+                   auditor: IndependentAuditor | None = None,
+                   cost_engine: OperatingCostEngine | None = None) -> TradingPipeline:
+    """decision_model / skeptic_model / auditor default to the deterministic
+    Mocks (keeps tests network-free and reproducible); pass real Claude
+    adapters (services.decision.claude_adapters.build_llm_stack) to run the
+    pipeline against the actual API — see scripts/run_llm_paper_demo.py."""
     env = Environment.PAPER
     cfg = config or RiskConfig()
     md = MarketDataService(MockProvider())
@@ -75,13 +84,18 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         environment=env, clock=clock, market_data=md, universe=universe,
         scanner=QuantScanner(md, min_dollar_volume=1_000_000),
         integrity=DataIntegrityEngine(),
-        decision_model=MockDecisionModel(), skeptic=MockSkepticModel(),
+        decision_model=decision_model or MockDecisionModel(),
+        skeptic=skeptic_model or MockSkepticModel(),
         calibration=CalibrationTracker(),
         loss_control=LossControlEngine(),
         sizing=PositionSizingEngine(config=cfg),
         allocation=CapitalAllocationEngine(config=cfg),
         risk_controller=risk, execution=execution, ledger=ledger,
-        provenance=ProvenanceStore(env), symbol_themes=THEMES)
+        provenance=ProvenanceStore(env),
+        # V1 paper mode: audit every order to collect data (A3-6)
+        auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
+                                              audit_all=True),
+        cost_engine=cost_engine, symbol_themes=THEMES)
 
 
 @pytest.fixture

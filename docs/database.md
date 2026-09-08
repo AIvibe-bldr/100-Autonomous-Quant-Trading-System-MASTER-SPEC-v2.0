@@ -102,6 +102,54 @@ at, category TEXT,  -- AI/MARKET_DATA/NEWS/SERVER/DB/BROKER_FEE/TRANSACTION/FX
 amount NUMERIC, currency TEXT, note TEXT
 ```
 
+### decision_quality.snapshots  (ADDENDUM A1-1 — Immutable)
+```
+decision_id UUID PK, symbol, ts TIMESTAMPTZ, reference_price NUMERIC,
+decision TEXT,  -- BUY/SELL/HOLD/WAIT/NO_TRADE/AVOID
+confidence NUMERIC, expected_horizon TEXT, expected_return_range JSONB,
+scenarios JSONB,          -- bull/base/bear
+stop_plan JSONB, thesis TEXT, invalidation JSONB,
+alpha_scores JSONB, news_signals JSONB, institutional_signals JSONB,
+regime TEXT, portfolio_context JSONB, model TEXT, model_version TEXT,
+prompt_version TEXT, risk_context JSONB, rule_compliant BOOLEAN
+-- INSERTのみ。UPDATE/DELETE権限なし（Immutable）。変更は新decision_id
+```
+
+### decision_quality.outcomes  (A1-2〜A1-5)
+```
+decision_id UUID, horizon TEXT,  -- 1h/1d/3d/1w/expected/1m/3m/6m
+price NUMERIC, return NUMERIC, max_adverse_excursion NUMERIC,
+max_favorable_excursion NUMERIC, evaluated_at TIMESTAMPTZ
+-- 集計側: outcome_class (GOOD/MIXED/BAD/PENDING [+GOOD_AVOIDANCE/MISSED_OPPORTUNITY]),
+-- outcome_score, process_score, overall_score
+```
+
+### audit.pre_trade  (A3, A5)
+```
+audit_id UUID PK, decision_id UUID, client_order_id TEXT,
+verdict TEXT,  -- PASS/REJECT/REVIEW
+reasons JSONB, detected_conflicts JSONB, severity NUMERIC,
+model TEXT, model_family TEXT, forced BOOLEAN, at TIMESTAMPTZ
+```
+
+### orders.approved_snapshots  (A4 — Immutable)
+```
+snapshot_id UUID PK, client_order_id TEXT UNIQUE, symbol, side, qty NUMERIC,
+order_type, limit_price, stop_price, take_profit, time_in_force,
+strategy_id TEXT, decision_id UUID, risk_approval_id UUID, audit_id UUID,
+created_at TIMESTAMPTZ, hash TEXT NOT NULL
+-- Execution Engineはhash一致注文のみBrokerへ送信（INV-17/18）
+```
+
+### audit.near_miss  (A6)
+```
+at TIMESTAMPTZ, kind TEXT,  -- WRONG_SIDE/QUANTITY_ERROR/DUPLICATE/STALE/
+                            -- SYMBOL_MISMATCH/NO_STOP/HASH_MISMATCH/OTHER
+stage TEXT,  -- AUDIT/RISK/EXECUTION
+decision_id UUID, client_order_id TEXT, detail TEXT
+-- 「今月防止した誤発注」集計のソース（UI A7）
+```
+
 ### supervisor.heartbeats (§67)
 ```
 service TEXT, at TIMESTAMPTZ, status TEXT, last_success TIMESTAMPTZ,

@@ -68,6 +68,23 @@ class BrokerAdapter(Protocol):
 V1実装: `PaperBroker`（決定論的な約定シミュレーション: spread/slippage/partial fill/fees を模擬 §25）。
 V1候補の実Broker: IBKR Paper → Live（§100）。Adapter追加は本Interfaceの実装のみで足りる。
 
+## Protective Stops & Exit Management (§33-34, §43, INV-15)
+
+Stop **plan** と Stop **注文** は別物である。計画だけでは建玉は守られないため:
+
+1. Entry約定直後に `place_protective_stop()` が STOP SELL を Master Risk Controller
+   経由で発注する（`is_protective_exit=True` なので MASTER STOP 中も通る §43）
+2. 発注できなかった場合は「建玉が無保護」として NO TRADE 理由に記録される
+3. 各セッション冒頭に `manage_open_positions()` が実行され、
+   `ExecutionEngine.sync_open_orders()` → `PaperBroker.poll_resting_orders()` で
+   前日以前に置いた Stop が現在値で発動しうるかを再評価する
+4. 発動した Stop の約定は Ledger に反映され、実現損益が
+   Position Sizing の anti-martingale ガード（§37）に供給され、
+   Post-Stop Tracker（§50）と Decision Quality の SELL 判断（A1-4）に記録される
+
+Broker 切断中に同期が失敗した場合はセッションを落とさず
+`FULL_BROKER_DISCONNECT` を記録し、新規Entryを止める。
+
 ## Execution Engine (§44)
 
 - deterministic。LLM呼び出しコードを含まない（invariantテストでimport検査）

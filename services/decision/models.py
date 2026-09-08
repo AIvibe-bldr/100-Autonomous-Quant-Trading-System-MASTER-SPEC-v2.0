@@ -71,7 +71,10 @@ class MockDecisionModel:
         px = s.last_close
         return {
             "symbol": s.symbol,
-            "action": "BUY" if buy else "NO_TRADE",
+            # WAIT when momentum is there but volatility disqualifies it (the
+            # setup may return); NO_TRADE when there is simply no edge (§2)
+            "action": ("BUY" if buy
+                       else "WAIT" if s.momentum_20d > 0.02 else "NO_TRADE"),
             "confidence": min(0.9, 0.5 + s.score / 100),
             "expected_horizon": "1w",
             "expected_return_range": (-0.05, 0.10),
