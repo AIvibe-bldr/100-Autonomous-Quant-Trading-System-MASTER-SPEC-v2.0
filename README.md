@@ -97,7 +97,7 @@ Two P&L §81）/ `/chart`（§87）/ `/holdings`（§88-89）/ `/themes`（§90�
 
 ```bash
 pip install anthropic          # または: pip install -e '.[llm]'
-export ANTHROPIC_API_KEY=...   # または `ant auth login`
+export MY_ANTHROPIC_API_KEY=...   # または `ant auth login`
 python3 scripts/run_llm_paper_demo.py --days 3
 ```
 

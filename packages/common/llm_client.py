@@ -151,7 +151,7 @@ def credentials_available(provider: Provider = Provider.ANTHROPIC) -> bool:
     if provider is Provider.OPENAI:
         return bool(os.environ.get("OPENAI_API_KEY"))
     return bool(
-        os.environ.get("ANTHROPIC_API_KEY")
+        os.environ.get("MY_ANTHROPIC_API_KEY")
         or os.environ.get("ANTHROPIC_AUTH_TOKEN")
         or os.environ.get("ANTHROPIC_PROFILE")
         or os.path.exists(os.path.expanduser("~/.config/anthropic"))
@@ -179,8 +179,14 @@ def get_client(provider: Provider = Provider.ANTHROPIC) -> Any:
             "anthropic package not installed — run `pip install anthropic`") from e
     if not credentials_available(Provider.ANTHROPIC):
         raise LLMUnavailableError(
-            "no Anthropic credentials found — set ANTHROPIC_API_KEY or run "
+            "no Anthropic credentials found — set MY_ANTHROPIC_API_KEY or run "
             "`ant auth login`")
+    # anthropic.Anthropic() only reads the SDK's own ANTHROPIC_API_KEY env var,
+    # not our MY_ANTHROPIC_API_KEY — pass it explicitly when set, otherwise
+    # let the SDK fall back to ANTHROPIC_AUTH_TOKEN / ANTHROPIC_PROFILE / CLI auth.
+    anthropic_api_key = os.environ.get("MY_ANTHROPIC_API_KEY")
+    if anthropic_api_key:
+        return anthropic.Anthropic(api_key=anthropic_api_key)
     return anthropic.Anthropic()
 
 
