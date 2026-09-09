@@ -69,6 +69,15 @@ class TestEigenvalueEffectiveRank:
         with pytest.raises(InsufficientDataError):
             eigenvalue_effective_rank([], _regime({}), as_of=AT)
 
+    def test_unmeasured_pair_raises_instead_of_counting_as_independent(self):
+        """§18-19: an unmeasured pair is missing data, not evidence of
+        independence. Defaulting it to correlation 0.0 would make adding a
+        brand-new cell with NO history RAISE the effective-independence
+        count -- claiming diversification that was never observed."""
+        regime = _regime({("A", "B"): 0.99})   # "NEW" has no measured pair at all
+        with pytest.raises(InsufficientDataError):
+            eigenvalue_effective_rank(["A", "B", "NEW"], regime, as_of=AT)
+
     def test_confidence_scales_with_sample_count(self):
         ids = ["A", "B"]
         thin = _regime({("A", "B"): 0.0}, sample_count=5)
@@ -107,6 +116,11 @@ class TestCorrelationClusterCount:
         est = correlation_cluster_count(ids, regime, as_of=AT, threshold=0.7)
         assert est.value == 2.0
 
+    def test_unmeasured_pair_raises_instead_of_forming_its_own_cluster(self):
+        regime = _regime({("A", "B"): 0.99})
+        with pytest.raises(InsufficientDataError):
+            correlation_cluster_count(["A", "B", "NEW"], regime, as_of=AT)
+
     def test_negative_correlation_also_clusters_via_absolute_value(self):
         """A near -1 correlation is just as much 'the same bet' as +1 for
         clustering purposes (matches §19's abs() treatment)."""
@@ -131,6 +145,18 @@ class TestRiskFactorClusterCount:
         exposures = {"A": {"momentum": 1.0}}
         with pytest.raises(InsufficientDataError):
             risk_factor_cluster_count(["A", "B"], exposures, as_of=AT)
+
+    def test_empty_or_all_zero_exposure_is_treated_as_missing(self):
+        """Present-but-degenerate vectors score 0 similarity against every
+        peer, so they would read as independent of the whole book and
+        inflate the count -- the same trap as an unmeasured correlation
+        pair, one level down."""
+        with pytest.raises(InsufficientDataError):
+            risk_factor_cluster_count(
+                ["A", "B"], {"A": {"momentum": 1.0}, "B": {}}, as_of=AT)
+        with pytest.raises(InsufficientDataError):
+            risk_factor_cluster_count(
+                ["A", "B"], {"A": {"momentum": 1.0}, "B": {"momentum": 0.0}}, as_of=AT)
 
 
 class TestCombinedEstimates:

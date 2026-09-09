@@ -59,6 +59,14 @@ class RegimeCorrelation:
             return 1.0
         return self.pairwise.get(_pair_key(a, b), 0.0)
 
+    def has(self, a: str, b: str) -> bool:
+        """Whether this pair was actually measured. Callers that count
+        independence MUST check — `get`'s 0.0 default would otherwise read
+        an unmeasured pair as perfectly uncorrelated, i.e. as evidence of
+        diversification that was never observed (§19's rule, applied to
+        §18's counting)."""
+        return a == b or _pair_key(a, b) in self.pairwise
+
     def is_stale(self, now: datetime, max_age_days: float) -> bool:
         """§21: 'do not allocate large capital off an old correlation'.
         Callers gate large reallocations on this before trusting the
@@ -119,13 +127,19 @@ class CorrelationEngine:
             [0.5 ** ((n - 1 - k) / decay_halflife_days) for k in range(n)]
             if decay_halflife_days else [1.0] * n)
 
-        sorted_market = sorted(market_returns)
-        stress_cutoff_idx = max(0, int(len(sorted_market) * self._stress_quantile) - 1)
-        stress_cutoff = sorted_market[stress_cutoff_idx] if sorted_market else 0.0
+        # STRESS is selected by RANK, not by a value threshold. Comparing
+        # `r <= cutoff_value` sweeps in every day tied with the cutoff, and
+        # ties at the bottom are ordinary in real series (flat/halted/zero-
+        # return days) — a 5% stress window would silently become most of
+        # the sample, so the "stress correlation" §21 exists to isolate
+        # would actually be measured over quiet days.
+        stress_count = max(1, round(self._stress_quantile * n)) if n else 0
+        worst_first = sorted(range(n), key=lambda k: market_returns[k])
+        stress_indices = set(worst_first[:stress_count])
         masks: dict[CorrelationRegime, list[bool]] = {
             CorrelationRegime.NORMAL: [True] * n,
             CorrelationRegime.DOWNSIDE: [r < 0 for r in market_returns],
-            CorrelationRegime.STRESS: [r <= stress_cutoff for r in market_returns],
+            CorrelationRegime.STRESS: [k in stress_indices for k in range(n)],
         }
 
         by_regime: dict[CorrelationRegime, RegimeCorrelation] = {}

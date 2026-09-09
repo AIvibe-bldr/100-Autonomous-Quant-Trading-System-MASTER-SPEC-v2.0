@@ -82,6 +82,39 @@ class TestUncertaintyAdjustedScore:
         ranked = rank_cells([flashy_but_risky, modest_but_sound], as_of=AT)
         assert ranked[0][0] == "sound"
 
+    def test_penalties_do_not_invert_for_a_negative_edge(self):
+        """Multiplying a NEGATIVE edge by quality<1 would shrink the loss
+        toward zero, ranking the most correlated / deepest-drawdown /
+        fattest-tailed loser ABOVE a clean one. Penalties must worsen the
+        score on both sides of zero."""
+        clean_loser = _inputs(cell_id="clean_loser", net_edge=_range(-0.10, -0.10, -0.10),
+                              correlation_penalty=0.0, drawdown=0.0, tail_risk=_tail(es=0.01))
+        toxic_loser = _inputs(cell_id="toxic_loser", net_edge=_range(-0.10, -0.10, -0.10),
+                              correlation_penalty=0.9, drawdown=0.5, tail_risk=_tail(es=0.6))
+        assert (uncertainty_adjusted_score(toxic_loser, as_of=AT).value
+                < uncertainty_adjusted_score(clean_loser, as_of=AT).value)
+        assert [cid for cid, _ in rank_cells([toxic_loser, clean_loser], as_of=AT)][0] == "clean_loser"
+
+    def test_each_penalty_is_monotone_on_both_sides_of_zero(self):
+        for edge in (0.05, -0.05):
+            worse_corr = uncertainty_adjusted_score(
+                _inputs(net_edge=_range(edge, edge, edge), correlation_penalty=0.8), as_of=AT)
+            better_corr = uncertainty_adjusted_score(
+                _inputs(net_edge=_range(edge, edge, edge), correlation_penalty=0.1), as_of=AT)
+            assert worse_corr.value < better_corr.value, f"correlation penalty inverted at edge={edge}"
+
+            worse_dd = uncertainty_adjusted_score(
+                _inputs(net_edge=_range(edge, edge, edge), drawdown=0.5), as_of=AT)
+            better_dd = uncertainty_adjusted_score(
+                _inputs(net_edge=_range(edge, edge, edge), drawdown=0.0), as_of=AT)
+            assert worse_dd.value < better_dd.value, f"drawdown penalty inverted at edge={edge}"
+
+            worse_tail = uncertainty_adjusted_score(
+                _inputs(net_edge=_range(edge, edge, edge), tail_risk=_tail(es=0.5)), as_of=AT)
+            better_tail = uncertainty_adjusted_score(
+                _inputs(net_edge=_range(edge, edge, edge), tail_risk=_tail(es=0.01)), as_of=AT)
+            assert worse_tail.value < better_tail.value, f"tail penalty inverted at edge={edge}"
+
     def test_rank_cells_sorts_descending(self):
         ranked = rank_cells([
             _inputs(cell_id="low", net_edge=_range(0.001, 0.001, 0.001)),

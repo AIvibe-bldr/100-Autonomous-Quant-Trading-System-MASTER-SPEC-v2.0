@@ -123,6 +123,32 @@ class TestOversellPrevention:
         with pytest.raises(OversellError):
             registry.trigger("s1", cells, at=AT)
 
+    def test_failed_trigger_strands_no_reservations(self):
+        """A trigger that breaches §16 must leave the ledger untouched.
+        Reserving cell by cell and raising partway strands reservations the
+        caller never received ids for (the exception discards the return
+        value), so nothing can release them — and the capacity they hold is
+        subtracted from every future protective exit permanently."""
+        cells = {"A": _cell_with({"NVDA": 40}, "A"), "B": _cell_with({"NVDA": 60}, "B")}
+        registry = _registry({"NVDA": 90})   # master shows 90; cells hold 100
+        registry.register(CellStopPlan(stop_id="s1", cell_id="A", symbol="NVDA",
+                                       stop_price=170.0, scope=StopScope.SYMBOL, reason="x"))
+        with pytest.raises(OversellError):
+            registry.trigger("s1", cells, at=AT)
+        assert registry.sell_reservations.reserved_qty("NVDA") == 0.0
+        assert registry.sell_reservations.available_to_reserve("NVDA") == 90.0
+
+    def test_batch_is_validated_against_total_demand_not_per_cell(self):
+        """Each individual cell's exit fits under the master position, but
+        their sum does not — the batch must still be refused."""
+        cells = {"A": _cell_with({"NVDA": 40}, "A"), "B": _cell_with({"NVDA": 40}, "B")}
+        registry = _registry({"NVDA": 50})   # 40 alone fits; 40+40 does not
+        registry.register(CellStopPlan(stop_id="s1", cell_id="A", symbol="NVDA",
+                                       stop_price=170.0, scope=StopScope.SYMBOL, reason="x"))
+        with pytest.raises(OversellError):
+            registry.trigger("s1", cells, at=AT)
+        assert registry.sell_reservations.reserved_qty("NVDA") == 0.0
+
     def test_unsynced_master_position_fails_closed(self):
         """No sync_master_long_qty call for this symbol -> available capacity
         defaults to 0 -> every reservation is refused. Mirrors

@@ -72,10 +72,21 @@ def uncertainty_adjusted_score(inputs: CellAllocationInputs, as_of: datetime,
     edge = (inputs.net_edge.low if inputs.net_edge.confidence < low_confidence_threshold
            else inputs.net_edge.base)
     net_of_cost = edge - inputs.cost_drag
-    score = net_of_cost * inputs.regime_stability * (1.0 - inputs.correlation_penalty) * \
+
+    # `quality` in [0,1]: 1.0 = stable regime, uncorrelated, no drawdown.
+    quality = inputs.regime_stability * (1.0 - inputs.correlation_penalty) * \
         (1.0 - inputs.drawdown)
-    if inputs.tail_risk.expected_shortfall > 0:
-        score = score / (1.0 + inputs.tail_risk.expected_shortfall)
+    tail_factor = 1.0 + max(0.0, inputs.tail_risk.expected_shortfall)
+
+    # The penalties must worsen the score whichever side of zero the edge is
+    # on. Multiplying a NEGATIVE edge by quality<1 (and dividing by
+    # tail_factor>1) would shrink the loss toward zero — ranking the most
+    # correlated, deepest-drawdown, fattest-tailed loser ABOVE a clean one.
+    # So a negative edge is amplified by the same factors instead.
+    if net_of_cost >= 0:
+        score = net_of_cost * quality / tail_factor
+    else:
+        score = net_of_cost * (2.0 - quality) * tail_factor
     confidence = min(inputs.net_edge.confidence, inputs.capacity.confidence,
                      inputs.regime_stability)
     sample_size = min(inputs.net_edge.sample_size, inputs.capacity.sample_size,

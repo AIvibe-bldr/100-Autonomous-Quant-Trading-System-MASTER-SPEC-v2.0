@@ -61,6 +61,22 @@ def _correlation_confidence(regime: RegimeCorrelation, min_sample_size: int) -> 
     return min(1.0, regime.sample_count / min_sample_size)
 
 
+def _require_measured_pairs(item_ids: list[str], regime: RegimeCorrelation) -> None:
+    """Every pair among `item_ids` must have been measured. Without this,
+    `RegimeCorrelation.get`'s 0.0 default silently reads an unmeasured pair
+    as perfectly uncorrelated, so adding an item with NO data at all RAISES
+    the effective-independence count — claiming diversification that was
+    never observed. §19 forbids exactly that inference ("different name" is
+    not evidence of independence); it applies just as much to counting
+    cells (§18) as to comparing alphas."""
+    missing = [(a, b) for i, a in enumerate(item_ids) for b in item_ids[i + 1:]
+               if not regime.has(a, b)]
+    if missing:
+        raise InsufficientDataError(
+            f"no measured correlation for pairs {missing} — an unmeasured pair "
+            f"is missing data, not evidence of independence (§18-19)")
+
+
 def _symmetric_eigenvalues(matrix: list[list[float]], max_iter: int = 200,
                            tol: float = 1e-10) -> list[float]:
     """Eigenvalues of a real symmetric matrix via the classic cyclic-Jacobi
@@ -136,6 +152,7 @@ def eigenvalue_effective_rank(item_ids: list[str], regime: RegimeCorrelation,
     if n == 1:
         return PointEstimate(value=1.0, confidence=1.0, sample_size=0,
                              method_version=EIGENVALUE_METHOD_VERSION, as_of=as_of)
+    _require_measured_pairs(item_ids, regime)
     matrix = [[regime.get(a, b) for b in item_ids] for a in item_ids]
     eigenvalues = _symmetric_eigenvalues(matrix)
     sum_sq = sum(e * e for e in eigenvalues)
@@ -156,6 +173,7 @@ def correlation_cluster_count(item_ids: list[str], regime: RegimeCorrelation, as
     if n == 1:
         return PointEstimate(value=1.0, confidence=1.0, sample_size=0,
                              method_version=CORRELATION_CLUSTER_METHOD_VERSION, as_of=as_of)
+    _require_measured_pairs(item_ids, regime)
     count = _connected_component_count(
         item_ids, lambda a, b: abs(regime.get(a, b)), threshold)
     return PointEstimate(
@@ -175,9 +193,18 @@ def risk_factor_cluster_count(item_ids: list[str], factor_exposures: dict[str, d
     n = len(item_ids)
     if n == 0:
         raise InsufficientDataError("no items to evaluate")
-    missing = [i for i in item_ids if i not in factor_exposures]
+    # A present-but-degenerate exposure vector (empty, or all zeros) is not a
+    # measurement: cosine similarity against it is 0 for every peer, so the
+    # item would read as independent of the entire book and inflate the
+    # count. Same trap as an unmeasured correlation pair (§18-19) — checking
+    # only that the key exists is not enough.
+    missing = [i for i in item_ids
+               if i not in factor_exposures
+               or not any(v != 0.0 for v in factor_exposures[i].values())]
     if missing:
-        raise InsufficientDataError(f"missing factor exposures for {missing}")
+        raise InsufficientDataError(
+            f"missing or all-zero factor exposures for {missing} — no measured "
+            f"exposure is missing data, not evidence of independence (§18-19)")
     if n == 1:
         return PointEstimate(value=1.0, confidence=1.0, sample_size=sample_size,
                              method_version=FACTOR_CLUSTER_METHOD_VERSION, as_of=as_of)

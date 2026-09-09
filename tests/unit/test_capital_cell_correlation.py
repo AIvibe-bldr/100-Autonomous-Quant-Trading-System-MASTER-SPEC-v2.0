@@ -58,6 +58,22 @@ class TestCorrelationEngine:
         with pytest.raises(InsufficientDataError):
             est.regime(CorrelationRegime.DOWNSIDE)
 
+    def test_stress_regime_is_rank_selected_so_ties_cannot_inflate_it(self):
+        """A value-threshold ('r <= cutoff') sweeps in every day tied with
+        the cutoff. Ties at the bottom are ordinary in real series (flat /
+        halted / zero-return days), so a 5% stress window would silently
+        become most of the sample and the 'stress correlation' §21 exists
+        to isolate would be measured over quiet days instead."""
+        n = 60
+        market = [0.0] * 40 + [0.01] * 20    # 40 flat days, no crash at all
+        a = [float(i % 5) for i in range(n)]
+        b = [float((i * 3) % 7) for i in range(n)]
+        engine = CorrelationEngine(min_sample_size=3, stress_quantile=0.05)
+        est = engine.estimate({"A": a, "B": b}, market_returns=market,
+                              lookback_days=n, as_of=AT)
+        assert est.regime(CorrelationRegime.STRESS).sample_count == 3   # 5% of 60
+        assert est.regime(CorrelationRegime.NORMAL).sample_count == 60
+
     def test_all_regimes_below_minimum_raises(self):
         market = [0.1, 0.2, 0.3]
         a = [1.0, 2.0, 3.0]

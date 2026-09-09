@@ -95,12 +95,23 @@ class SellReservationLedger:
         return sum(r.qty for r in self._reservations.values()
                   if r.symbol == symbol and (cell_id is None or r.cell_id == cell_id))
 
-    def available_to_reserve(self, symbol: str, cell_id: str) -> float:
-        """How much MORE of this cell's position in this symbol can still be
-        reserved for exit, given what other still-open reservations (on this
-        cell or others) already claim against the Master's long position."""
+    def available_to_reserve(self, symbol: str) -> float:
+        """How much more of this symbol can still be reserved for exit,
+        given what all still-open reservations (across every cell) already
+        claim against the Master's long position."""
         master_qty = self.master_long_qty.get(symbol, 0.0)
         return max(0.0, master_qty - self.reserved_qty(symbol))
+
+    def check_can_reserve(self, symbol: str, qty: float) -> None:
+        """Raise if reserving `qty` more of `symbol` would breach §16.
+        Split out from `reserve_sell` so a caller planning several
+        reservations at once can validate the whole batch BEFORE recording
+        any of it (see `CellStopRegistry.trigger`)."""
+        if qty > self.available_to_reserve(symbol) + 1e-9:
+            raise OversellError(
+                f"{symbol}: reserving {qty} would exceed master_long_position_qty="
+                f"{self.master_long_qty.get(symbol, 0.0)} "
+                f"(already reserved: {self.reserved_qty(symbol):.4f}) (§16)")
 
     def reserve_sell(self, reservation_id: str, cell_id: str, symbol: str,
                      qty: float) -> SellReservation:
@@ -108,11 +119,7 @@ class SellReservationLedger:
             raise ValueError("reservation qty must be positive")
         if reservation_id in self._reservations:
             raise DuplicateSellReservationError(reservation_id)
-        if qty > self.available_to_reserve(symbol, cell_id) + 1e-9:
-            raise OversellError(
-                f"{symbol}: reserving {qty} for cell {cell_id} would exceed "
-                f"master_long_position_qty={self.master_long_qty.get(symbol, 0.0)} "
-                f"(already reserved: {self.reserved_qty(symbol):.4f}) (§16)")
+        self.check_can_reserve(symbol, qty)
         reservation = SellReservation(reservation_id, cell_id, symbol, qty)
         self._reservations[reservation_id] = reservation
         return reservation
@@ -168,7 +175,15 @@ class CellStopRegistry:
         in-flight exit, so the same cell/symbol pair is never double-claimed
         across overlapping triggers (§16). A cell already fully reserved
         (nothing left to exit) is silently skipped rather than raising —
-        it means a previous trigger already has this position covered."""
+        it means a previous trigger already has this position covered.
+
+        All-or-nothing: the whole batch is validated against §16 capacity
+        before ANY reservation is recorded. Reserving cell by cell and
+        letting a later one raise would strand the earlier reservations —
+        the caller never receives their ids (the exception discards the
+        return value), so nothing could ever release them, and the
+        capacity they hold would be subtracted from every future
+        protective exit for good."""
         plan = self.get(stop_id)
         at = ensure_utc(at)
 
@@ -182,7 +197,8 @@ class CellStopRegistry:
             targets = [(cid, sym) for cid, cell in cells.items()
                       for sym in cell.positions if cell.position_qty(sym) > 1e-9]
 
-        intents: list[CellOrderIntent] = []
+        # 1. plan every exit this trigger wants, touching no state
+        planned: list[tuple[str, str, float]] = []   # (cell_id, symbol, exit_qty)
         for cell_id, symbol in targets:
             if cell_id not in cells:
                 continue
@@ -191,6 +207,18 @@ class CellStopRegistry:
             exit_qty = held - already_reserved_for_cell
             if exit_qty <= 1e-9:
                 continue
+            planned.append((cell_id, symbol, exit_qty))
+
+        # 2. validate the batch's total demand per symbol against §16 capacity
+        demand_by_symbol: dict[str, float] = {}
+        for _, symbol, exit_qty in planned:
+            demand_by_symbol[symbol] = demand_by_symbol.get(symbol, 0.0) + exit_qty
+        for symbol, total_demand in demand_by_symbol.items():
+            self.sell_reservations.check_can_reserve(symbol, total_demand)
+
+        # 3. commit — every reservation above is now known to fit
+        intents: list[CellOrderIntent] = []
+        for cell_id, symbol, exit_qty in planned:
             reservation_id = f"{stop_id}:{cell_id}:{symbol}:{uuid.uuid4().hex[:8]}"
             self.sell_reservations.reserve_sell(reservation_id, cell_id, symbol, exit_qty)
             intents.append(CellOrderIntent(
