@@ -8,7 +8,7 @@
 > 2026-09、§41の優先度1〜7（Cell Schema / Virtual Position・Cash Ledger / Master
 > Reconciliation Invariant / Capital Reservation Ledger / Cell SELL・No Short /
 > Internal Netting（§5-9含む）/ Fill Allocation Engine）を `packages/schemas/capital_cell.py`
-> と `services/capital_cells/` に実装し、`tests/unit/test_capital_cells.py`（33件）で検証済み。
+> と `services/capital_cells/` に実装し、`tests/unit/test_capital_cells.py`（45件）で検証済み。
 > **`services/pipeline.py`（既存の単一Master Portfolioパイプライン）へはまだ配線していない** —
 > スタンドアロンかつ完全にテストされたモジュールとして独立に存在する。優先度8以降
 > （Same-Symbol Stop Management, Correlation/Edge Lineage, Opportunity Breadth,
@@ -1221,7 +1221,20 @@ Reconciliationレイヤーを追加する拡張**であり、既存の安全原�
 | 7 | Fill Allocation Engine | `services/capital_cells/fill_allocation.py`（`FillAllocationEngine`、pro-rata） | `TestFillAllocationEngine` |
 | — | End-to-end（Netting→Broker Fill→Allocation→Reconciliation） | — | `TestCapitalCellEndToEnd` |
 
-`tests/unit/test_capital_cells.py` で33件のテストが通っており、§39の以下の
+実装上の重要な取り決め:
+
+- **Internal Crossは売り手の実保有が前提（§7）**: `NettingEngine.net()` はCell台帳を
+  必須引数として受け取り、SELL Intentの合計がそのCellのVirtual Long保有を超える場合は
+  プラン生成前に拒否する（分割Intentの合算で判定）。Cell単位のShortを生む
+  ネッティング計画自体を作らせない。
+- **適用は全か無か**: `apply_crosses_to_cells` / `apply_allocations_to_cells` は
+  全legを事前検証してから書き込む。途中で失敗して一部Cellだけ更新されると、
+  §4のReconciliation不変条件を「検知するはずの機構自身が破る」ことになるため。
+- **Intent IDは一意（§13）**: 重複IDはネッティングの決定性を壊すため拒否する。
+- **Fill Allocationの残余はNetting結果が返す**: `SymbolNetResult.residual_intents` に
+  「Broker注文が各Cellへ負っている数量」を持たせ、呼び出し側が再計算しない。
+
+`tests/unit/test_capital_cells.py` で45件のテストが通っており、§39の以下の
 不変条件（本スコープに該当するもの）をカバーする:
 
 ```
