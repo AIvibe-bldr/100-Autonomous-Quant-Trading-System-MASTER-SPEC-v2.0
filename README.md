@@ -74,6 +74,9 @@ Data Flow）/ `invariants.md`（Safety Invariants）/ `database.md`（DB Schema�
 `agents.md`（Agent Interfaces）/ `risk.md`（Risk Pipeline）/ `execution.md`（Order State Machine・
 Broker Interface）/ `experiments.md`（Testing Strategy・Failure Matrix・Paper→Live Gate・Phase計画）
 
+`capital_cell_architecture.md` — Master Portfolioを複数の独立Capital Cellへ分割運用するための
+**提案仕様（未実装）**。V1のスコープ外で、実装には未着手。
+
 ## ダッシュボード + Status API
 
 ```bash
