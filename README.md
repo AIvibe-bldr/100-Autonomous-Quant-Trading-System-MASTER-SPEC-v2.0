@@ -75,10 +75,12 @@ Data Flow）/ `invariants.md`（Safety Invariants）/ `database.md`（DB Schema�
 Broker Interface）/ `experiments.md`（Testing Strategy・Failure Matrix・Paper→Live Gate・Phase計画）
 
 `capital_cell_architecture.md` — Master Portfolioを複数の独立Capital Cellへ分割運用するための
-**提案仕様**。§41優先度1〜7（Cell Schema / Virtual Ledger / Reconciliation / Capital
-Reservation / No Short / Internal Netting / Fill Allocation）を `services/capital_cells/`
-にスタンドアロン実装済み（`tests/unit/test_capital_cells.py`）。既存の単一Master Portfolio
-パイプライン（`services/pipeline.py`）へはまだ配線しておらず、V1のスコープ外。
+**提案仕様**。§41優先度1〜14（Ledger / Reservation / Netting / Fill Allocation /
+Same-Symbol Stop管理 / Correlation・Edge Lineage / Opportunity Breadth /
+Capacity・Tail Risk / Allocation Governor / Scale Simulation / Common-Mode Failure Guard）
+を `services/capital_cells/` にスタンドアロン実装済み（`test_capital_cell*.py`、176件）。
+既存の単一Master Portfolioパイプライン（`services/pipeline.py`）・ダッシュボードへは
+まだ配線しておらず、V1のスコープ外。優先度15（UI）はその配線が決まるまで未着手。
 
 ## ダッシュボード + Status API
 

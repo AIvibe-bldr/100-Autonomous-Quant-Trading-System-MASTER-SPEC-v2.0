@@ -1,19 +1,16 @@
 # Capital Cell Architecture — Critical Corrections v2
 
-> **ステータス: 一部実装済み（§41 優先度1〜7の基盤部分）。** 本ドキュメントが指す「既存の
-> Capital Cell / Portfolio Sleeve実装指示」は本リポジトリの他ドキュメント（`MASTER_SPEC.md` /
-> `architecture.md` / `invariants.md` 等）には存在しない。したがって本文中の「既存仕様を
-> 置き換える／優先する」はこのリポジトリの現行実装・仕様には適用されない。
+> **ステータス: §41 優先度1〜14 実装済み（優先度15 UIのみ未着手）。** 本ドキュメントが指す
+> 「既存のCapital Cell / Portfolio Sleeve実装指示」は本リポジトリの他ドキュメント
+> （`MASTER_SPEC.md` / `architecture.md` / `invariants.md` 等）には存在しない。したがって
+> 本文中の「既存仕様を置き換える／優先する」はこのリポジトリの現行実装・仕様には適用されない。
 >
-> 2026-09、§41の優先度1〜7（Cell Schema / Virtual Position・Cash Ledger / Master
-> Reconciliation Invariant / Capital Reservation Ledger / Cell SELL・No Short /
-> Internal Netting（§5-9含む）/ Fill Allocation Engine）を `packages/schemas/capital_cell.py`
-> と `services/capital_cells/` に実装し、`tests/unit/test_capital_cells.py`（45件）で検証済み。
-> **`services/pipeline.py`（既存の単一Master Portfolioパイプライン）へはまだ配線していない** —
-> スタンドアロンかつ完全にテストされたモジュールとして独立に存在する。優先度8以降
-> （Same-Symbol Stop Management, Correlation/Edge Lineage, Opportunity Breadth,
-> Capacity/Tail Risk, Allocation Governor, Scale Simulation, Common-Mode Dependency, UI）と、
-> パイプラインへの実配線は未着手。
+> 2026-09、§41の優先度1〜14を `packages/schemas/capital_cell.py` と `services/capital_cells/`
+> に実装し、9本のテストファイル・176件のテストで検証済み（内訳は末尾「実装状況」参照）。
+> 新規ガードは原則すべて変異テスト（該当行をわざと壊してテストが落ちるか）で実効性を確認した。
+> **`services/pipeline.py`（既存の単一Master Portfolioパイプライン）・`apps/web/dashboard.html`
+> へはまだ配線していない** — スタンドアロンかつ完全にテストされたモジュール群として独立に
+> 存在する。優先度15（UI）は、表示すべき実配線が存在しないため未着手。
 >
 > 現行アーキテクチャとの整合性メモは末尾の「整合性メモ（2026-09 レビュー）」を参照。
 > 実装済みモジュールの一覧は末尾の「実装状況（2026-09）」を参照。
@@ -1201,18 +1198,18 @@ Reconciliationレイヤーを追加する拡張**であり、既存の安全原�
 - **Corporate Action Cell Allocation（§33）**: 既存の
   `services/market_data/corporate_actions.py` はMaster単一口座向けで、
   Cell配分ロジックは未実装。
-- **§41優先度8以降**（Same-Symbol Stop Management, Correlation/Edge Lineage,
-  Opportunity Breadth, Capacity/Tail Risk, Allocation Governor, Scale
-  Simulation, Common-Mode Dependency, UI）: 未着手。
+- **§41優先度15（UI）**: 未着手。優先度1〜14はいずれも`services/pipeline.py` /
+  `apps/web/dashboard.html`へ配線されていないため、表示すべき実データの経路が
+  まだ存在しない。
 
 ## 実装状況（2026-09）
 
-§41優先度1〜7を、既存パイプライン（`services/pipeline.py`）には配線しない
-スタンドアロンモジュールとして実装済み。
+§41優先度1〜14を、既存パイプライン（`services/pipeline.py`）には配線しない
+スタンドアロンモジュール群として実装済み。
 
 | 優先度 | 内容 | 実装場所 | テスト |
 |---|---|---|---|
-| 1 | Cell Schema | `packages/schemas/capital_cell.py`（`CapitalCell`, `CellOrderIntent`） | `TestCellSchema` |
+| 1 | Cell Schema | `packages/schemas/capital_cell.py`（`CapitalCell`, `CellOrderIntent`, `CellStopPlan`） | `TestCellSchema` |
 | 2 | Virtual Position / Cash Ledger | `services/capital_cells/ledger.py`（`CellLedger`） | `TestCellLedger` |
 | 3 | Master Reconciliation Invariant | `services/capital_cells/reconciliation.py`（`CellReconciliationEngine`） | `TestCellReconciliation` |
 | 4 | Capital Reservation Ledger | `services/capital_cells/reservation.py`（`CapitalReservationLedger`） | `TestCapitalReservation` |
@@ -1220,6 +1217,23 @@ Reconciliationレイヤーを追加する拡張**であり、既存の安全原�
 | 6 | Internal Netting（§5-9含む: gross flow保持・Internal Crossing・Transfer Price・仮想/実会計分離） | `services/capital_cells/netting.py`（`NettingEngine`） | `TestNettingEngine` |
 | 7 | Fill Allocation Engine | `services/capital_cells/fill_allocation.py`（`FillAllocationEngine`、pro-rata） | `TestFillAllocationEngine` |
 | — | End-to-end（Netting→Broker Fill→Allocation→Reconciliation） | — | `TestCapitalCellEndToEnd` |
+| 8 | Same-Symbol Multi-Cell Stop Management（§14-16） | `services/capital_cells/stops.py`（`CellStopRegistry`, `SellReservationLedger`） | `test_capital_cell_stops.py` |
+| 9 | Correlation / Edge Lineage（§19, §21） | `services/capital_cells/correlation.py`（`CorrelationEngine`, `effective_independent_alpha_count`） | `test_capital_cell_correlation.py` |
+| 10 | Opportunity Breadth / Effective Independent Cells（§17-18） | `services/capital_cells/breadth.py`（eigenvalue / cluster / factor methods） | `test_capital_cell_breadth.py` |
+| 11 | Capacity / Tail Risk（§20, §22-23） | `services/capital_cells/capacity_tail_risk.py` | `test_capital_cell_capacity_tail_risk.py` |
+| 12 | Allocation Governor（§28-30） | `services/capital_cells/allocation_governor.py` | `test_capital_cell_allocation_governor.py` |
+| 13 | Marginal Alpha / Scale Simulation（§24-25） | `services/capital_cells/scale_simulation.py` | `test_capital_cell_scale_simulation.py` |
+| 14 | Common-Mode Failure Guard（§31） | `services/capital_cells/common_mode.py`（`CommonModeFailoverGuard`） | `test_capital_cell_common_mode.py` |
+| 9 (基盤) | 不確実性つき推定値の共通形（estimate/confidence/sample_size/method_version） | `services/capital_cells/estimation.py`（`PointEstimate`, `RangeEstimate`） | `test_capital_cell_estimation.py` |
+
+優先度9で導入した`PointEstimate`/`RangeEstimate`（confidence・sample_size・
+method_versionを持つ）は、優先度10〜13すべてで共通に再利用している —
+§17-25全体を貫く「estimate/confidence/sample_size/method_version」という
+繰り返しパターンを、モジュールごとに再実装せず1箇所にまとめた。
+
+新規に導入した安全ガード（空売り禁止・全か無か適用・決定性・Oversell防止・
+Broker Failover承認等）は、原則すべて変異テスト（該当行を意図的に壊して
+テストが落ちることを確認）で実効性を検証した。
 
 実装上の重要な取り決め:
 
@@ -1234,8 +1248,9 @@ Reconciliationレイヤーを追加する拡張**であり、既存の安全原�
 - **Fill Allocationの残余はNetting結果が返す**: `SymbolNetResult.residual_intents` に
   「Broker注文が各Cellへ負っている数量」を持たせ、呼び出し側が再計算しない。
 
-`tests/unit/test_capital_cells.py` で45件のテストが通っており、§39の以下の
-不変条件（本スコープに該当するもの）をカバーする:
+`tests/unit/test_capital_cells.py` で45件のテストが通っており（優先度8〜14＋
+共通基盤の8ファイルと合わせ、`test_capital_cell*.py`全体で176件、うち§39の
+以下の不変条件（本スコープに該当するもの）をカバーするのは主に`test_capital_cells.py`側）:
 
 ```
 cell_position >= 0
@@ -1251,7 +1266,14 @@ internal_cross_does_not_create_fake_tax_event
 ## 実装順序について
 
 §41の優先順位（Cell Schema → Virtual Ledger → Reconciliation Invariant →
-Capital Reservation → No Short → Netting → Fill Allocation → …）は、
-現行コードベースの層構造（Ledger → Execution → Risk → Reconciliation）とも
-自然に対応しており、妥当な順序だった。実装済み7項目はこの順序を踏襲している。
-優先度8（Same-Symbol Stop Management）以降に着手する場合も同順序を推奨する。
+Capital Reservation → No Short → Netting → Fill Allocation → Same-Symbol
+Stop Management → Correlation/Edge Lineage → Opportunity Breadth →
+Capacity/Tail Risk → Allocation Governor → Scale Simulation →
+Common-Mode Dependency → UI）は、現行コードベースの層構造
+（Ledger → Execution → Risk → Reconciliation）とも自然に対応しており、
+妥当な順序だった。優先度1〜14はこの順序をそのまま踏襲して実装済み。
+
+残るのは優先度15（UI）のみで、これは他の14項目と質が異なる：UIはパイプラインへ
+の実配線があって初めて表示すべきデータを持つため、`services/pipeline.py`（既存の
+単一Master Portfolio）をCapital Cell対応に拡張するかどうかの設計判断が先に必要。
+それを行わずにUIだけ作ると、表示するものがダミーデータしかない画面になる。
