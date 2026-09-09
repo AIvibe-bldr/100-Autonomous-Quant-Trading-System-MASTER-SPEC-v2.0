@@ -1,13 +1,22 @@
 # Capital Cell Architecture — Critical Corrections v2
 
-> **ステータス: 提案仕様（未実装）。** 本ドキュメントが指す「既存のCapital Cell / Portfolio
-> Sleeve実装指示」は本リポジトリの他ドキュメント（`MASTER_SPEC.md` / `architecture.md` /
-> `invariants.md` 等）には存在しない。したがって本文中の「既存仕様を置き換える／優先する」は
-> このリポジトリの現行実装・仕様には適用されない。取り込み時点（2026-09）でリポジトリ内に
-> Capital Cell / Portfolio Sleeve関連のコードは一切ない（`git grep` で無ヒット）。
-> Master Portfolio単一口座での実装が完了した後の拡張候補として保管する。実装はまだ着手していない。
+> **ステータス: 一部実装済み（§41 優先度1〜7の基盤部分）。** 本ドキュメントが指す「既存の
+> Capital Cell / Portfolio Sleeve実装指示」は本リポジトリの他ドキュメント（`MASTER_SPEC.md` /
+> `architecture.md` / `invariants.md` 等）には存在しない。したがって本文中の「既存仕様を
+> 置き換える／優先する」はこのリポジトリの現行実装・仕様には適用されない。
+>
+> 2026-09、§41の優先度1〜7（Cell Schema / Virtual Position・Cash Ledger / Master
+> Reconciliation Invariant / Capital Reservation Ledger / Cell SELL・No Short /
+> Internal Netting（§5-9含む）/ Fill Allocation Engine）を `packages/schemas/capital_cell.py`
+> と `services/capital_cells/` に実装し、`tests/unit/test_capital_cells.py`（33件）で検証済み。
+> **`services/pipeline.py`（既存の単一Master Portfolioパイプライン）へはまだ配線していない** —
+> スタンドアロンかつ完全にテストされたモジュールとして独立に存在する。優先度8以降
+> （Same-Symbol Stop Management, Correlation/Edge Lineage, Opportunity Breadth,
+> Capacity/Tail Risk, Allocation Governor, Scale Simulation, Common-Mode Dependency, UI）と、
+> パイプラインへの実配線は未着手。
 >
 > 現行アーキテクチャとの整合性メモは末尾の「整合性メモ（2026-09 レビュー）」を参照。
+> 実装済みモジュールの一覧は末尾の「実装状況（2026-09）」を参照。
 
 既存のCapital Cell / Portfolio Sleeve実装指示について再検証した結果、以下の修正を必須とする。
 
@@ -1177,14 +1186,10 @@ Reconciliationレイヤーを追加する拡張**であり、既存の安全原�
 
 ## 現行実装に存在せず、新規に必要になる前提
 
-- **Virtual Position/Cash Ledger（Cell単位）**: `packages/common/ledger.py` は
-  現状、単一Master口座のみを前提にしている。Cell単位のSub-Ledgerは新規追加。
-- **Capital Reservation Ledger（§12-13）／Internal Netting Engine（§5-9）／
-  Fill Allocation Engine（§11）**: 現行の `services/execution`,
-  `services/risk` には対応する概念がなく、いずれも新規モジュール。
 - **Master Risk ControllerへのGross Cell Intent入力（§6, §38）**: 現行の
-  `services/risk` はNetした単一注文のみを見る設計。Gross Intent /
-  Strategy Concentrationを追加入力として受け取る拡張が必要。
+  `services/risk` はNetした単一注文のみを見る設計。`services/capital_cells/netting.py`
+  の `NettingResult` はgross flow / internal cross volumeを保持しているが、
+  それを`MasterRiskController`へ実際に渡す配線はまだない。
 - **FX Engine（§32）**: `docs/MASTER_SPEC.md` ISSUE-1により、V1は内部会計を
   USDのみで行い、JPY換算は表示層限定としている（Master側にFX P&LやFX
   Exposureを持つ実装は現状ない）。§32が前提とする「Master PortfolioのFX
@@ -1196,10 +1201,44 @@ Reconciliationレイヤーを追加する拡張**であり、既存の安全原�
 - **Corporate Action Cell Allocation（§33）**: 既存の
   `services/market_data/corporate_actions.py` はMaster単一口座向けで、
   Cell配分ロジックは未実装。
+- **§41優先度8以降**（Same-Symbol Stop Management, Correlation/Edge Lineage,
+  Opportunity Breadth, Capacity/Tail Risk, Allocation Governor, Scale
+  Simulation, Common-Mode Dependency, UI）: 未着手。
+
+## 実装状況（2026-09）
+
+§41優先度1〜7を、既存パイプライン（`services/pipeline.py`）には配線しない
+スタンドアロンモジュールとして実装済み。
+
+| 優先度 | 内容 | 実装場所 | テスト |
+|---|---|---|---|
+| 1 | Cell Schema | `packages/schemas/capital_cell.py`（`CapitalCell`, `CellOrderIntent`） | `TestCellSchema` |
+| 2 | Virtual Position / Cash Ledger | `services/capital_cells/ledger.py`（`CellLedger`） | `TestCellLedger` |
+| 3 | Master Reconciliation Invariant | `services/capital_cells/reconciliation.py`（`CellReconciliationEngine`） | `TestCellReconciliation` |
+| 4 | Capital Reservation Ledger | `services/capital_cells/reservation.py`（`CapitalReservationLedger`） | `TestCapitalReservation` |
+| 5 | Cell SELL / No Short | `services/capital_cells/ledger.py`（`CellLedger`内の空売り禁止チェック） | `TestCellLedger` |
+| 6 | Internal Netting（§5-9含む: gross flow保持・Internal Crossing・Transfer Price・仮想/実会計分離） | `services/capital_cells/netting.py`（`NettingEngine`） | `TestNettingEngine` |
+| 7 | Fill Allocation Engine | `services/capital_cells/fill_allocation.py`（`FillAllocationEngine`、pro-rata） | `TestFillAllocationEngine` |
+| — | End-to-end（Netting→Broker Fill→Allocation→Reconciliation） | — | `TestCapitalCellEndToEnd` |
+
+`tests/unit/test_capital_cells.py` で33件のテストが通っており、§39の以下の
+不変条件（本スコープに該当するもの）をカバーする:
+
+```
+cell_position >= 0
+cell_sell_qty <= cell_position
+sum(cell_positions_by_symbol) == broker_position_after_reconciliation
+sum(cell_cash) + master_unallocated_cash + adjustments == master_cash
+no_cell_can_spend_reserved_capital_of_another_cell
+net_broker_order == deterministic_net(gross_cell_intents)
+internal_cross_does_not_create_fake_master_trade
+internal_cross_does_not_create_fake_tax_event
+```
 
 ## 実装順序について
 
 §41の優先順位（Cell Schema → Virtual Ledger → Reconciliation Invariant →
 Capital Reservation → No Short → Netting → Fill Allocation → …）は、
 現行コードベースの層構造（Ledger → Execution → Risk → Reconciliation）とも
-自然に対応しており、妥当な順序に見える。着手する場合はこの順序を踏襲すべき。
+自然に対応しており、妥当な順序だった。実装済み7項目はこの順序を踏襲している。
+優先度8（Same-Symbol Stop Management）以降に着手する場合も同順序を推奨する。
