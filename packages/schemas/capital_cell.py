@@ -54,3 +54,30 @@ class CellOrderIntent(StrictModel):
     side: Action
     qty: float = Field(gt=0)
     created_at: datetime
+
+
+class StopScope(str, enum.Enum):
+    """How far a Stop/Invalidation reaches (§15). The scope decides which
+    cells' positions get an exit intent when the stop fires — never whether
+    a firing stop's OWN cell is exited (that always happens)."""
+
+    CELL = "CELL"            # only the strategy that owns this stop is wrong
+    SYMBOL = "SYMBOL"        # something is wrong with the symbol itself —
+                              # every cell holding it exits, regardless of
+                              # each cell's own thesis or stop level
+    PORTFOLIO = "PORTFOLIO"  # portfolio-wide risk event — every cell, every
+                              # symbol, exits
+
+
+class CellStopPlan(StrictModel):
+    """One cell's protective stop / invalidation level (§14-15). Tracked per
+    cell even when several cells hold the same symbol for different reasons —
+    the Master Broker Position is one aggregate, but the reason for holding
+    it, and the price at which that reason is invalidated, is not."""
+
+    stop_id: str = Field(min_length=1)
+    cell_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    stop_price: float = Field(gt=0)
+    scope: StopScope
+    reason: str = Field(min_length=1)
