@@ -128,7 +128,15 @@ regression risk.
 
 ### P0 — required before any Live Trading, and worth fixing now for Paper too
 
-#### F1. Infinity is accepted where NaN is rejected, on AI-facing and execution schemas
+#### F1. Infinity is accepted where NaN is rejected, on AI-facing and execution schemas — RESOLVED
+
+**Resolved** (commit `7b0ebb6`, `claude/api-key-validation-sgudi2`): `allow_inf_nan=False`
+added to every relevant `Field(...)` across `packages/schemas/{core,audit,monitor,
+capital_cell}.py`, plus a `math.isfinite()` check in `DecisionOutput._range_ordered`
+for `expected_return_range` (a bare tuple has no reachable per-element Field
+constraint). Regression tests in `tests/unit/test_security_review_regressions.py`
+(mutation-tested: fail without the fix, pass with it). Full suite green (470 tests),
+no regressions. The evidence below is kept as-is for audit-trail purposes.
 
 **Evidence.** `packages/schemas/core.py` uses `Field(gt=0)`/`Field(ge=0)`
 throughout (`Bar`, `Quote`, `OrderIntent.qty`, `SizedProposal.notional`,
@@ -589,7 +597,7 @@ Per instruction §28 (no large refactor at once) and §0 (small units,
 P0 first):
 
 1. **F1** (NaN/Infinity schema hardening) — smallest, purely additive,
-   zero design decisions, do first.
+   zero design decisions, do first. **DONE** — see F1 above.
 2. **F9/F3/F4/F7** (persistence layer, then durable idempotency, then
    startup reconciliation, then durable audit trail) — the one real
    design decision in this report; land as separate small commits per
