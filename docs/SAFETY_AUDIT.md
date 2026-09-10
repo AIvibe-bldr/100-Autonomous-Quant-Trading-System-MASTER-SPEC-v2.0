@@ -198,7 +198,22 @@ currently-passing should break.
 
 ---
 
-#### F2. `signal_age_sec` is a hardcoded constant — the "stale signal" risk check can never fire
+#### F2. `signal_age_sec` is a hardcoded constant — the "stale signal" risk check can never fire — RESOLVED
+
+**Resolved** (commit `54728ca`, `claude/api-key-validation-sgudi2`):
+`TradingPipeline` gained a `wall_clock: Clock` field (a real clock,
+independent of the session's simulated `clock`/`FrozenClock`) and a
+`_signal_captured_at` dict recording when each signal was finalized.
+`_risk_view` now computes `signal_age_sec` from the real elapsed delta
+instead of the literal `0.0`; a missing entry raises `KeyError` rather
+than silently reading as fresh. `_exit_risk_view` keeps its literal
+`0.0` — documented as intentional, since protective exits are
+unconditionally exempt from `stale_order` (`is_exit or ...`), not
+another instance of the same gap. New regression test in
+`tests/unit/test_security_review_regressions.py` drives the real
+plumbing directly (fresh signal passes, the same signal past the
+configured threshold is rejected); mutation-tested. Full suite green
+(479 tests). The evidence below is kept as-is for audit-trail purposes.
 
 **Evidence.** `services/risk/master_controller.py:257-259`:
 ```python
@@ -641,7 +656,8 @@ P0 first):
    — see F3/F4 above. F7 remains.
 3. **F2** (signal age) — do after F1 lands (shares the "reject bad
    numbers" mindset) and ideally after the persistence layer exists
-   (decision timestamps should probably be durable too).
+   (decision timestamps should probably be durable too). **DONE** — see
+   F2 above.
 4. **F5** (Kill Switch), **F8** (broker_connected audit-trail fix) —
    independent, small, can land in either order relative to the above.
 5. **F6** (circuit breaker), **F10** (alerting) — P1/P2, no urgency
