@@ -138,6 +138,14 @@ class TradingPipeline:
     cost_engine: Optional[OperatingCostEngine] = None
     symbol_themes: dict[str, list[str]] = field(default_factory=dict)
     max_new_positions: int = 5
+    # docs/SAFETY_AUDIT.md F2: a REAL wall clock, independent of `clock`
+    # (which is the session's simulated `as_of` — FrozenClock in every
+    # paper/replay run today, so it cannot measure real processing latency).
+    # This is what `stale_order` (check 15, §47) measures signal age against.
+    # Deliberately NOT `packages.common.clock.utcnow()` called inline: tests
+    # need to inject a fake one (see test_security_review_regressions.py) to
+    # assert staleness deterministically without a real sleep.
+    wall_clock: Clock = field(default_factory=Clock)
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -145,6 +153,10 @@ class TradingPipeline:
     # (§27); looked back up at order-placement time to carry skeptic_id into
     # the Approved Order Snapshot without widening SizedProposal.
     _final_theses: dict[str, FinalTradeThesis] = field(default_factory=dict, repr=False)
+    # proposal_id -> real wall-clock time the signal (decision+skeptic-passed
+    # proposal) was captured, for F2's signal_age_sec (services.pipeline
+    # is the only writer/reader; not a durable audit trail — see F7).
+    _signal_captured_at: dict[str, datetime] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         """§73: reject a mixed-environment component graph at construction.
@@ -256,6 +268,10 @@ class TradingPipeline:
             data_health=self.integrity.health, broker_connected=True,
             spread_pct=self._spread_pct(symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
+            # F2: a real value isn't needed here — check 15 (`stale_order`)
+            # is unconditionally exempted for exits (`is_exit or ...` in
+            # MasterRiskController.review), so this is structurally inert,
+            # not another instance of the same gap.
             signal_age_sec=0.0, margin_requirement=0.0)
 
     def place_protective_stop(self, symbol: str, qty: float, stop: StopPlan,
@@ -350,6 +366,7 @@ class TradingPipeline:
         # forever AND made the §27 dashboard panel show every session ever run
         # while claiming to show "this session".
         self._final_theses.clear()
+        self._signal_captured_at.clear()
 
         # 0. Exit management first: resting protective stops may have triggered
         #    since the last session (§33-34, §43)
@@ -426,6 +443,10 @@ class TradingPipeline:
             proposal = TradeProposal(symbol=scan.symbol, side=Action.BUY,
                                      source=ProposalSource.AI, decision=decision,
                                      skeptic=critique, created_at=now)
+            # F2: real time, not simulated `now` — this is the signal's actual
+            # birth for staleness purposes (LLM latency, retries, a stuck
+            # queue all happen between here and the risk review below).
+            self._signal_captured_at[proposal.proposal_id] = self.wall_clock.now()
 
             # 2b. Final Trade Thesis (§27): fuses Decision + Skeptic before the
             # deterministic stages take over, and records how much they
@@ -657,7 +678,15 @@ class TradingPipeline:
             broker_connected=True,
             spread_pct=self._spread_pct(sized.proposal.symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
-            signal_age_sec=0.0, margin_requirement=0.0)
+            # F2: real elapsed wall-clock time since the signal was captured
+            # above — KeyError, not a silent 0.0 fallback, if a `sized`
+            # reaches here without having gone through that capture, since
+            # every production call path does and a miss means the plumbing
+            # broke, not that the signal is fresh.
+            signal_age_sec=(self.wall_clock.now()
+                            - self._signal_captured_at[sized.proposal.proposal_id]
+                            ).total_seconds(),
+            margin_requirement=0.0)
 
     def _spread_pct(self, symbol: str, now: datetime) -> float:
         quote = self.market_data.quote(symbol, now)
