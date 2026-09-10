@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import math
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -28,12 +29,12 @@ class StrictModel(BaseModel):
 class Bar(StrictModel):
     symbol: str
     ts: datetime
-    open: float = Field(gt=0)
-    high: float = Field(gt=0)
-    low: float = Field(gt=0)
-    close: float = Field(gt=0)
-    volume: int = Field(ge=0)
-    vwap: Optional[float] = Field(default=None, gt=0)
+    open: float = Field(gt=0, allow_inf_nan=False)
+    high: float = Field(gt=0, allow_inf_nan=False)
+    low: float = Field(gt=0, allow_inf_nan=False)
+    close: float = Field(gt=0, allow_inf_nan=False)
+    volume: int = Field(ge=0, allow_inf_nan=False)
+    vwap: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     source: str = "unknown"
     data_version: str = "1"
 
@@ -47,10 +48,10 @@ class Bar(StrictModel):
 class Quote(StrictModel):
     symbol: str
     ts: datetime
-    bid: float = Field(gt=0)
-    ask: float = Field(gt=0)
-    bid_size: int = Field(ge=0)
-    ask_size: int = Field(ge=0)
+    bid: float = Field(gt=0, allow_inf_nan=False)
+    ask: float = Field(gt=0, allow_inf_nan=False)
+    bid_size: int = Field(ge=0, allow_inf_nan=False)
+    ask_size: int = Field(ge=0, allow_inf_nan=False)
     halted: bool = False
     source: str = "unknown"
 
@@ -121,8 +122,8 @@ class DecisionAction(str, enum.Enum):
 
 class ScenarioCase(StrictModel):
     description: str
-    target_price: float = Field(gt=0)
-    probability: float = Field(ge=0.0, le=1.0)
+    target_price: float = Field(gt=0, allow_inf_nan=False)
+    probability: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
 
 
 class DecisionOutput(StrictModel):
@@ -131,7 +132,7 @@ class DecisionOutput(StrictModel):
 
     symbol: str = Field(min_length=1, max_length=12)
     action: DecisionAction   # 6 stances; only BUY/SELL produce an order
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     expected_horizon: str  # e.g. "1d" | "1w" | "1m" | "3m" | "6m"
     expected_return_range: tuple[float, float]
     bull_case: ScenarioCase
@@ -147,6 +148,14 @@ class DecisionOutput(StrictModel):
     @model_validator(mode="after")
     def _range_ordered(self) -> "DecisionOutput":
         lo, hi = self.expected_return_range
+        # `tuple[float, float]` carries no Field(allow_inf_nan=False) of its
+        # own — pydantic's per-Field constraints don't reach inside a bare
+        # tuple annotation — so NaN/Infinity here would otherwise pass
+        # straight through (reproduced: (nan, inf) previously constructed
+        # without error). `lo > hi` alone doesn't catch it either, since any
+        # comparison against NaN is False.
+        if not (math.isfinite(lo) and math.isfinite(hi)):
+            raise ValueError(f"expected_return_range must be finite, got ({lo}, {hi})")
         if lo > hi:
             raise ValueError("expected_return_range must be (low, high)")
         total_p = self.bull_case.probability + self.base_case.probability + self.bear_case.probability
@@ -160,7 +169,7 @@ class SkepticOutput(StrictModel):
 
     proposal_symbol: str
     objections: list[str]
-    severity: float = Field(ge=0.0, le=1.0)
+    severity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     recommends_veto: bool
     model_family: str
 
@@ -211,7 +220,7 @@ class FinalTradeThesis(StrictModel):
     thesis_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     decision_id: str = Field(min_length=1)
     skeptic_id: str = Field(min_length=1)
-    disagreement_score: float = Field(ge=0.0, le=1.0)
+    disagreement_score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     proposal: TradeProposal
     created_at: datetime
 
@@ -239,15 +248,15 @@ class StopType(str, enum.Enum):
 class StopPlan(StrictModel):
     """Loss & Exit plan, designed BEFORE entry (§33)."""
 
-    entry_price: float = Field(gt=0)
-    stop_price: float = Field(gt=0)
+    entry_price: float = Field(gt=0, allow_inf_nan=False)
+    stop_price: float = Field(gt=0, allow_inf_nan=False)
     stop_type: StopType
     stop_reason: str = Field(min_length=1)
     holding_horizon: str
     thesis: str = Field(min_length=1)
     invalidation: str = Field(min_length=1)
-    profit_target: float = Field(gt=0)
-    gap_risk_score: float = Field(ge=0.0, le=1.0)
+    profit_target: float = Field(gt=0, allow_inf_nan=False)
+    gap_risk_score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _stop_below_entry_for_long(self) -> "StopPlan":
@@ -264,10 +273,10 @@ class StopPlan(StrictModel):
 class SizedProposal(StrictModel):
     proposal: TradeProposal
     stop_plan: StopPlan
-    qty: float = Field(gt=0)
-    risk_amount: float = Field(ge=0)   # money lost if stop hits (before gap)
-    notional: float = Field(gt=0)
-    calibrated_confidence: float = Field(ge=0.0, le=1.0)
+    qty: float = Field(gt=0, allow_inf_nan=False)
+    risk_amount: float = Field(ge=0, allow_inf_nan=False)   # money lost if stop hits (before gap)
+    notional: float = Field(gt=0, allow_inf_nan=False)
+    calibrated_confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     sizing_version: str
 
 
@@ -300,10 +309,10 @@ class OrderIntent(StrictModel):
     proposal_id: str
     symbol: str
     side: Action
-    qty: float = Field(gt=0)
+    qty: float = Field(gt=0, allow_inf_nan=False)
     order_type: OrderType
-    limit_price: Optional[float] = Field(default=None, gt=0)
-    stop_price: Optional[float] = Field(default=None, gt=0)
+    limit_price: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    stop_price: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     environment: Environment
     is_protective_exit: bool = False  # protective stop / risk-reducing SELL (§43)
     created_at: datetime
@@ -365,7 +374,7 @@ class RiskApproval(StrictModel):
     client_order_id: str
     symbol: str
     side: Action
-    qty: float
+    qty: float = Field(allow_inf_nan=False)
     intent_hash: str
     checks: tuple[RiskCheck, ...]
     risk_state: str
@@ -409,7 +418,7 @@ class BrokerOrderRequest(StrictModel):
     client_order_id: str
     symbol: str
     side: Action
-    qty: float = Field(gt=0)
+    qty: float = Field(gt=0, allow_inf_nan=False)
     order_type: OrderType
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
@@ -427,9 +436,9 @@ class BrokerFill(StrictModel):
     client_order_id: str
     symbol: str
     side: Action
-    qty: float = Field(gt=0)
-    price: float = Field(gt=0)
-    fees: float = Field(ge=0)
+    qty: float = Field(gt=0, allow_inf_nan=False)
+    price: float = Field(gt=0, allow_inf_nan=False)
+    fees: float = Field(ge=0, allow_inf_nan=False)
     ts: datetime
 
 
@@ -437,19 +446,19 @@ class BrokerOrderStatus(StrictModel):
     client_order_id: str
     broker_order_id: str
     state: OrderState
-    filled_qty: float = Field(ge=0)
-    remaining_qty: float = Field(ge=0)
+    filled_qty: float = Field(ge=0, allow_inf_nan=False)
+    remaining_qty: float = Field(ge=0, allow_inf_nan=False)
 
 
 class BrokerPosition(StrictModel):
     symbol: str
-    qty: float
-    avg_cost: float = Field(ge=0)
+    qty: float = Field(allow_inf_nan=False)
+    avg_cost: float = Field(ge=0, allow_inf_nan=False)
 
 
 class BrokerCashBalance(StrictModel):
-    settled_cash: float = Field(ge=0)
-    unsettled_cash: float = Field(ge=0)
+    settled_cash: float = Field(ge=0, allow_inf_nan=False)
+    unsettled_cash: float = Field(ge=0, allow_inf_nan=False)
     currency: str = "USD"
 
     @property

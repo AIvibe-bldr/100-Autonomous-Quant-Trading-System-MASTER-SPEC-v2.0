@@ -39,7 +39,7 @@ class MonitorOutput(StrictModel):
     at: datetime
     services_reviewed: tuple[str, ...]
     findings: tuple[str, ...]
-    severity: float = Field(ge=0.0, le=1.0)
+    severity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     recommendation: MonitorRecommendation
     model: str
     model_family: str

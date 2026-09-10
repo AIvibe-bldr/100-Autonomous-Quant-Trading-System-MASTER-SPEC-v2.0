@@ -52,7 +52,7 @@ class CellOrderIntent(StrictModel):
     cell_id: str = Field(min_length=1)
     symbol: str = Field(min_length=1)
     side: Action
-    qty: float = Field(gt=0)
+    qty: float = Field(gt=0, allow_inf_nan=False)
     created_at: datetime
 
 
@@ -78,6 +78,6 @@ class CellStopPlan(StrictModel):
     stop_id: str = Field(min_length=1)
     cell_id: str = Field(min_length=1)
     symbol: str = Field(min_length=1)
-    stop_price: float = Field(gt=0)
+    stop_price: float = Field(gt=0, allow_inf_nan=False)
     scope: StopScope
     reason: str = Field(min_length=1)
