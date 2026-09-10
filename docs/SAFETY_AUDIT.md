@@ -410,7 +410,42 @@ that already call `reconcile()` post-session are unaffected.
 
 ### P1 — needed before Live, not urgent for continued Paper development
 
-#### F5. No operator-facing Kill Switch
+#### F5. No operator-facing Kill Switch — DEFERRED, analysis recorded
+
+**Deferred, not fixed.** Investigated during the P1 pass after F1-F4/F7/F9,
+and deliberately not implemented for a structural reason found while
+scoping it: a Kill Switch has no live target to act on in the current
+architecture. `scripts/run_dashboard.py` — the one long-running process
+that serves `apps/api/main.py` — runs its ENTIRE `ReplayEngine` replay to
+completion (all `--days` sessions) BEFORE starting the HTTP server; by the
+time an operator could call any endpoint, the trading loop has already
+fully finished. There is no continuously-running session loop anywhere in
+this codebase for an operator to halt mid-flight. This matches the
+finding's own severity classification below ("P1, P0 before Live") more
+literally than first apparent — it is not merely lower-urgency before
+Live, it has no real effect before Live, because no live target process
+exists yet.
+
+Two real implementation paths exist for when this becomes needed
+(a continuously-running live/paper runner):
+1. An authenticated write endpoint on `apps/api/main.py` (e.g.
+   `POST /admin/kill-switch`) manipulating the SAME in-memory
+   `pipeline.risk_controller` the read endpoints already read from — the
+   only approach that actually reaches a live process's state, but
+   requires breaking the documented "apps/api/main.py is read-only"
+   invariant (`docs/database.md`/CLAUDE.md §1 flags this explicitly as a
+   large architectural change needing its own §23/§29 proposal) and adding
+   auth infrastructure that does not exist yet, since it would be the
+   system's first write endpoint ever.
+2. A `scripts/kill_switch.py` CLI — but a CLI in a separate OS process
+   cannot reach another process's in-memory `MasterRiskController.state`
+   without some IPC mechanism (a polled sentinel file, a socket, a shared
+   store) that does not exist today either.
+
+Revisit when a continuously-running runner (live or paper) is actually
+built — at that point this finding, and the two paths above, become real
+work with a real target, not speculative infrastructure. The evidence
+below is kept as-is for reference.
 
 **Evidence.** `apps/api/main.py` is 100% `@app.get` — zero write endpoints
 (grepped `@app\.(post|put|delete|patch)`: no matches; the file's own

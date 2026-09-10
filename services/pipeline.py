@@ -76,6 +76,7 @@ from services.risk.gap_risk import gap_risk_score
 from services.risk.master_controller import (
     MasterRiskController,
     PortfolioRiskView,
+    RiskState,
     throttle_factor,
     throttle_level,
 )
@@ -272,6 +273,16 @@ class TradingPipeline:
             # Unknown settlement state must not read as "plenty available".
             return 0.0
 
+    def _broker_connected(self) -> bool:
+        """F8: real connectivity, not a literal `True`. The `broker_connected`
+        RiskCheck itself was never the only protection — `risk_controller.
+        state is FULL_BROKER_DISCONNECT` already independently blocks entries
+        (services/execution/engine.py sets it on disconnect) — this fixes the
+        audit trail being misleading (`decisions_log` showing `PASS` during
+        an actual disconnect, correctly rejected for a different reason),
+        not an active safety hole."""
+        return self.risk_controller.state is not RiskState.FULL_BROKER_DISCONNECT
+
     def _exit_risk_view(self, symbol: str, qty: float, now: datetime) -> PortfolioRiskView:
         prices = self._mark_prices({}, now)
         pos_notional = self._position_notional({}, now)
@@ -286,7 +297,7 @@ class TradingPipeline:
             stop_plan_exists=True, gap_risk_score=0.0,
             adv_shares=self._adv_shares(symbol, now),
             correlation_to_book=0.0, reconciliation_ok=True,
-            data_health=self.integrity.health, broker_connected=True,
+            data_health=self.integrity.health, broker_connected=self._broker_connected(),
             spread_pct=self._spread_pct(symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
             # F2: a real value isn't needed here — check 15 (`stale_order`)
@@ -699,7 +710,7 @@ class TradingPipeline:
             adv_shares=self._adv_shares(sized.proposal.symbol, now),
             correlation_to_book=0.0,
             reconciliation_ok=True, data_health=self.integrity.health,
-            broker_connected=True,
+            broker_connected=self._broker_connected(),
             spread_pct=self._spread_pct(sized.proposal.symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
             # F2: real elapsed wall-clock time since the signal was captured
