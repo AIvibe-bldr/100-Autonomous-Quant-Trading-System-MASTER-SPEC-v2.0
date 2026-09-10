@@ -269,7 +269,24 @@ land with its own focused review.
 
 ---
 
-#### F3. Idempotency has no durability across a process crash/restart
+#### F3. Idempotency has no durability across a process crash/restart — RESOLVED
+
+**Resolved** (commit `bb1e8e4`, `claude/api-key-validation-sgudi2`): new
+`packages/common/durable_store.py` (`DurableOrderStore`, SQLite-backed,
+`Environment`-namespaced per §73) is consulted by `ExecutionEngine.submit()`
+before any local state-machine mutation, and persisted to before the broker
+call so a crash between "decided to submit" and "broker acknowledged" is
+still durably recorded. New `ExecutionEngine.recover_from_store()` /
+`OrderStateMachine.restore()` rehydrate in-memory state after a restart.
+`store` is an optional field (default `None`), fully additive — the ~470
+pre-existing tests are unaffected. Regression tests in
+`tests/unit/test_durable_store.py` reproduce the exact crash/restart
+scenario (submit via one engine, discard it, build a fresh one against the
+same durable file, confirm the duplicate is rejected); mutation-tested
+twice. Full suite green (477 tests). The evidence below is kept as-is for
+audit-trail purposes. This resolves F9's idempotency half; F9's other two
+consumers (F4 startup-reconciliation wiring, F7 durable audit trail) are
+follow-ups on the same store, not yet built — see F9/F4/F7 below.
 
 **Evidence.** `ExecutionEngine._submitted: dict[str, RiskApprovedOrder]`
 (`services/execution/engine.py:57`) and `PaperBroker._orders`
@@ -489,12 +506,16 @@ prefers — recommend the former since it costs one line and keeps the
 
 ### P2 — improvement, not blocking
 
-#### F9. No persistence layer at all (root cause of F3/F4/F7)
+#### F9. No persistence layer at all (root cause of F3/F4/F7) — PARTIALLY RESOLVED
 
 Already covered above as the shared root cause; listed separately here
 because it is itself the single highest-leverage fix in this report.
-**Recommend this be the first P0 implementation task**, since F3, F4, and
-F7 are all partially or fully resolved by the same underlying decision.
+**Resolved for F3** (see F3 above: `packages/common/durable_store.py`).
+F4 (startup reconciliation wiring) and F7 (durable audit trail) are the
+remaining consumers of a persistence layer — F4 doesn't strictly need the
+store itself (it's a wiring gap, see F4 below), and F7 can extend
+`DurableOrderStore`'s same SQLite file with an additional table when
+undertaken.
 
 #### F10. No external alerting sink
 
@@ -602,7 +623,8 @@ P0 first):
    startup reconciliation, then durable audit trail) — the one real
    design decision in this report; land as separate small commits per
    the instruction's own process (§27: reproduce -> RCA -> regression
-   test -> minimal fix -> ... for each).
+   test -> minimal fix -> ... for each). **F9/F3 DONE** — see F3 above.
+   F4 and F7 remain.
 3. **F2** (signal age) — do after F1 lands (shares the "reject bad
    numbers" mindset) and ideally after the persistence layer exists
    (decision timestamps should probably be durable too).
