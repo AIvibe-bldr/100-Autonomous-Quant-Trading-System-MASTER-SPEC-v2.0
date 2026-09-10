@@ -538,17 +538,27 @@ Lower severity than F1: `RiskConfig` loads from a human-edited file, not
 network/AI input. Worth the same one-line-per-field fix as F1 for
 consistency, but not urgent.
 
-#### F13. No `CLAUDE.md`/`AGENTS.md` exists yet
+#### F13. No `CLAUDE.md`/`AGENTS.md` exists yet — RESOLVED
 
 Confirmed via `find . -maxdepth 2 -iname CLAUDE.md -o -iname AGENTS.md`:
-no matches (`docs/agents.md` exists but describes AI agent *interfaces*,
-not development conventions). Instruction §36 asks for common Safety Rules
-to persist beyond this one audit. Recommend creating `CLAUDE.md` after the
-P0 fixes land, encoding: the LIVE_TRADING gate design (once a real broker
-adapter is planned), the single-threaded assumption (F11), the "Safety
-Layer cannot be overridden by Strategy/PDCA/AI" boundary (already true in
-code — see Existing Controls — but not written down anywhere a future
-contributor would see it before writing code that violates it).
+no matches at audit time (`docs/agents.md` exists but describes AI agent
+*interfaces*, not development conventions). Instruction §36 asked for
+common Safety Rules to persist beyond this one audit.
+
+A separate "Architecture / Code Quality Rules" instruction was supplied
+after this audit and has been persisted as `CLAUDE.md` at the repo root
+(layering, dependency direction, domain boundaries mapped onto this
+project's actual `services/*`/`packages/*` structure, naming, and a
+pre-/post-implementation reporting checklist for large changes). It
+cross-references `docs/architecture.md`'s Service Boundary table as the
+canonical domain list rather than duplicating it.
+
+Still open, and left as forward-looking guidance inside `CLAUDE.md` itself
+rather than a separate action item: the LIVE_TRADING gate design (once a
+real broker adapter is planned) and the single-threaded assumption (F11)
+should get their own explicit entries once those are actually acted on —
+`CLAUDE.md` as written covers general architecture discipline, not yet
+those two safety-specific conventions.
 
 ---
 
