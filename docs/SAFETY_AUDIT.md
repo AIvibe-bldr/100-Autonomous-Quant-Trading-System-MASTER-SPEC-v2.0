@@ -719,6 +719,8 @@ P0 first):
    F2 above.
 4. **F5** (Kill Switch), **F8** (broker_connected audit-trail fix) —
    independent, small, can land in either order relative to the above.
+   **F8 DONE** — see F8 above. **F5 DEFERRED** (analysis recorded in F5
+   above — no live target exists to act on yet).
 5. **F6** (circuit breaker), **F10** (alerting) — P1/P2, no urgency
    relative to continued Paper development.
 6. **F11/F12/F13** — documentation-only; cheap, do whenever convenient,
