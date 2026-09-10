@@ -478,7 +478,29 @@ alongside the existing single-event triggers, not a replacement for them.
 
 ---
 
-#### F7. No structured logging or durable audit trail — everything lives in memory and vanishes on exit
+#### F7. No structured logging or durable audit trail — everything lives in memory and vanishes on exit — RESOLVED (A5 scope)
+
+**Resolved for A5 traceability** (commit `576da73`, `claude/api-key-validation-sgudi2`):
+new `DurableAuditStore` in `packages/common/durable_store.py` (same SQLite
+file as F3's `DurableOrderStore`, one more `Environment`-namespaced table)
+durably persists `PreTradeRecord` for every order that reaches
+`ExecutionEngine.submit()` — matching `PreTradeAuditLog.
+is_fully_traceable`'s own definition of what must survive. `TradingPipeline`
+gained an optional `audit_store` field (default `None`, fully additive) and
+a `_persist_audit_record()` helper wired at both places `log_rec.
+final_state` is already set. Regression tests in
+`tests/unit/test_durable_store.py` build a full record, persist it, and
+read it back from a completely fresh store instance against the same file;
+mutation-tested. Full suite green (485 tests).
+
+**Still open, deliberately not fixed here:** A6's near-miss stats
+(audit REJECT/REVIEW, risk REJECT — orders that never reached execution)
+remain in-memory-only, so "prevented near-misses this month" is still lost
+to a crash — a real but smaller gap than A5 traceability for an order that
+actually reached the broker. No structured `logging`/`structlog` exists
+either (still zero matches for `logging.getLogger|structlog`); this fix is
+a durable data trail, not log infrastructure. The evidence below is kept
+as-is for audit-trail purposes.
 
 **Evidence.** Repo-wide grep for `logging.getLogger|structlog|import logging`:
 zero matches. All output is `print()` in demo scripts. The system's audit
@@ -535,16 +557,17 @@ prefers — recommend the former since it costs one line and keeps the
 
 ### P2 — improvement, not blocking
 
-#### F9. No persistence layer at all (root cause of F3/F4/F7) — PARTIALLY RESOLVED
+#### F9. No persistence layer at all (root cause of F3/F4/F7) — RESOLVED
 
 Already covered above as the shared root cause; listed separately here
 because it is itself the single highest-leverage fix in this report.
-**Resolved for F3** (see F3 above: `packages/common/durable_store.py`).
-F4 (startup reconciliation wiring) and F7 (durable audit trail) are the
-remaining consumers of a persistence layer — F4 doesn't strictly need the
-store itself (it's a wiring gap, see F4 below), and F7 can extend
-`DurableOrderStore`'s same SQLite file with an additional table when
-undertaken.
+**Resolved for F3** (see F3 above: `packages/common/durable_store.py`,
+`DurableOrderStore`) **and F7** (see F7 above: same file, `DurableAuditStore`).
+F4 (startup reconciliation wiring) is also resolved for startup, and never
+strictly needed the store itself (it was a wiring gap — see F4 above). All
+three original consumers of this finding are closed; the full 15-table V1
+schema in `docs/database.md` (decision provenance, fills, ledger, etc.)
+remains future work beyond what any P0/P1 finding here requires.
 
 #### F10. No external alerting sink
 
@@ -629,12 +652,12 @@ those two safety-specific conventions.
 | Buying Power exceeded -> Reject | Covered (`test_insufficient_settled_cash_is_rejected`) |
 | Concurrent Buying Power -> no double-spend | N/A today (F11 — no concurrency exists); should gain a test the moment any concurrency is introduced |
 | Partial Fill -> correct remaining qty | Covered (`test_partial_fill_tracked`) |
-| Invalid AI output (NaN/Inf/negative) -> Reject | **Missing — and would fail today for Infinity (F1)** |
-| Stale market data -> reject risk-increasing | Covered for market data (`DataHealth`); **missing/dead for signal age specifically (F2)** |
-| Reconciliation mismatch -> halt | Covered (`test_reconciliation_mismatch_halts_entries`) |
-| Kill Switch ON -> reject risk-increasing | Covered at the state-machine level (`test_master_stop_allows_protective_exit` and friends); **no test exists for a human-triggered kill switch, because no trigger surface exists (F5)** |
+| Invalid AI output (NaN/Inf/negative) -> Reject | Covered (F1 — `tests/unit/test_security_review_regressions.py`, infinite qty/price/range rejected) |
+| Stale market data -> reject risk-increasing | Covered for market data (`DataHealth`); signal age now covered too (F2 — `test_risk_view_computes_real_signal_age_not_a_constant`) |
+| Reconciliation mismatch -> halt | Covered (`test_reconciliation_mismatch_halts_entries`); startup sequencing also covered (F4 — `test_startup_reconciliation_before_resuming_blocks_new_entries`) |
+| Kill Switch ON -> reject risk-increasing | Covered at the state-machine level (`test_master_stop_allows_protective_exit` and friends); **no test exists for a human-triggered kill switch, because no trigger surface exists (F5, still open)** |
 | Reduce-Only still processes under Kill Switch | Covered (same MASTER STOP test suite) |
-| Crash recovery -> no duplicate on restart | **Missing — and would fail today (F3)** |
+| Crash recovery -> no duplicate on restart | Covered (F3 — `tests/unit/test_durable_store.py::test_duplicate_submission_rejected_after_simulated_restart`) |
 | Duplicate webhook -> no double-update | N/A — no webhook receiver exists in this architecture (broker interaction is poll-based, not push-based); not a gap, a different design |
 | Broker Reject -> no position increase | Covered structurally (`OrderState.REJECTED` path never touches the ledger) |
 | Unknown order state -> halt new risk | Covered (`test_order_timeout_goes_unknown_and_halts`) |
@@ -652,8 +675,9 @@ P0 first):
    startup reconciliation, then durable audit trail) — the one real
    design decision in this report; land as separate small commits per
    the instruction's own process (§27: reproduce -> RCA -> regression
-   test -> minimal fix -> ... for each). **F9/F3 DONE, F4 DONE (startup)**
-   — see F3/F4 above. F7 remains.
+   test -> minimal fix -> ... for each). **F9/F3 DONE, F4 DONE (startup),
+   F7 DONE (A5 scope)** — see F3/F4/F7 above. All P0 findings in this
+   report are now resolved.
 3. **F2** (signal age) — do after F1 lands (shares the "reject bad
    numbers" mindset) and ideally after the persistence layer exists
    (decision timestamps should probably be durable too). **DONE** — see
