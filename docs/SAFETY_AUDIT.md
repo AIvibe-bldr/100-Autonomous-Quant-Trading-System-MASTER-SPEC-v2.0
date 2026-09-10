@@ -336,7 +336,21 @@ schema, write path, read/recovery path, tests — not one change).
 
 ---
 
-#### F4. `ReconciliationEngine.reconcile()` is never called automatically — "起動時＋定期＋異常時" is documented, not implemented
+#### F4. `ReconciliationEngine.reconcile()` is never called automatically — "起動時＋定期＋異常時" is documented, not implemented — RESOLVED (startup)
+
+**Resolved for startup** (commit `74428bc`, `claude/api-key-validation-sgudi2`):
+`scripts/run_dashboard.py` — the one long-running entry point in this repo —
+now calls `ReconciliationEngine.reconcile()` immediately after building the
+pipeline, before `ReplayEngine` runs any session. No new gating logic was
+needed: `reconcile()` already sets `HALT_NEW_ENTRIES` on mismatch, and
+`MasterRiskController.review()` already respects that state. New regression
+test (`test_startup_reconciliation_before_resuming_blocks_new_entries`,
+`tests/chaos/test_failures.py`) proves the composed sequence end-to-end:
+desync → reconcile → a subsequent `run_session()` produces zero fills.
+Manually verified against the running script. Full suite green (478 tests).
+"periodically" and "on anomaly" wiring for a future long-running live
+runner remain out of scope here — no such runner exists yet. The evidence
+below is kept as-is for audit-trail purposes.
 
 **Evidence.** `docs/architecture.md:44` states reconciliation runs
 "起動時＋定期＋異常時" (at startup, periodically, and on anomaly). Grepping
@@ -623,8 +637,8 @@ P0 first):
    startup reconciliation, then durable audit trail) — the one real
    design decision in this report; land as separate small commits per
    the instruction's own process (§27: reproduce -> RCA -> regression
-   test -> minimal fix -> ... for each). **F9/F3 DONE** — see F3 above.
-   F4 and F7 remain.
+   test -> minimal fix -> ... for each). **F9/F3 DONE, F4 DONE (startup)**
+   — see F3/F4 above. F7 remains.
 3. **F2** (signal age) — do after F1 lands (shares the "reject bad
    numbers" mindset) and ideally after the persistence layer exists
    (decision timestamps should probably be durable too).
