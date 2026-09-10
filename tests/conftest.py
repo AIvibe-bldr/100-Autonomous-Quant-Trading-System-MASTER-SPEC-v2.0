@@ -65,7 +65,7 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
                    decision_model=None, skeptic_model=None,
                    auditor: IndependentAuditor | None = None,
                    cost_engine: OperatingCostEngine | None = None,
-                   wall_clock=None) -> TradingPipeline:
+                   wall_clock=None, audit_store=None) -> TradingPipeline:
     """decision_model / skeptic_model / auditor default to the deterministic
     Mocks (keeps tests network-free and reproducible); pass real Claude
     adapters (services.decision.claude_adapters.build_llm_stack) to run the
@@ -93,6 +93,7 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         allocation=CapitalAllocationEngine(config=cfg),
         risk_controller=risk, execution=execution, ledger=ledger,
         provenance=ProvenanceStore(env), wall_clock=wall_clock or Clock(),
+        audit_store=audit_store,
         # V1 paper mode: audit every order to collect data (A3-6)
         auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
                                               audit_all=True),

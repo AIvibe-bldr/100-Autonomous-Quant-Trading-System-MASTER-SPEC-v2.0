@@ -1,13 +1,15 @@
-"""Regression tests for docs/SAFETY_AUDIT.md F9/F3 (durable idempotency).
+"""Regression tests for docs/SAFETY_AUDIT.md F9 (durable idempotency, F3;
+durable audit trail, F7).
 
-The point of `DurableOrderStore` is that it survives what the in-memory
-`ExecutionEngine._submitted` dict cannot: a process restart. So the
-integration test below deliberately does NOT reuse one `ExecutionEngine` —
-it builds a second one from scratch, pointed at the same store file, to
-simulate exactly that.
+The point of `DurableOrderStore`/`DurableAuditStore` is that they survive
+what in-memory state cannot: a process restart. So the integration tests
+below deliberately do NOT reuse one live object across the "before" and
+"after" — they build a fresh one pointed at the same file, to simulate
+exactly that.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -15,14 +17,14 @@ import pytest
 from packages.broker_adapters.base import DuplicateClientOrderIdError
 from packages.broker_adapters.paper import PaperBroker
 from packages.common.clock import FrozenClock
-from packages.common.durable_store import DurableOrderStore
+from packages.common.durable_store import DurableAuditStore, DurableOrderStore
 from packages.common.environment import Environment
 from packages.schemas.audit import ApprovedOrderSnapshot
 from packages.schemas.core import OrderState
 from services.execution.engine import ExecutionEngine
 from services.execution.state_machine import OrderStateMachine
 from services.risk.master_controller import MasterRiskController
-from tests.conftest import SESSION_TIME
+from tests.conftest import SESSION_TIME, build_pipeline
 from tests.unit.helpers import submit_approved
 from tests.unit.test_invariants import _default_view, _paper_intent
 
@@ -178,3 +180,72 @@ def test_recover_from_store_is_a_noop_without_a_store():
     clock = FrozenClock(current=SESSION_TIME)
     execution, _ = _build_execution(clock, store=None)
     assert execution.recover_from_store() == 0
+
+
+# --- DurableAuditStore (F7) ----------------------------------------------------
+
+def test_audit_store_upsert_overwrites_the_prior_snapshot(tmp_path):
+    store = DurableAuditStore(str(tmp_path / "audit.db"), Environment.PAPER)
+    store.upsert("f7-order-0001", "dec-1", json.dumps({"final_state": ""}), SESSION_TIME)
+    store.upsert("f7-order-0001", "dec-1", json.dumps({"final_state": "FILLED"}), SESSION_TIME)
+    rec = store.get("f7-order-0001")
+    assert json.loads(rec.record_json)["final_state"] == "FILLED"
+
+
+def test_audit_store_survives_reopening_the_same_file(tmp_path):
+    path = str(tmp_path / "audit.db")
+    store1 = DurableAuditStore(path, Environment.PAPER)
+    store1.upsert("f7-order-0002", "dec-2", json.dumps({"final_state": "FILLED"}), SESSION_TIME)
+    store1.close()
+
+    store2 = DurableAuditStore(path, Environment.PAPER)
+    rec = store2.get("f7-order-0002")
+    assert rec is not None
+    assert json.loads(rec.record_json)["final_state"] == "FILLED"
+
+
+def test_audit_store_namespaces_by_environment(tmp_path):
+    path = str(tmp_path / "audit.db")
+    paper_store = DurableAuditStore(path, Environment.PAPER)
+    paper_store.upsert("f7-order-0003", "dec-3", json.dumps({}), SESSION_TIME)
+    live_store = DurableAuditStore(path, Environment.LIVE)
+    assert live_store.get("f7-order-0003") is None
+
+
+def test_pipeline_persists_the_full_pretrade_record_across_a_restart(tmp_path, clock, universe):
+    """The exact A5 promise: an order that reached execution.submit() must
+    stay fully traceable after a crash — decision_id, audit/risk results,
+    the approved snapshot hash, final broker state and fill refs."""
+    path = str(tmp_path / "audit.db")
+    store = DurableAuditStore(path, Environment.PAPER)
+    pipe = build_pipeline(clock, universe, audit_store=store)
+
+    log_rec = pipe.audit_log.open("f7-order-0004", "dec-4", SESSION_TIME,
+                                  {"symbol": "AAPL", "side": "BUY", "qty": 1.0})
+    log_rec.audit_result = {"verdict": "PASS"}
+    log_rec.risk_result = {"passed": True, "approval_id": "approval-1"}
+    log_rec.approved_snapshot_hash = "ab" * 32
+    log_rec.broker_submitted = True
+    log_rec.final_state = "FILLED"
+    log_rec.fills.append("fill-1")
+    pipe._persist_audit_record(log_rec, SESSION_TIME)  # noqa: SLF001
+
+    # "restart": a completely fresh store against the same file, no live
+    # pipeline/audit_log object carried over.
+    reopened = DurableAuditStore(path, Environment.PAPER)
+    rec = reopened.get("f7-order-0004")
+    assert rec is not None
+    data = json.loads(rec.record_json)
+    assert data["decision_id"] == "dec-4"
+    assert data["audit_result"] == {"verdict": "PASS"}
+    assert data["risk_result"] == {"passed": True, "approval_id": "approval-1"}
+    assert data["approved_snapshot_hash"] == "ab" * 32
+    assert data["broker_submitted"] is True
+    assert data["final_state"] == "FILLED"
+    assert data["fills"] == ["fill-1"]
+
+
+def test_without_an_audit_store_persist_is_a_noop(clock, universe):
+    pipe = build_pipeline(clock, universe, audit_store=None)
+    log_rec = pipe.audit_log.open("f7-order-0005", "dec-5", SESSION_TIME, {})
+    pipe._persist_audit_record(log_rec, SESSION_TIME)  # noqa: SLF001 — must not raise

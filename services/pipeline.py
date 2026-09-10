@@ -9,11 +9,14 @@ NO TRADE outcomes with the funnel numbers (§93: 故障ではなく理由表示)
 """
 from __future__ import annotations
 
+import dataclasses
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
 from packages.common.clock import Clock
+from packages.common.durable_store import DurableAuditStore
 from packages.common.environment import Environment, require_same_environment
 from packages.common.ledger import Ledger
 from packages.common.provenance import ProvenanceStore
@@ -146,6 +149,11 @@ class TradingPipeline:
     # need to inject a fake one (see test_security_review_regressions.py) to
     # assert staleness deterministically without a real sleep.
     wall_clock: Clock = field(default_factory=Clock)
+    # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
+    # order that reaches execution.submit() is durably persisted (default
+    # None — fully additive, no behavior change for the many tests that
+    # construct TradingPipeline without one).
+    audit_store: Optional[DurableAuditStore] = None
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -175,6 +183,19 @@ class TradingPipeline:
         Final Trade Thesis panel, §27) — a copy, so nothing external can
         mutate pipeline state through it."""
         return dict(self._final_theses)
+
+    def _persist_audit_record(self, log_rec, at: datetime) -> None:
+        """F7: durably snapshot a PreTradeRecord once its order has reached
+        execution.submit() — matches PreTradeAuditLog.is_fully_traceable's
+        own definition of what must be traceable (A5). `default=str` covers
+        the raw `datetime` fields on PreTradeRecord itself; every nested
+        dict (audit_result, risk_result, ...) is already JSON-safe, built
+        via pydantic's `model_dump(mode="json")`."""
+        if self.audit_store is None:
+            return
+        record_json = json.dumps(dataclasses.asdict(log_rec), default=str)
+        self.audit_store.upsert(log_rec.client_order_id, log_rec.decision_id,
+                                record_json, at)
 
     def _record_fill(self, symbol: str, side_qty: float, price: float, fees: float,
                      ts: datetime, note: str = "") -> None:
@@ -305,6 +326,7 @@ class TradingPipeline:
         log_rec.broker_submitted = True
         state = self.execution.submit(approved, snapshot=snapshot)
         log_rec.final_state = state.value
+        self._persist_audit_record(log_rec, now)
         # Adding to a held position places a SECOND resting stop for the new
         # shares; the first one stays live at the broker. Accumulate the risk
         # so the anti-martingale guard sees the position's total risk rather
@@ -625,6 +647,7 @@ class TradingPipeline:
                         result.fills.append(f)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
+                self._persist_audit_record(log_rec, now)
                 # the planned stop must EXIST at the broker, not just on paper
                 # (§33-34, INV-15): place it immediately after the entry fills
                 if self.place_protective_stop(symbol, filled_qty, sized.stop_plan, now,
@@ -636,6 +659,7 @@ class TradingPipeline:
                         f"is unprotected, review required")
             else:
                 rec.result = {"state": state.value}
+                self._persist_audit_record(log_rec, now)
                 result.no_trade_reasons.append(
                     f"{sized.proposal.symbol}: order ended {state.value}")
         return result
