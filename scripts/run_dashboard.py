@@ -20,6 +20,7 @@ from apps.api.main import create_app
 from packages.common.clock import FrozenClock
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.quant.replay import ReplayEngine
+from services.reconciliation.engine import ReconciliationEngine
 from tests.conftest import SYMBOLS, build_pipeline
 
 
@@ -36,6 +37,25 @@ def main() -> None:
     clock = FrozenClock(current=datetime.combine(date(2026, 8, 10), time(15, 0),
                                                  tzinfo=timezone.utc))
     pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
+
+    # docs/SAFETY_AUDIT.md F4 / §21: reconcile against the broker BEFORE
+    # resuming trading, not only as a post-hoc summary afterward.
+    # ReconciliationEngine.reconcile() already sets HALT_NEW_ENTRIES on a
+    # mismatch, and MasterRiskController.review() already respects that
+    # state — so wiring this in first is all a mismatch here needs to
+    # block every session below (tests/chaos/test_failures.py::
+    # test_startup_reconciliation_before_resuming_blocks_new_entries).
+    startup_recon = ReconciliationEngine(broker=pipeline.execution.broker,
+                                         ledger=pipeline.ledger,
+                                         risk_controller=pipeline.risk_controller)
+    startup_report = startup_recon.reconcile()
+    if not startup_report.consistent:
+        print("startup reconciliation: MISMATCH — new entries halted (§48)")
+        for m in startup_report.mismatches:
+            print(f"  ! {m.kind}: {m.detail}")
+    else:
+        print("startup reconciliation: CONSISTENT")
+
     app = create_app(pipeline)
 
     report = ReplayEngine(pipeline).run(start=date(2026, 7, 20), sessions=args.days)

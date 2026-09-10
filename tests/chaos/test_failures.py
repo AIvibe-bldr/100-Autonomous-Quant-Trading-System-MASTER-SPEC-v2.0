@@ -94,3 +94,27 @@ def test_disconnect_during_reconciliation(pipeline):
     report = recon.reconcile()
     assert not report.consistent
     assert pipeline.risk_controller.state is RiskState.FULL_BROKER_DISCONNECT
+
+
+# docs/SAFETY_AUDIT.md F4: reconciliation existed and correctly halted entries
+# (proven above) but nothing called it BEFORE resuming trading — every entry
+# point called it only as a post-hoc summary after all sessions had already
+# run. This proves the wiring scripts/run_dashboard.py now relies on: reconcile
+# FIRST, then a new-entry attempt is actually blocked by the state it sets —
+# not just that reconcile() itself detects the mismatch in isolation.
+def test_startup_reconciliation_before_resuming_blocks_new_entries(pipeline):
+    # simulate what a restart looks like: internal state disagrees with the
+    # broker BEFORE the first session of this process runs
+    pipeline.ledger.record_fill("MSFT", side_qty=1.0, price=10.0, fees=0.0, at=SESSION_TIME)
+
+    recon = ReconciliationEngine(broker=pipeline.execution.broker, ledger=pipeline.ledger,
+                                 risk_controller=pipeline.risk_controller)
+    startup_report = recon.reconcile()
+    assert not startup_report.consistent
+
+    # only now does the entry point call run_session() — new entries must
+    # already be blocked by the state reconcile() just set, with no separate
+    # gate the script itself needs to add
+    result = pipeline.run_session(SESSION_TIME)
+    assert result.orders_filled == 0
+    assert pipeline.risk_controller.state is RiskState.HALT_NEW_ENTRIES
