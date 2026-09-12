@@ -452,3 +452,39 @@ def test_broker_fill_rejects_infinite_price():
     with pytest.raises(pydantic.ValidationError):
         BrokerFill(broker_fill_id="bf-1", client_order_id="f1-order-0002", symbol="AAPL",
                    side=Action.BUY, qty=1.0, price=float("inf"), fees=0.0, ts=SESSION_TIME)
+
+
+# --- §26: Market Regime was classified but never wired into a decision -------
+
+def test_pipeline_wires_a_real_market_regime_into_decisions(pipeline):
+    """DecisionContext.regime and DecisionSnapshot.regime were both a
+    permanent "UNKNOWN" literal — no call site in services/pipeline.py ever
+    populated them, even though the real Claude/OpenAI prompts already say
+    f"Market regime: {ctx.regime}" (services/decision/claude_adapters.py,
+    prompts.py) and the A2-4 by-regime PDCA panel already exists. This
+    proves an actual, non-"UNKNOWN" classification reaches both the
+    Decision AI context and the durable per-decision snapshot."""
+    regime = pipeline._current_regime(SESSION_TIME)  # noqa: SLF001
+    assert regime != "UNKNOWN"
+
+    # Spy on what services.decision.models.DecisionContext the model actually
+    # receives — this is the half a snapshot-only check can't see, since the
+    # context itself is never persisted anywhere.
+    from services.decision.models import MockDecisionModel
+
+    seen_regimes = []
+
+    class _SpyDecisionModel(MockDecisionModel):
+        def decide(self, context):
+            seen_regimes.append(context.regime)
+            return super().decide(context)
+
+    pipeline.decision_model = _SpyDecisionModel()
+
+    pipeline.run_session(SESSION_TIME)
+    assert seen_regimes, "Decision AI was never consulted this session"
+    assert all(r == regime for r in seen_regimes)
+
+    snapshots = list(pipeline.decision_quality._snapshots.values())  # noqa: SLF001
+    assert snapshots, "no decisions were recorded this session"
+    assert all(s.regime == regime for s in snapshots)

@@ -72,6 +72,7 @@ from services.position_sizing.engine import (
     SizingRejected,
 )
 from services.quant.scanner import QuantScanner
+from services.regime.engine import RegimeEngine
 from services.risk.gap_risk import gap_risk_score
 from services.risk.master_controller import (
     MasterRiskController,
@@ -155,6 +156,12 @@ class TradingPipeline:
     # None — fully additive, no behavior change for the many tests that
     # construct TradingPipeline without one).
     audit_store: Optional[DurableAuditStore] = None
+    # §26: classifies BULL/BEAR/RANGE/HIGH_VOLATILITY/... from benchmark bars
+    # each session. Decision-input only — never consulted by Risk/Sizing/
+    # Allocation, which stay deterministic and regime-agnostic (§4 dependency
+    # rule: this is a `decision`-domain signal, not a `risk`-domain one).
+    regime_engine: RegimeEngine = field(default_factory=RegimeEngine)
+    regime_benchmark_symbol: str = "SPY"
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -197,6 +204,25 @@ class TradingPipeline:
         record_json = json.dumps(dataclasses.asdict(log_rec), default=str)
         self.audit_store.upsert(log_rec.client_order_id, log_rec.decision_id,
                                 record_json, at)
+
+    def _current_regime(self, now: datetime) -> str:
+        """§26: classify the session's market regime from benchmark bars.
+
+        Both `DecisionContext.regime` (the real Claude/OpenAI prompts already
+        say `f"Market regime: {ctx.regime}"` — services/decision/
+        claude_adapters.py, prompts.py — but every production call site here
+        left it at its "UNKNOWN" default) and `DecisionSnapshot.regime` (the
+        A2-4 by-regime PDCA panel) were wired to a schema field that no
+        caller ever populated. `RegimeEngine.classify` needs >= 21 bars and
+        raises otherwise — insufficient history reads as "UNKNOWN", the same
+        honest-unknown pattern as `_adv_shares` returning 0.0 rather than
+        fabricating a value."""
+        try:
+            bars = [s.bar for s in self.market_data.bars(
+                self.regime_benchmark_symbol, now, 25, received_at=now)]
+            return self.regime_engine.classify(bars).primary.value
+        except ValueError:
+            return "UNKNOWN"
 
     def _record_fill(self, symbol: str, side_qty: float, price: float, fees: float,
                      ts: datetime, note: str = "") -> None:
@@ -386,7 +412,8 @@ class TradingPipeline:
             # A1-4: the SELL is a decision and is graded too
             self._record_decision(f"exit-{f.symbol}-{f.ts.date()}", f.symbol,
                                   DecisionKind.SELL, now, f.price,
-                                  had_stop_plan=True, skeptic_consulted=False)
+                                  had_stop_plan=True, skeptic_consulted=False,
+                                  regime=self._current_regime(now))
             triggered += 1
         return triggered, len(fills)
 
@@ -420,10 +447,12 @@ class TradingPipeline:
             self.integrity.validate_quote(self.market_data.quote(s.symbol, now), now)
 
         # 2. Decision AI + Skeptic (§27-29) — proposals only, no broker access
+        regime = self._current_regime(now)   # §26: one classification per session
         sized_candidates: list[SizedProposal] = []
         prices: dict[str, float] = {}
         for scan in scans[: self.max_new_positions * 3]:
-            ctx = DecisionContext(scan=scan, portfolio_summary={"cash": self.ledger.cash})
+            ctx = DecisionContext(scan=scan, regime=regime,
+                                  portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name
             rec.model_version = self.decision_model.version
@@ -452,13 +481,13 @@ class TradingPipeline:
                         detail=f"SELL decision for unheld {scan.symbol}")
                     self._record_decision(rec.decision_id, scan.symbol,
                                           DecisionKind.AVOID, now, scan.last_close,
-                                          decision=decision)
+                                          decision=decision, regime=regime)
                     continue
 
             if decision.action is not DecisionAction.BUY:
                 # A1-4: NO_TRADE decisions are tracked and graded too
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.NO_TRADE,
-                                      now, scan.last_close, decision=decision)
+                                      now, scan.last_close, decision=decision, regime=regime)
                 continue
             result.decision_candidates += 1
 
@@ -470,7 +499,7 @@ class TradingPipeline:
                     f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
                                       now, scan.last_close, decision=decision,
-                                      skeptic_consulted=True)
+                                      skeptic_consulted=True, regime=regime)
                 continue
 
             proposal = TradeProposal(symbol=scan.symbol, side=Action.BUY,
@@ -501,7 +530,7 @@ class TradingPipeline:
                 result.no_trade_reasons.append(f"{scan.symbol}: no stop plan — {e}")
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
                                       now, scan.last_close, decision=decision,
-                                      skeptic_consulted=True)
+                                      skeptic_consulted=True, regime=regime)
                 continue
             result.stop_planned += 1
             rec.stop_plan = stop.model_dump(mode="json")
@@ -523,7 +552,8 @@ class TradingPipeline:
                 result.no_trade_reasons.append(f"{scan.symbol}: sizing rejected — {e}")
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
                                       now, scan.last_close, decision=decision,
-                                      had_stop_plan=True, skeptic_consulted=True)
+                                      had_stop_plan=True, skeptic_consulted=True,
+                                      regime=regime)
                 continue
             result.sized += 1
             rec.position_size = {"qty": sized.qty, "risk_amount": sized.risk_amount,
@@ -545,7 +575,7 @@ class TradingPipeline:
             rec = self.provenance.get(f"{sp.proposal.symbol}-{now.date()}")
             self._record_decision(rec.decision_id, sp.proposal.symbol, DecisionKind.WAIT,
                                   now, sp.stop_plan.entry_price, decision=sp.proposal.decision,
-                                  had_stop_plan=True, skeptic_consulted=True)
+                                  had_stop_plan=True, skeptic_consulted=True, regime=regime)
         result.allocated = len(alloc.accepted)
 
         # 6. Audit AI → Master Risk Controller → Snapshot → Execution (A3-A4, §42, §44)
@@ -575,7 +605,8 @@ class TradingPipeline:
                 self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
-                                      had_stop_plan=True, skeptic_consulted=True)
+                                      had_stop_plan=True, skeptic_consulted=True,
+                                      regime=regime)
                 continue
             log_rec.audit_result = audit.model_dump(mode="json")
             if audit.verdict is not AuditVerdict.PASS:
@@ -600,7 +631,8 @@ class TradingPipeline:
                 self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
-                                      had_stop_plan=True, skeptic_consulted=True)
+                                      had_stop_plan=True, skeptic_consulted=True,
+                                      regime=regime)
                 continue
             result.audit_passed += 1
 
@@ -620,7 +652,8 @@ class TradingPipeline:
                 self._record_decision(rec.decision_id, symbol, DecisionKind.AVOID, now,
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
-                                      had_stop_plan=True, skeptic_consulted=True)
+                                      had_stop_plan=True, skeptic_consulted=True,
+                                      regime=regime)
                 continue
             assert isinstance(verdict, RiskApproval)
             result.risk_passed += 1
@@ -640,7 +673,8 @@ class TradingPipeline:
             self._record_decision(rec.decision_id, symbol, DecisionKind.BUY, now,
                                   sized.stop_plan.entry_price,
                                   decision=sized.proposal.decision,
-                                  had_stop_plan=True, skeptic_consulted=True)
+                                  had_stop_plan=True, skeptic_consulted=True,
+                                  regime=regime)
 
             state = self.execution.submit(approved, snapshot=snapshot)
             log_rec.final_state = state.value
