@@ -72,6 +72,18 @@ class OrderStateMachine:
     def get(self, client_order_id: str) -> OrderRecord:
         return self._orders[client_order_id]
 
+    def restore(self, client_order_id: str, state: OrderState) -> OrderRecord:
+        """Rehydrate an order at a durably-known state after a process
+        restart (docs/SAFETY_AUDIT.md F3). Not a transition — there is no
+        in-memory prior state to transition FROM, so the whitelist doesn't
+        apply; this reconstructs already-decided truth, it doesn't decide
+        anything new."""
+        if client_order_id in self._orders:
+            raise IllegalTransitionError(f"order {client_order_id} already exists")
+        rec = OrderRecord(client_order_id=client_order_id, state=state)
+        self._orders[client_order_id] = rec
+        return rec
+
     def transition(self, client_order_id: str, to_state: OrderState, reason: str = "",
                    broker_payload: Optional[dict[str, Any]] = None) -> OrderRecord:
         rec = self._orders[client_order_id]

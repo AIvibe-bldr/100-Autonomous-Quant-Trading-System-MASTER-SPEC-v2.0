@@ -104,15 +104,22 @@ class LLMModelConfig:
     """Per-role assignment. Every value is env-overridable so the Operating
     Cost / Data ROI engines (§80-82) can tune the mix without a code change."""
 
+    # Decision/Skeptic/Audit outputs are schemas with several list[str]
+    # reasoning fields (key_evidence, counter_evidence, risk_factors,
+    # objections, ...) plus three narrative scenario cases for Decision.
+    # Current-generation Claude models routinely fill those out verbosely
+    # enough to exceed the old 1024/2048 caps, which truncates the JSON
+    # mid-string (Malformed Output) rather than a genuine model refusal —
+    # so these are sized with headroom rather than tuned to a minimum.
     decision: AgentModel = field(default_factory=lambda: AgentModel(
         role=AgentRole.DECISION, provider=Provider.ANTHROPIC,
-        model=_env("QUANT_DECISION_MODEL", "claude-opus-5"), max_tokens=2048))
+        model=_env("QUANT_DECISION_MODEL", "claude-opus-5"), max_tokens=4096))
     skeptic: AgentModel = field(default_factory=lambda: AgentModel(
         role=AgentRole.SKEPTIC, provider=Provider.ANTHROPIC,
-        model=_env("QUANT_SKEPTIC_MODEL", "claude-opus-5"), max_tokens=1024))
+        model=_env("QUANT_SKEPTIC_MODEL", "claude-opus-5"), max_tokens=4096))
     audit: AgentModel = field(default_factory=lambda: AgentModel(
         role=AgentRole.PRE_TRADE_AUDIT, provider=Provider.ANTHROPIC,
-        model=_env("QUANT_AUDIT_MODEL", "claude-opus-5"), max_tokens=1024))
+        model=_env("QUANT_AUDIT_MODEL", "claude-opus-5"), max_tokens=4096))
     monitor: AgentModel = field(default_factory=lambda: AgentModel(
         role=AgentRole.MONITOR, provider=Provider.ANTHROPIC,
         model=_env("QUANT_MONITOR_MODEL", "claude-opus-5"), max_tokens=2048))

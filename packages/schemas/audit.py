@@ -46,7 +46,7 @@ class AuditVerdict(str, enum.Enum):
 class DetectedConflict(StrictModel):
     check: str
     detail: str
-    severity: float = Field(ge=0.0, le=1.0)
+    severity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
 
 
 AUDIT_SCHEMA_VERSION = "audit-1.1.0"
@@ -59,7 +59,7 @@ class AuditOutput(StrictModel):
     verdict: AuditVerdict
     reasons: tuple[str, ...]
     detected_conflicts: tuple[DetectedConflict, ...] = ()
-    severity: float = Field(ge=0.0, le=1.0)
+    severity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     # §7: structured findings so Near-Miss analysis can categorize what the
     # auditor actually caught, rather than parsing free text
     semantic_mismatches: tuple[str, ...] = ()   # decision vs order contradictions
@@ -103,7 +103,7 @@ class ApprovedOrderSnapshot(StrictModel):
     order_intent_id: str = ""    # §11: the intent this snapshot froze
     symbol: str
     side: Action
-    qty: float = Field(gt=0)
+    qty: float = Field(gt=0, allow_inf_nan=False)
     order_type: OrderType
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None

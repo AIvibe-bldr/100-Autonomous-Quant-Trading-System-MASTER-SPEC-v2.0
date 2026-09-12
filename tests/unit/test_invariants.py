@@ -110,7 +110,12 @@ def test_ai_cannot_reach_broker_imports():
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
+                # `from packages import broker_adapters` puts the forbidden
+                # word in the imported NAME, not in `module` — checking
+                # `module` alone let that form through undetected (found
+                # while writing tests/unit/test_architecture_boundaries.py,
+                # which needed the same fix for its own checks).
+                names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
             for n in names:
                 assert "broker" not in n.lower(), f"{py} imports broker: {n}"
 

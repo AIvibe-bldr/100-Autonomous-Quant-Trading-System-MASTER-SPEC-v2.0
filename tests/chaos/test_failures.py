@@ -94,3 +94,46 @@ def test_disconnect_during_reconciliation(pipeline):
     report = recon.reconcile()
     assert not report.consistent
     assert pipeline.risk_controller.state is RiskState.FULL_BROKER_DISCONNECT
+
+
+# docs/SAFETY_AUDIT.md F4: reconciliation existed and correctly halted entries
+# (proven above) but nothing called it BEFORE resuming trading — every entry
+# point called it only as a post-hoc summary after all sessions had already
+# run. This proves the wiring scripts/run_dashboard.py now relies on: reconcile
+# FIRST, then a new-entry attempt is actually blocked by the state it sets —
+# not just that reconcile() itself detects the mismatch in isolation.
+def test_startup_reconciliation_before_resuming_blocks_new_entries(pipeline):
+    # simulate what a restart looks like: internal state disagrees with the
+    # broker BEFORE the first session of this process runs
+    pipeline.ledger.record_fill("MSFT", side_qty=1.0, price=10.0, fees=0.0, at=SESSION_TIME)
+
+    recon = ReconciliationEngine(broker=pipeline.execution.broker, ledger=pipeline.ledger,
+                                 risk_controller=pipeline.risk_controller)
+    startup_report = recon.reconcile()
+    assert not startup_report.consistent
+
+    # only now does the entry point call run_session() — new entries must
+    # already be blocked by the state reconcile() just set, with no separate
+    # gate the script itself needs to add
+    result = pipeline.run_session(SESSION_TIME)
+    assert result.orders_filled == 0
+    assert pipeline.risk_controller.state is RiskState.HALT_NEW_ENTRIES
+
+
+# docs/SAFETY_AUDIT.md F8: broker_connected was a literal True at both
+# PortfolioRiskView construction sites, so decisions_log would show
+# "broker_connected: PASS" even during an actual disconnect — misleading
+# for post-hoc audit, even though the order was still correctly blocked for
+# a different reason (the FULL_BROKER_DISCONNECT state gate). This proves
+# the audit trail itself now reflects reality.
+def test_broker_connected_check_reflects_real_disconnect_state(pipeline):
+    assert pipeline._exit_risk_view("AAPL", 1.0, SESSION_TIME).broker_connected  # noqa: SLF001
+
+    pipeline.risk_controller.set_state(RiskState.FULL_BROKER_DISCONNECT,
+                                       reason="chaos test")
+    assert not pipeline._exit_risk_view(  # noqa: SLF001
+        "AAPL", 1.0, SESSION_TIME).broker_connected
+
+    # and it recovers once the state does, rather than staying stuck False
+    pipeline.risk_controller.set_state(RiskState.NORMAL, reason="chaos test recovered")
+    assert pipeline._exit_risk_view("AAPL", 1.0, SESSION_TIME).broker_connected  # noqa: SLF001

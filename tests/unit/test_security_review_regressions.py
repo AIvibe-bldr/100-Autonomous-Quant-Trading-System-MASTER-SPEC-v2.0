@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+import pydantic
 import pytest
 
 from packages.common.clock import FrozenClock
@@ -349,3 +350,105 @@ def test_final_theses_returns_a_copy(pipeline):
     view = pipeline.final_theses()
     view.clear()
     assert pipeline.final_theses() != {} or not pipeline._final_theses  # noqa: SLF001
+
+
+# --- SAFETY_AUDIT F1: Infinity accepted where NaN is rejected -----------------
+#
+# `Field(gt=0)` / `Field(ge=0)` reject NaN (any comparison with NaN is False,
+# so the constraint check fails) but NOT positive Infinity (`inf > 0` is
+# True). Every AI-facing / execution-relevant float field needed an explicit
+# `allow_inf_nan=False`. `DecisionOutput.expected_return_range` was worse: a
+# bare `tuple[float, float]` has no Field-level constraint reaching its
+# elements at all, so it accepted `(nan, inf)` outright, and the existing
+# `_range_ordered` validator's `lo > hi` check also silently passed NaN
+# (any comparison with NaN is False).
+
+def test_order_intent_rejects_infinite_qty():
+    with pytest.raises(pydantic.ValidationError):
+        _paper_intent("f1-order-0001", qty=float("inf"))
+
+
+def _decision_kwargs(**overrides):
+    from packages.schemas.core import DecisionAction, ScenarioCase
+
+    kwargs = dict(
+        symbol="AAPL", action=DecisionAction.BUY, confidence=0.7,
+        expected_horizon="1w", expected_return_range=(-0.05, 0.10),
+        bull_case=ScenarioCase(description="bull", target_price=110, probability=0.3),
+        base_case=ScenarioCase(description="base", target_price=102, probability=0.5),
+        bear_case=ScenarioCase(description="bear", target_price=94, probability=0.2),
+        key_evidence=["e1"], counter_evidence=["c1"], risk_factors=["r1"],
+        invalidation_conditions=["i1"], unknowns=["u1"], decision_version="1.0.0")
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_decision_output_rejects_nan_and_infinite_range():
+    from packages.schemas.core import DecisionOutput
+
+    with pytest.raises(pydantic.ValidationError):
+        DecisionOutput(**_decision_kwargs(
+            expected_return_range=(float("nan"), float("inf"))))
+
+
+def test_decision_output_accepts_a_valid_finite_range():
+    from packages.schemas.core import DecisionOutput
+
+    out = DecisionOutput(**_decision_kwargs(expected_return_range=(0.01, 0.05)))
+    assert out.expected_return_range == (0.01, 0.05)
+
+
+# --- SAFETY_AUDIT F2: signal_age_sec was a hardcoded 0.0, never a real value -
+
+def test_risk_view_computes_real_signal_age_not_a_constant(pipeline):
+    """`TradingPipeline._risk_view` used to pass `signal_age_sec=0.0`
+    unconditionally (services/pipeline.py), so `MasterRiskController`'s
+    `stale_order` check (§47) could never fire outside its own isolated
+    unit test (test_stale_signal_is_rejected, above). This drives the real
+    plumbing — `_signal_captured_at` + `wall_clock` — the same way
+    `run_session` does, without depending on the mock scanner/decision
+    funnel actually producing a candidate this session (it doesn't
+    reliably — see the `pytest.skip` guards elsewhere in this suite)."""
+    from packages.common.clock import FrozenClock
+    from packages.schemas.core import Environment, OrderIntent, OrderType, Quote
+    from services.position_sizing.engine import PortfolioContext
+
+    proposal = make_proposal("AAPL")
+    stop = make_stop(entry=100.0, stop=98.0)
+    quote = Quote(symbol="AAPL", ts=SESSION_TIME, bid=99.9, ask=100.1, bid_size=500,
+                 ask_size=500)
+    ctx = PortfolioContext(equity=10_000.0, settled_cash=10_000.0, existing_exposure={},
+                           theme_exposure={}, symbol_themes={})
+    sized = pipeline.sizing.size(proposal, stop, quote, ctx, calibrated_confidence=1.0)
+    pipeline._signal_captured_at[proposal.proposal_id] = SESSION_TIME  # noqa: SLF001
+
+    intent = OrderIntent(client_order_id="f2-order-0001", proposal_id=proposal.proposal_id,
+                         symbol="AAPL", side=Action.BUY, qty=sized.qty,
+                         order_type=OrderType.MARKET, environment=Environment.PAPER,
+                         created_at=SESSION_TIME)
+    cfg = pipeline.risk_controller.config
+
+    # fresh signal (a few seconds old) — must NOT trip stale_order
+    pipeline.wall_clock = FrozenClock(current=SESSION_TIME + timedelta(seconds=2))
+    fresh_view = pipeline._risk_view(sized, {}, SESSION_TIME)  # noqa: SLF001
+    assert fresh_view.signal_age_sec == pytest.approx(2.0)
+    fresh_verdict = pipeline.risk_controller.review(intent, fresh_view, entry_price=100.1)
+    assert not (isinstance(fresh_verdict, RiskRejection)
+               and "stale_order" in " ".join(fresh_verdict.reasons))
+
+    # same signal, now old enough to exceed the configured threshold
+    stale_age = cfg.stale_order_after_sec + 1
+    pipeline.wall_clock = FrozenClock(current=SESSION_TIME + timedelta(seconds=stale_age))
+    stale_view = pipeline._risk_view(sized, {}, SESSION_TIME)  # noqa: SLF001
+    assert stale_view.signal_age_sec == pytest.approx(stale_age)
+    stale_verdict = pipeline.risk_controller.review(intent, stale_view, entry_price=100.1)
+    assert isinstance(stale_verdict, RiskRejection)
+    assert "stale_order" in " ".join(stale_verdict.reasons)
+
+
+def test_broker_fill_rejects_infinite_price():
+    from packages.schemas.core import BrokerFill
+
+    with pytest.raises(pydantic.ValidationError):
+        BrokerFill(broker_fill_id="bf-1", client_order_id="f1-order-0002", symbol="AAPL",
+                   side=Action.BUY, qty=1.0, price=float("inf"), fees=0.0, ts=SESSION_TIME)

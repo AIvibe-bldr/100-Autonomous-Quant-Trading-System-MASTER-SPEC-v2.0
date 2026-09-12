@@ -21,6 +21,7 @@ from packages.broker_adapters.base import (
     DuplicateClientOrderIdError,
 )
 from packages.common.clock import Clock
+from packages.common.durable_store import DurableOrderStore
 from packages.common.environment import Environment
 from packages.schemas.audit import ApprovedOrderSnapshot
 from packages.schemas.core import (
@@ -54,6 +55,7 @@ class ExecutionEngine:
     clock: Clock
     environment: Environment
     on_fill: Optional[Callable[[BrokerFill], None]] = None
+    store: Optional[DurableOrderStore] = None
     _submitted: dict[str, RiskApprovedOrder] = field(default_factory=dict)
     _snapshots: dict[str, ApprovedOrderSnapshot] = field(default_factory=dict)
 
@@ -68,7 +70,16 @@ class ExecutionEngine:
         if intent.environment is not self.environment:
             raise UnauthorizedOrderError(
                 f"environment mismatch: order={intent.environment} engine={self.environment}")
-        if intent.client_order_id in self._submitted:
+        # F3: the in-memory dict alone doesn't survive a restart — when a
+        # durable store is configured, it is the source of truth for
+        # idempotency across a crash, not just within this process. Checked
+        # BEFORE any state-machine mutation below: store.record_submission()
+        # would also reject a duplicate (UNIQUE constraint), but only after
+        # sm.create()/transition() already ran, leaving this engine's local
+        # state machine holding a phantom order that was never really
+        # submitted. Fail fast, before touching local state.
+        if intent.client_order_id in self._submitted or (
+                self.store is not None and self.store.is_known(intent.client_order_id)):
             raise DuplicateClientOrderIdError(intent.client_order_id)
 
         # A4 / INV-17: the intent must re-hash to the approved snapshot.
@@ -108,29 +119,51 @@ class ExecutionEngine:
                                  limit_price=snapshot.limit_price,
                                  stop_price=snapshot.stop_price)
         sm.transition(intent.client_order_id, OrderState.SUBMITTED)
+        # F3/F9: persist BEFORE calling the broker, so a crash between "we
+        # decided to submit" and "the broker acknowledged" still leaves a
+        # durable record — the exact gap a blind retry could otherwise turn
+        # into a duplicate live order.
+        if self.store is not None:
+            self.store.record_submission(
+                client_order_id=intent.client_order_id, decision_id=snapshot.decision_id,
+                risk_approval_id=order.approval.approval_id, snapshot=snapshot,
+                state=OrderState.SUBMITTED, at=self.clock.now())
         try:
             ack = self.broker.submit_order(req)
         except BrokerTimeoutError:
             # §45-46: outcome unknown — never resubmit blindly; reconcile
             sm.transition(intent.client_order_id, OrderState.UNKNOWN,
                           reason="broker timeout — reconciliation required")
+            self._sync_store(intent.client_order_id, OrderState.UNKNOWN)
             self.risk_controller.set_state(RiskState.HALT_NEW_ENTRIES,
                                            reason="order in UNKNOWN state")
             return OrderState.UNKNOWN
         except BrokerDisconnectedError:
             sm.transition(intent.client_order_id, OrderState.UNKNOWN,
                           reason="broker disconnected mid-submit")
+            self._sync_store(intent.client_order_id, OrderState.UNKNOWN)
             self.risk_controller.set_state(RiskState.FULL_BROKER_DISCONNECT,
                                            reason="broker disconnected")
             return OrderState.UNKNOWN
 
         if not ack.accepted:
             sm.transition(intent.client_order_id, OrderState.REJECTED, reason=ack.reason)
+            self._sync_store(intent.client_order_id, OrderState.REJECTED)
             return OrderState.REJECTED
 
         sm.transition(intent.client_order_id, OrderState.ACKNOWLEDGED,
                       broker_payload={"broker_order_id": ack.broker_order_id})
+        self._sync_store(intent.client_order_id, OrderState.ACKNOWLEDGED)
         return self.poll_order(intent.client_order_id)
+
+    def _sync_store(self, client_order_id: str, state: OrderState) -> None:
+        """Mirror a state-machine transition into the durable store, when
+        one is configured. A KeyError here means the order was never
+        durably recorded (store configured only after submission, or a
+        recovered/legacy order) — that is not this helper's problem to
+        solve, so it is left to propagate rather than silently swallowed."""
+        if self.store is not None:
+            self.store.update_state(client_order_id, state, self.clock.now())
 
     def poll_order(self, client_order_id: str) -> OrderState:
         """Sync our state machine with broker-reported status and route fills."""
@@ -141,6 +174,7 @@ class ExecutionEngine:
                 OrderState.PARTIALLY_FILLED, OrderState.FILLED, OrderState.CANCELLED,
                 OrderState.REJECTED, OrderState.EXPIRED):
             sm.transition(client_order_id, status.state, reason="broker status poll")
+            self._sync_store(client_order_id, status.state)
             if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED) and self.on_fill:
                 for f in self.broker.get_fills(since=self.clock.now().replace(year=2000)):
                     if f.client_order_id == client_order_id:
@@ -176,11 +210,36 @@ class ExecutionEngine:
         if sm.get(client_order_id).state is OrderState.UNKNOWN:
             sm.transition(client_order_id, status.state,
                           reason="resolved via broker reconciliation")
+            self._sync_store(client_order_id, status.state)
             if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED) and self.on_fill:
                 for f in self.broker.get_fills(since=self.clock.now().replace(year=2000)):
                     if f.client_order_id == client_order_id:
                         self.on_fill(f)
         return sm.get(client_order_id).state
+
+    def recover_from_store(self) -> int:
+        """Rehydrate in-memory order state from the durable store after a
+        process restart (F3/F9). Recovered orders are NOT re-submitted or
+        re-polled here — this only makes them visible to
+        `resolve_unknown`/`poll_order`/the duplicate-submission check again.
+        The caller is responsible for reconciling against the broker before
+        resuming normal trading (F4 — startup reconciliation is a separate,
+        still-open finding this does not by itself close).
+
+        Returns the number of orders recovered."""
+        if self.store is None:
+            return 0
+        recovered = 0
+        for rec in self.store.all():
+            try:
+                self.state_machine.get(rec.client_order_id)
+                continue  # already known in-memory (e.g. re-recovery, no-op)
+            except KeyError:
+                pass
+            self.state_machine.restore(rec.client_order_id, rec.state)
+            self._snapshots[rec.client_order_id] = rec.snapshot
+            recovered += 1
+        return recovered
 
     def check_stale_orders(self) -> list[str]:
         """Stale Order Control (§47): re-evaluate resting **entry** orders.
