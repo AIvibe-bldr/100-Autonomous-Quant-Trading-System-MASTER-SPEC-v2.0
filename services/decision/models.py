@@ -9,11 +9,12 @@ External text (news etc.) reaches the model only as UntrustedText (§19).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 from pydantic import ValidationError
 
 from packages.schemas.core import DecisionOutput, SkepticOutput
+from services.institutional.engine import InstitutionalSignal
 from services.quant.scanner import ScanResult
 
 DECISION_VERSION = "1.0.0"
@@ -34,6 +35,11 @@ class DecisionContext:
     scan: ScanResult
     regime: str = "UNKNOWN"
     news: list[UntrustedText] = field(default_factory=list)
+    # §20: first-party, already-quantified (not raw untrusted text like
+    # `news`) — computed internally from order-flow/filings data, so it sits
+    # alongside `scan`'s own quant fields rather than in the untrusted-text
+    # bucket.
+    institutional: Optional[InstitutionalSignal] = None
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 

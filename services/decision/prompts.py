@@ -10,8 +10,10 @@ never drift apart.
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 from services.decision.models import DecisionContext, UntrustedText
+from services.institutional.engine import InstitutionalSignal
 
 DECISION_SYSTEM_PROMPT = """\
 You are the Decision AI of an autonomous quant trading system governed by a \
@@ -44,6 +46,17 @@ def render_news(news: list[UntrustedText]) -> str:
     return "\n".join(blocks)
 
 
+def render_institutional(signal: Optional[InstitutionalSignal]) -> str:
+    """§20: never trade on a single feature — surface both the score AND
+    whether it actually clears the two-feature bar, so a lone weak feature
+    doesn't read as confirmed institutional interest."""
+    if signal is None or not signal.contributing:
+        return ""
+    return (f"Institutional flow: score={signal.score:+.2f} "
+           f"actionable={signal.actionable} "
+           f"contributing={[f.value for f in signal.contributing]}")
+
+
 def build_decision_prompt(ctx: DecisionContext) -> str:
     s = ctx.scan
     lines = [
@@ -54,6 +67,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         f"20-day avg dollar volume: {s.dollar_volume:,.0f}",
         f"Quant score: {s.score:.4f}",
         f"Market regime: {ctx.regime}",
+        render_institutional(ctx.institutional),
         f"Portfolio summary: {json.dumps(ctx.portfolio_summary, default=str)}",
         render_news(ctx.news),
         "\nProduce a decision for this symbol.",

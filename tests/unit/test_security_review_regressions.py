@@ -488,3 +488,34 @@ def test_pipeline_wires_a_real_market_regime_into_decisions(pipeline):
     snapshots = list(pipeline.decision_quality._snapshots.values())  # noqa: SLF001
     assert snapshots, "no decisions were recorded this session"
     assert all(s.regime == regime for s in snapshots)
+
+
+# --- §17/§20: News + Institutional Flow were built but never wired ----------
+
+def test_pipeline_wires_news_and_institutional_signals_into_decisions(pipeline):
+    """Neither DecisionContext.news nor .institutional had any production
+    call site populating them, despite services/news/engine.py and
+    services/institutional/engine.py being fully implemented and the real
+    prompt builder (services/decision/prompts.py) already rendering both.
+    Every symbol in the SESSION_TIME test universe has either a mock news
+    item or a mock institutional observation (verified: 4 + 16 = all 20),
+    so whichever candidates survive scanning are guaranteed to exercise at
+    least one of the two."""
+    from services.decision.models import MockDecisionModel
+
+    seen_contexts = []
+
+    class _SpyDecisionModel(MockDecisionModel):
+        def decide(self, context):
+            seen_contexts.append(context)
+            return super().decide(context)
+
+    pipeline.decision_model = _SpyDecisionModel()
+    pipeline.run_session(SESSION_TIME)
+
+    assert seen_contexts, "Decision AI was never consulted this session"
+    assert any(ctx.news for ctx in seen_contexts), (
+        "no candidate ever received a news signal")
+    assert any(ctx.institutional is not None and ctx.institutional.contributing
+              for ctx in seen_contexts), (
+        "no candidate ever received an institutional flow signal")
