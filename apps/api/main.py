@@ -249,6 +249,31 @@ def create_app(pipeline: TradingPipeline,
         out.sort(key=lambda t: t["created_at"], reverse=True)
         return out
 
+    @app.get("/opportunities")
+    def opportunities() -> list[dict[str, Any]]:
+        """Opportunity Detail (research-instruction §20/§94): which
+        research signals (fundamental inflection / price divergence /
+        management language / growth catalysts / institutional flow /
+        news) actually contributed to each candidate Decision AI reviewed
+        this session — unlike Final Trade Thesis above, this also covers
+        NO_TRADE/AVOID/WAIT candidates, not just BUY survivors, so a
+        symbol's reasoning is visible even when nothing was ordered."""
+        now = pipeline.clock.now()
+        out = []
+        for snap in pipeline.decision_quality.all_snapshots():
+            if snap.ts != now:
+                continue
+            out.append({
+                "symbol": snap.symbol, "decision": snap.decision.value,
+                "confidence": snap.confidence, "thesis": snap.thesis,
+                "regime": snap.regime,
+                "alpha_scores": snap.alpha_scores,
+                "news_signals": list(snap.news_signals),
+                "institutional_signals": list(snap.institutional_signals),
+            })
+        out.sort(key=lambda o: o["symbol"])
+        return out
+
     @app.get("/monitor")
     def monitor_status() -> dict[str, Any]:
         """Monitor AI panel (§66). Consulted only on anomaly — an unhealthy

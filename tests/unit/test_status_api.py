@@ -179,3 +179,60 @@ def test_an_explicitly_passed_feature_store_is_still_honored(api_pipeline):
     body = resp.json()
     assert "some_other_feature" in body["ACTIVE"]
     assert "fundamental_inflection" not in body["SHADOW"]
+
+
+# --- /opportunities (research-instruction §20/§94) -------------------------
+
+def test_opportunities_endpoint_exposes_which_research_signals_contributed(api_pipeline):
+    client = TestClient(create_app(api_pipeline))
+    resp = client.get("/opportunities")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body, "no opportunities recorded for a session that ran"
+    row = body[0]
+    assert {"symbol", "decision", "confidence", "thesis", "regime",
+           "alpha_scores", "news_signals", "institutional_signals"} <= row.keys()
+    # Whichever symbols actually survived scanning that session, at least
+    # one must carry a fundamental_inflection score (established elsewhere,
+    # test_security_review_regressions.py, that this happens for SOME
+    # candidate at this SESSION_TIME — which specific symbol scans that
+    # day is scanner-dependent, not something this endpoint test should
+    # hardcode).
+    assert any("fundamental_inflection" in o["alpha_scores"] for o in body)
+
+
+def test_opportunities_endpoint_covers_no_trade_candidates_not_just_buys(api_pipeline):
+    """Unlike /final-trade-theses (BUY survivors only), /opportunities must
+    also show candidates that ended NO_TRADE/AVOID/WAIT — that's the whole
+    point of exposing "why" for a symbol nothing was ordered on. Injects a
+    synthetic NO_TRADE snapshot directly (real sessions at a fixed date can
+    end up all-BUY or all-something-else depending on scanner output that
+    day, which this endpoint's contract shouldn't depend on)."""
+    from services.pdca.decision_quality import DecisionKind, DecisionSnapshot
+
+    api_pipeline.decision_quality.record(DecisionSnapshot(
+        decision_id="SYNTH-NO-TRADE", symbol="SYNTHCO", ts=api_pipeline.clock.now(),
+        reference_price=50.0, decision=DecisionKind.NO_TRADE, confidence=0.4,
+        expected_horizon="1w", expected_return_range=(-0.02, 0.02)))
+
+    client = TestClient(create_app(api_pipeline))
+    body = client.get("/opportunities").json()
+    row = next((o for o in body if o["symbol"] == "SYNTHCO"), None)
+    assert row is not None, "a NO_TRADE decision must still appear in /opportunities"
+    assert row["decision"] == "NO_TRADE"
+
+
+def test_opportunities_endpoint_is_empty_when_no_session_ran():
+    clock = FrozenClock(current=SESSION_TIME)
+    pipeline = build_pipeline(clock, _universe())
+    client = TestClient(create_app(pipeline))
+    resp = client.get("/opportunities")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_opportunities_endpoint_is_read_only(api_pipeline):
+    client = TestClient(create_app(api_pipeline))
+    for method in ("post", "put", "delete", "patch"):
+        resp = getattr(client, method)("/opportunities")
+        assert resp.status_code == 405

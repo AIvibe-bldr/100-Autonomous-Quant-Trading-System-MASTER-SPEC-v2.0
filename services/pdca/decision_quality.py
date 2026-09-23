@@ -156,6 +156,12 @@ class DecisionQualityEngine:
     def evaluation(self, decision_id: str) -> DecisionEvaluation:
         return self._evals[decision_id]
 
+    def all_snapshots(self) -> list[DecisionSnapshot]:
+        """Read-only view for callers outside the engine (the Status API's
+        Opportunity Detail panel, research-instruction §20/§94) — a list
+        copy, so nothing external can mutate engine state through it."""
+        return list(self._snapshots.values())
+
     # -- A1-2: tracking ------------------------------------------------------
     def track(self, now: datetime, price_fn: Callable[[str, datetime], float],
               include_extended: bool = False,

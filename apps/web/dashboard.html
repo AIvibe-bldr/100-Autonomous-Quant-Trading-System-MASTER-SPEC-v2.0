@@ -68,6 +68,21 @@
                  font-size: 13px; }
   .thesis-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
   .thesis-obj { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .feature-status { margin-bottom: 8px; }
+  .feature-status .fs-label { color: var(--muted); font-size: 11px;
+                               text-transform: uppercase; letter-spacing: .06em;
+                               margin-right: 6px; }
+  .signal-tag { display: inline-block; background: #21262d; color: var(--text);
+                border: 1px solid var(--border); border-radius: 10px;
+                padding: 0 8px; font-size: 11px; margin: 2px 4px 2px 0; }
+  .signal-tag.pos { border-color: var(--green); color: var(--green); }
+  .signal-tag.neg { border-color: var(--red); color: var(--red); }
+  .opp-row { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  .opp-row:last-child { border-bottom: none; }
+  .opp-head { display: flex; justify-content: space-between; align-items: center;
+              font-size: 13px; }
+  .decision-BUY { color: var(--green); } .decision-SELL { color: var(--red); }
+  .decision-AVOID, .decision-NO_TRADE, .decision-WAIT { color: var(--muted); }
   footer { color: var(--muted); font-size: 11px; text-align: center; margin-top: 12px; }
 </style>
 </head>
@@ -145,6 +160,15 @@
   </div>
 </section>
 
+<section><h2>Opportunity Detail (§20/§94)</h2>
+  <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    このセッションでDecision AIが検討した候補ごとの、寄与したResearchシグナル
+    （Fundamental Inflection / Divergence / Management Language / Catalysts /
+    Institutional Flow）。BUYに至らなかった候補（NO_TRADE/AVOID/WAIT）も含みます。
+  </div>
+  <div id="opportunities"></div>
+</section>
+
 <section><h2>Final Trade Thesis (§27)</h2>
   <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
     Decision AI × Skeptic AI の統合結果。disagreement_score は Skeptic の
@@ -160,6 +184,13 @@
     一切不可 — recommendationは要請であり実行ではない）。
   </div>
   <div id="monitor"></div>
+</section>
+
+<section><h2>Feature Center (§94)</h2>
+  <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    新規Researchシグナルのライフサイクル（SHADOW→ACTIVE、性能劣化時はREDUCED→DORMANT）。
+  </div>
+  <div id="featureCenter"></div>
 </section>
 
 <section><h2>System Health (§97)</h2><div id="health"></div></section>
@@ -200,10 +231,16 @@ function recBadge(rec) {
   return `<span class="badge ${cls}">${rec}</span>`;
 }
 
+const FEATURE_STATUS_BADGE = {ACTIVE: "badge-ok", SHADOW: "badge-notify",
+                              REDUCED: "badge-review", DORMANT: "badge-escalate",
+                              RETIRED: "badge-escalate"};
+
 async function refresh() {
-  const [health, p, chart, holdings, themes, session, dq, os, theses, mon] = await Promise.all([
-    j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session"),
-    j("/decision-quality"), j("/order-safety"), j("/final-trade-theses"), j("/monitor")]);
+  const [health, p, chart, holdings, themes, session, dq, os, theses, mon, features, opps] =
+    await Promise.all([
+      j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session"),
+      j("/decision-quality"), j("/order-safety"), j("/final-trade-theses"), j("/monitor"),
+      j("/features"), j("/opportunities")]);
 
   const env = $("env");
   env.textContent = health.environment;                     // §73: 常時表示
@@ -282,6 +319,34 @@ async function refresh() {
   const recon = $("osRecon");
   recon.textContent = os.broker_reconciliation;
   recon.className = "value " + (os.broker_reconciliation === "OK" ? "pos" : "neg");
+
+  // Opportunity Detail (§20/§94)
+  $("opportunities").innerHTML = opps.length ? opps.map(o => {
+    const tags = Object.entries(o.alpha_scores).map(([name, score]) =>
+      `<span class="signal-tag ${score > 0 ? "pos" : score < 0 ? "neg" : ""}">
+       ${name} ${score.toFixed(2)}</span>`).join("");
+    return `<div class="opp-row">
+      <div class="opp-head">
+        <span><b>${o.symbol}</b>
+          <span class="decision-${o.decision}">${o.decision}</span>
+          · confidence ${fmt(o.confidence*100,0)}%</span>
+        <span style="color:var(--muted);font-size:11px">regime ${o.regime}</span>
+      </div>
+      ${tags || `<div style="color:var(--muted);font-size:11px;margin-top:4px">寄与したResearchシグナルなし（純Quant候補）</div>`}
+      ${o.thesis ? `<div class="thesis-obj">${o.thesis}</div>` : ""}
+    </div>`;
+  }).join("")
+    : `<div style="color:var(--muted)">このセッションで検討された候補はありません</div>`;
+
+  // Feature Center (§94)
+  $("featureCenter").innerHTML = Object.entries(features).map(([status, names]) => `
+    <div class="feature-status">
+      <span class="fs-label">${status}</span>
+      ${names.length
+        ? names.map(n => `<span class="badge ${FEATURE_STATUS_BADGE[status] || "badge-notify"}"
+                                style="margin:2px 4px 2px 0">${n}</span>`).join("")
+        : `<span style="color:var(--muted);font-size:12px">—</span>`}
+    </div>`).join("");
 
   // Final Trade Thesis (§27)
   $("theses").innerHTML = theses.length ? theses.map(t => `
