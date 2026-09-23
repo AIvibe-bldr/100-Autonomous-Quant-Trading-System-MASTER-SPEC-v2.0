@@ -63,8 +63,21 @@ class ShadowAblationRunner:
 
     def __init__(self, pipeline_factory: PipelineFactory,
                 variants: list[ShadowVariant] | None = None) -> None:
+        # Only variants expressible as a disabled_features set can be run
+        # here. NO_LLM/QUANT_ONLY/MOONSHOT_ONLY/BENCHMARK need a different
+        # pipeline configuration (services.pdca.shadow says so explicitly);
+        # run through this runner they would silently execute as FULL, be
+        # ranked as if they were distinct strategies, and overwrite FULL's
+        # entry in the AblationEngine (both keyed by the empty set).
+        supported = list(SHADOW_VARIANT_DISABLED_FEATURES)
+        unsupported = [v for v in (variants or []) if v not in SHADOW_VARIANT_DISABLED_FEATURES]
+        if unsupported:
+            raise ValueError(
+                f"variants not expressible as disabled_features: "
+                f"{[v.value for v in unsupported]} — configure those pipelines directly")
         self.pipeline_factory = pipeline_factory
-        self.variants = variants or list(ShadowVariant)
+        self.variants = variants or supported
+        self._last_session: datetime | None = None
         self._pipelines: dict[ShadowVariant, TradingPipeline] = {}
         self._results: dict[ShadowVariant, VariantSessionRun] = {
             v: VariantSessionRun(variant=v) for v in self.variants}
@@ -89,7 +102,15 @@ class ShadowAblationRunner:
         return self._pipelines[variant]
 
     def run_session(self, now: datetime) -> None:
-        """Advance every variant's own pipeline through one session date."""
+        """Advance every variant's own pipeline through one session date.
+        Dates must strictly increase: returns are NAV-to-NAV from the
+        previous call, and re-running a date re-records the same
+        decision_ids (DecisionQualityEngine rejects a changed snapshot
+        under an existing id, INV-21)."""
+        if self._last_session is not None and now <= self._last_session:
+            raise ValueError(f"session {now.isoformat()} is not after the previous "
+                             f"session {self._last_session.isoformat()}")
+        self._last_session = now
         for variant in self.variants:
             pipe = self._pipeline_for(variant)
             equity_before = self._last_equity[variant]

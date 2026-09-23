@@ -104,3 +104,24 @@ def test_into_ablation_engine_keys_results_by_the_variants_own_disabled_features
     # contribution() should now be directly computable off real run results.
     contribution = engine.contribution("fundamental")
     assert contribution is not None
+
+
+def test_default_variants_are_only_the_ones_expressible_as_disabled_features():
+    """NO_LLM/QUANT_ONLY/MOONSHOT_ONLY/BENCHMARK need a different pipeline
+    configuration; run here they would execute as FULL under another name
+    and overwrite FULL's AblationEngine entry (both keyed by frozenset())."""
+    from services.pdca.shadow import SHADOW_VARIANT_DISABLED_FEATURES
+
+    runner = ShadowAblationRunner(_pipeline_factory)
+    assert set(runner.variants) == set(SHADOW_VARIANT_DISABLED_FEATURES)
+    with pytest.raises(ValueError):
+        ShadowAblationRunner(_pipeline_factory, variants=[ShadowVariant.FULL, ShadowVariant.NO_LLM])
+
+
+def test_session_dates_must_strictly_increase():
+    runner = ShadowAblationRunner(_pipeline_factory, variants=[ShadowVariant.FULL])
+    runner.run_session(SESSION_TIME)
+    with pytest.raises(ValueError):
+        runner.run_session(SESSION_TIME)
+    with pytest.raises(ValueError):
+        runner.run_session(SESSION_TIME - timedelta(days=1))
