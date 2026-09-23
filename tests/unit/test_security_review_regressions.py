@@ -519,3 +519,32 @@ def test_pipeline_wires_news_and_institutional_signals_into_decisions(pipeline):
     assert any(ctx.institutional is not None and ctx.institutional.contributing
               for ctx in seen_contexts), (
         "no candidate ever received an institutional flow signal")
+
+
+# --- Fundamental Inflection Engine: built but not yet wired -------------------
+
+def test_pipeline_wires_a_real_fundamental_signal_into_decisions(pipeline):
+    """DecisionContext.fundamental had no production call site either,
+    despite services/fundamentals/engine.py being fully implemented and
+    prompts.py already rendering it. AAPL (a routine test-universe symbol)
+    has a genuine multi-quarter mock history by SESSION_TIME (verified:
+    quarters_observed=7, assessment != INSUFFICIENT_DATA), so — like the
+    regime/news/institutional wiring tests above — this doesn't depend on
+    which candidates happen to survive scanning, only that at least one
+    candidate receives real fundamental data, not a None default."""
+    from services.decision.models import MockDecisionModel
+
+    seen_contexts = []
+
+    class _SpyDecisionModel(MockDecisionModel):
+        def decide(self, context):
+            seen_contexts.append(context)
+            return super().decide(context)
+
+    pipeline.decision_model = _SpyDecisionModel()
+    pipeline.run_session(SESSION_TIME)
+
+    assert seen_contexts, "Decision AI was never consulted this session"
+    assert any(ctx.fundamental is not None and ctx.fundamental.quarters_observed > 0
+              for ctx in seen_contexts), (
+        "no candidate ever received a fundamental inflection signal")

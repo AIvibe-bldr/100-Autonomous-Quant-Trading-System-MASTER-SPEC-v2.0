@@ -57,6 +57,7 @@ from services.decision.models import (
 from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
+from services.fundamentals.engine import FundamentalInflectionEngine
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.mock_source import MockInstitutionalFlowSource
 from services.news.engine import NewsEngine, NewsSignal
@@ -178,6 +179,14 @@ class TradingPipeline:
         default_factory=InstitutionalFlowEngine)
     institutional_source: MockInstitutionalFlowSource = field(
         default_factory=MockInstitutionalFlowSource)
+    # Fundamental Inflection Engine (research-instruction, §0/§3): same
+    # "real engine, Mock data source" status as regime/news/institutional
+    # above — no SEC EDGAR/XBRL adapter exists yet (deliberately deferred
+    # to a later, separate task: real network access + rate limiting).
+    # FundamentalInflectionEngine already defaults to a Mock source
+    # internally, so no separate `fundamental_source` field is needed here.
+    fundamental_engine: FundamentalInflectionEngine = field(
+        default_factory=FundamentalInflectionEngine)
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -504,6 +513,7 @@ class TradingPipeline:
             ctx = DecisionContext(
                 scan=scan, regime=regime, news=symbol_news,
                 institutional=self.institutional_engine.signal(scan.symbol),
+                fundamental=self.fundamental_engine.analyze(scan.symbol, now),
                 portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name

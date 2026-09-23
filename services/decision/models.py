@@ -14,6 +14,7 @@ from typing import Any, Optional, Protocol
 from pydantic import ValidationError
 
 from packages.schemas.core import DecisionOutput, SkepticOutput
+from packages.schemas.fundamentals import FundamentalSignal
 from services.institutional.engine import InstitutionalSignal
 from services.quant.scanner import ScanResult
 
@@ -40,6 +41,13 @@ class DecisionContext:
     # alongside `scan`'s own quant fields rather than in the untrusted-text
     # bucket.
     institutional: Optional[InstitutionalSignal] = None
+    # Fundamental Inflection Engine (research-instruction §0/§12): same
+    # status as `institutional` — a structured, already-validated signal,
+    # never a raw statement or metrics dump (STRUCTURAL_IMPROVEMENT alone
+    # is research input, not a BUY signal — §11/§24 — downstream Skeptic AI/
+    # Loss Control/Position Sizing/Master Risk Controller are what actually
+    # gate an order, unchanged by this field's existence).
+    fundamental: Optional[FundamentalSignal] = None
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 
