@@ -89,18 +89,21 @@ def render_fundamental(signal: Optional[FundamentalSignal]) -> str:
 
 
 def render_catalysts(catalysts: tuple[CatalystEvent, ...]) -> str:
-    """§9: catalysts are structured classifications of already-vetted news.
-    A non-tradeable one (sns_only/injection_flagged, §18/§19) is still
-    shown — matching render_news()'s own "label the caveat, don't hide the
-    signal" precedent — with an explicit caveat rather than being silently
-    dropped from the AI's situational awareness."""
+    """§9: rendered by catalyst TYPE only. The headline behind each one is
+    untrusted third-party text and already appears in the news section,
+    wrapped in <untrusted_external_data> — repeating it here would put the
+    same text into the prompt outside that wrapper, i.e. as if it were
+    trusted first-party context (§19). A non-tradeable one (sns_only/
+    injection_flagged, §18/§19) is still shown with an explicit caveat,
+    matching render_news()'s "label the caveat, don't hide the signal"."""
     if not catalysts:
         return ""
     parts = []
     for c in catalysts:
         caveat = "" if c.tradeable else " [not independently tradeable — SNS-only/flagged]"
-        parts.append(f"{c.catalyst_type.value} ({c.headline}){caveat}")
-    return "Growth catalysts: " + "; ".join(parts)
+        parts.append(f"{c.catalyst_type.value}{caveat}")
+    return ("Growth catalysts (classified from the untrusted news items below): "
+            + "; ".join(parts))
 
 
 def render_divergence(signal: Optional[DivergenceSignal]) -> str:
