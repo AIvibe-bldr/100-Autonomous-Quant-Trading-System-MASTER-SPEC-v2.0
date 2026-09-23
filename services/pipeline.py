@@ -59,6 +59,7 @@ from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.feature_manager.store import FeatureStatus, FeatureStore
 from services.fundamentals.catalyst_tracker import GrowthCatalystTracker
+from services.fundamentals.divergence import detect_divergence
 from services.fundamentals.engine import FundamentalInflectionEngine
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.mock_source import MockInstitutionalFlowSource
@@ -554,12 +555,18 @@ class TradingPipeline:
             symbol_news = [self._news_signal_as_untrusted_text(sig) for sig in news_signals
                           if scan.symbol in sig.tickers]
             symbol_catalysts = tuple(c for c in catalyst_events if scan.symbol in c.tickers)
+            fundamental_signal = (self.fundamental_engine.analyze(scan.symbol, now)
+                                  if "fundamental" not in self.disabled_features else None)
+            # §10: derived from fundamental_signal + scan.momentum_20d, both
+            # already computed above — no separate fetch, so it's naturally
+            # None too whenever "fundamental" is disabled.
+            divergence_signal = (detect_divergence(fundamental_signal, scan.momentum_20d, now)
+                                 if fundamental_signal is not None else None)
             ctx = DecisionContext(
                 scan=scan, regime=regime, news=symbol_news, catalysts=symbol_catalysts,
                 institutional=(self.institutional_engine.signal(scan.symbol)
                               if "institutional" not in self.disabled_features else None),
-                fundamental=(self.fundamental_engine.analyze(scan.symbol, now)
-                            if "fundamental" not in self.disabled_features else None),
+                fundamental=fundamental_signal, divergence=divergence_signal,
                 portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name

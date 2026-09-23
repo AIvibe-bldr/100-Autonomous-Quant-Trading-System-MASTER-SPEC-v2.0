@@ -576,3 +576,30 @@ def test_pipeline_wires_growth_catalysts_into_decisions(pipeline):
     assert seen_contexts, "Decision AI was never consulted this session"
     assert any(ctx.catalysts for ctx in seen_contexts), (
         "no candidate ever received a growth catalyst")
+
+
+# --- §10: Fundamental-Price Divergence Engine was built but never wired -------
+
+def test_pipeline_wires_a_divergence_signal_into_decisions(pipeline):
+    """DecisionContext.divergence had no production call site either.
+    Reuses the same SESSION_TIME date as the fundamental wiring test above
+    (already verified there: at least one candidate gets a real, non-
+    INSUFFICIENT_DATA fundamental signal that day) — since divergence is
+    computed directly from fundamental + scan.momentum_20d with no separate
+    fetch, any candidate with a real fundamental signal must also receive a
+    non-None divergence signal."""
+    from services.decision.models import MockDecisionModel
+
+    seen_contexts = []
+
+    class _SpyDecisionModel(MockDecisionModel):
+        def decide(self, context):
+            seen_contexts.append(context)
+            return super().decide(context)
+
+    pipeline.decision_model = _SpyDecisionModel()
+    pipeline.run_session(SESSION_TIME)
+
+    assert seen_contexts, "Decision AI was never consulted this session"
+    assert any(ctx.divergence is not None for ctx in seen_contexts), (
+        "no candidate ever received a fundamental-price divergence signal")

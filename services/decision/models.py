@@ -14,7 +14,7 @@ from typing import Any, Optional, Protocol
 from pydantic import ValidationError
 
 from packages.schemas.core import DecisionOutput, SkepticOutput
-from packages.schemas.fundamentals import FundamentalSignal
+from packages.schemas.fundamentals import DivergenceSignal, FundamentalSignal
 from services.fundamentals.catalyst_tracker import CatalystEvent
 from services.institutional.engine import InstitutionalSignal
 from services.quant.scanner import ScanResult
@@ -56,6 +56,11 @@ class DecisionContext:
     # event still carries its own `tradeable` gate (§18/§19) through from
     # the NewsSignal it was built from.
     catalysts: tuple[CatalystEvent, ...] = ()
+    # Fundamental-Price Divergence Engine (research-instruction §10) —
+    # derived from `fundamental` above plus `scan.momentum_20d`, never a
+    # separate fetch. Naturally None whenever `fundamental` is (the
+    # "fundamental" feature toggle already covers it with no extra switch).
+    divergence: Optional[DivergenceSignal] = None
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 

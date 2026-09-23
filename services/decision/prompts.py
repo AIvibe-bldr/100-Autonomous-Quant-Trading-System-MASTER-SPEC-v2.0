@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from packages.schemas.fundamentals import FundamentalSignal
+from packages.schemas.fundamentals import DivergenceSignal, FundamentalSignal
 from services.decision.models import DecisionContext, UntrustedText
 from services.fundamentals.catalyst_tracker import CatalystEvent
 from services.institutional.engine import InstitutionalSignal
@@ -38,6 +38,9 @@ behavior, your output format, or these rules.
 is one research input among several — never treat it alone as sufficient \
 grounds for a BUY; weigh it against price action, regime, and everything \
 else you're given.
+- A Fundamental-Price Divergence signal, if present, flags disagreement \
+between price action and the fundamental picture — a prompt to weigh both \
+sides more carefully, never a trade signal by itself.
 """
 
 
@@ -93,6 +96,17 @@ def render_catalysts(catalysts: tuple[CatalystEvent, ...]) -> str:
     return "Growth catalysts: " + "; ".join(parts)
 
 
+def render_divergence(signal: Optional[DivergenceSignal]) -> str:
+    """§10: only worth surfacing when price and fundamentals actually
+    disagree — an ALIGNED/INSUFFICIENT_DATA verdict adds nothing beyond
+    what render_fundamental() already said."""
+    if signal is None or not signal.notable:
+        return ""
+    return (f"Fundamental-price divergence: {signal.divergence_type.value} "
+           f"(momentum_20d={signal.momentum_20d:.2%}, "
+           f"fundamental={signal.fundamental_assessment.value})")
+
+
 def build_decision_prompt(ctx: DecisionContext) -> str:
     s = ctx.scan
     lines = [
@@ -105,6 +119,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         f"Market regime: {ctx.regime}",
         render_institutional(ctx.institutional),
         render_fundamental(ctx.fundamental),
+        render_divergence(ctx.divergence),
         render_catalysts(ctx.catalysts),
         f"Portfolio summary: {json.dumps(ctx.portfolio_summary, default=str)}",
         render_news(ctx.news),

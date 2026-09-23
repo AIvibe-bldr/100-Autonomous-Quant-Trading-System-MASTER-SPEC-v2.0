@@ -192,3 +192,33 @@ class FundamentalSignal(StrictModel):
         flag; downstream (Decision AI → ... → Master Risk Controller) is
         what actually gates an order."""
         return self.assessment is FundamentalAssessment.STRUCTURAL_IMPROVEMENT
+
+
+class DivergenceType(str, enum.Enum):
+    """§10: how price/momentum has (or hasn't) reacted to the fundamental
+    picture. This compares an already-computed FundamentalSignal against
+    price action — it never restates either input on its own."""
+
+    POSITIVE_DIVERGENCE = "POSITIVE_DIVERGENCE"  # fundamentals improving, price hasn't reacted yet
+    NEGATIVE_DIVERGENCE = "NEGATIVE_DIVERGENCE"  # price has run up without fundamental support
+    ALIGNED = "ALIGNED"                          # price and fundamentals point the same way
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
+class DivergenceSignal(StrictModel):
+    """Output of the Fundamental-Price Divergence Engine (§10). Mirrors
+    `FundamentalSignal`'s role in `DecisionContext` — a structured verdict,
+    never a raw comparison the AI has to interpret itself."""
+
+    symbol: str = Field(min_length=1)
+    divergence_type: DivergenceType
+    fundamental_assessment: FundamentalAssessment
+    momentum_20d: float = Field(allow_inf_nan=False)
+    as_of: datetime
+
+    @property
+    def notable(self) -> bool:
+        """§10/§11: flags where price and fundamentals disagree — still
+        research input only, never a BUY/SELL trigger on its own."""
+        return self.divergence_type in (DivergenceType.POSITIVE_DIVERGENCE,
+                                        DivergenceType.NEGATIVE_DIVERGENCE)
