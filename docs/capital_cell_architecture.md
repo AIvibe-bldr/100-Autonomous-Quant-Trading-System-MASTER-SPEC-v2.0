@@ -1277,3 +1277,36 @@ Common-Mode Dependency → UI）は、現行コードベースの層構造
 の実配線があって初めて表示すべきデータを持つため、`services/pipeline.py`（既存の
 単一Master Portfolio）をCapital Cell対応に拡張するかどうかの設計判断が先に必要。
 それを行わずにUIだけ作ると、表示するものがダミーデータしかない画面になる。
+
+## `services/pipeline.py`への配線を見送る判断（2026-09）
+
+Fundamental Inflection Engine追加作業（研究指示書§13: 「Capital Cellsへ
+Fundamental Inflectionを配線する」）の実施検討時に、優先度15（UI含む配線）に
+着手しない、という判断を下した。理由は「規模が大きいから」ではなく、
+**Capital Cellsが解決しようとしている問題が、現行アーキテクチャには存在しない**
+ため。
+
+現行の`services/pipeline.py`は、fundamental / catalysts / divergence /
+management_language / institutional / news / regimeを含む全シグナルを
+**1つの統合されたDecision AIプロンプト**（`services/decision/prompts.py::
+build_decision_prompt`）に集約し、銘柄ごとに**1つの判断**を出す設計である
+（このアーキテクチャに、Fundamental Inflection Engine自体を含む2026-09の
+新規シグナル追加はすべて、この「既存の単一判断への入力追加」という形で
+問題なく収まった — 新しいパイプライン段や構造変更は一切不要だった）。
+
+一方Capital Cellsが前提とするのは、§14「同一銘柄複数Cell保有」の例
+（Cell A: NVDAをMomentum理由で保有・Stop $170、Cell B: NVDAをNews Alpha理由で
+別に保有・Stop $160）のような、**並列に独立して動く複数戦略**が同時に存在し、
+資金・Exposureを奪い合う状況である。現行システムにはこの「独立した複数戦略が
+同一銘柄について異なる判断を出す」という状態そのものが存在しない（全シグナルが
+1つの判断に統合されるため）。したがって、Netting / Gross-Net Risk評価 /
+Cell単位Stop管理 / Capital Reservationといった優先度1〜14の機能群を配線しても、
+今のところ解消すべき実問題がない。
+
+**結論**: 優先度15（`services/pipeline.py`への実配線、UI含む）は現時点で
+着手しない。優先度1〜14（スタンドアロンモジュール）はそのまま資産として残す
+（実装・テストとも既に完了しており、削除する理由もない）。この判断は、
+Alpha Factoryが複数の独立したAlphaを並列に個別運用する方向へ戦略モデル自体が
+転換した場合にのみ再検討する — それは今回のFundamental Inflection Engine作業
+（既存の単一判断パイプラインへ研究シグナルを追加するだけの変更）とは別種の、
+将来の製品判断である。
