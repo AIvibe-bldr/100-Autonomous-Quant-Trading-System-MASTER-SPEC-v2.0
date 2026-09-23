@@ -2,8 +2,8 @@
 
 Multiple virtual portfolios run against the same market with feature toggles:
 FULL / NO_NEWS / NO_INSTITUTIONAL / NO_LLM / QUANT_ONLY / NO_REGIME /
-MOONSHOT_ONLY / BENCHMARK.  The ablation engine compares performance with
-features off, alone and in combination (§57).
+NO_FUNDAMENTAL / MOONSHOT_ONLY / BENCHMARK.  The ablation engine compares
+performance with features off, alone and in combination (§57).
 """
 from __future__ import annotations
 
@@ -19,8 +19,31 @@ class ShadowVariant(str, enum.Enum):
     NO_LLM = "NO_LLM"
     QUANT_ONLY = "QUANT_ONLY"
     NO_REGIME = "NO_REGIME"
+    # Fundamental Inflection Engine (research-instruction §17: "A: Full
+    # System + Fundamental Inflection" vs "B: Full System − Fundamental
+    # Inflection").
+    NO_FUNDAMENTAL = "NO_FUNDAMENTAL"
     MOONSHOT_ONLY = "MOONSHOT_ONLY"
     BENCHMARK = "BENCHMARK"
+
+
+# services.pipeline.TradingPipeline.disabled_features consumes these names
+# directly — this is the one place a ShadowVariant's meaning is translated
+# into "which decision-input engines does this session actually turn off,"
+# so the mapping can't drift out of sync with the variant list above.
+SHADOW_VARIANT_DISABLED_FEATURES: dict[ShadowVariant, frozenset[str]] = {
+    ShadowVariant.FULL: frozenset(),
+    ShadowVariant.NO_NEWS: frozenset({"news"}),
+    ShadowVariant.NO_INSTITUTIONAL: frozenset({"institutional"}),
+    ShadowVariant.NO_REGIME: frozenset({"regime"}),
+    ShadowVariant.NO_FUNDAMENTAL: frozenset({"fundamental"}),
+    # NO_LLM, QUANT_ONLY, MOONSHOT_ONLY, BENCHMARK are deeper structural
+    # differences (a different decision_model entirely, a position-count
+    # cap, a benchmark-only passive comparator) — not expressible as
+    # "which of these four engines is off," so intentionally absent here.
+    # A caller building one of those variants configures the pipeline
+    # directly rather than through this mapping.
+}
 
 
 @dataclass

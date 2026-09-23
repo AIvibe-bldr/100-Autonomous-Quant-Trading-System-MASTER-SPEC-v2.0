@@ -187,6 +187,15 @@ class TradingPipeline:
     # internally, so no separate `fundamental_source` field is needed here.
     fundamental_engine: FundamentalInflectionEngine = field(
         default_factory=FundamentalInflectionEngine)
+    # §57 Ablation: which decision-input features to suppress this session,
+    # by name ("regime"/"news"/"institutional"/"fundamental"). Empty by
+    # default — every existing caller is unaffected. This is what makes a
+    # Shadow variant (services.pdca.shadow.ShadowVariant, e.g. NO_NEWS,
+    # NO_FUNDAMENTAL) actually DO something: before this field, the four
+    # engines above had no off switch, so nothing could run a genuine
+    # feature-off comparison session despite ShadowPortfolioManager/
+    # AblationEngine already existing to score one.
+    disabled_features: frozenset[str] = frozenset()
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -241,7 +250,12 @@ class TradingPipeline:
         caller ever populated. `RegimeEngine.classify` needs >= 21 bars and
         raises otherwise — insufficient history reads as "UNKNOWN", the same
         honest-unknown pattern as `_adv_shares` returning 0.0 rather than
-        fabricating a value."""
+        fabricating a value. Respects `disabled_features` (§57 Ablation) so
+        a NO_REGIME shadow variant is "off" everywhere regime is consulted —
+        including exit decisions via manage_open_positions() — not just at
+        entry."""
+        if "regime" in self.disabled_features:
+            return "UNKNOWN"
         try:
             bars = [s.bar for s in self.market_data.bars(
                 self.regime_benchmark_symbol, now, 25, received_at=now)]
@@ -494,16 +508,21 @@ class TradingPipeline:
         candidates = scans[: self.max_new_positions * 3]
         candidate_symbols = [c.symbol for c in candidates]
 
+        # §17 Ablation: a disabled feature is skipped at its SOURCE (never
+        # fetched/ingested), not just hidden at the DecisionContext — so a
+        # NO_NEWS/NO_INSTITUTIONAL shadow session also doesn't pay for the
+        # fetch it isn't using.
         # §17: cluster today's news once for the whole candidate batch, not
         # per-symbol (NewsEngine.process needs the full batch to dedupe and
         # cluster correctly).
-        news_signals = self.news_engine.process(
-            self.news_source.fetch(candidate_symbols, now))
+        news_signals = (self.news_engine.process(self.news_source.fetch(candidate_symbols, now))
+                        if "news" not in self.disabled_features else [])
 
         # §20: ingest today's flow observations once; signal() below is then
         # a pure per-symbol lookup against everything ingested so far.
-        for obs in self.institutional_source.fetch(candidate_symbols, now):
-            self.institutional_engine.ingest(obs)
+        if "institutional" not in self.disabled_features:
+            for obs in self.institutional_source.fetch(candidate_symbols, now):
+                self.institutional_engine.ingest(obs)
 
         sized_candidates: list[SizedProposal] = []
         prices: dict[str, float] = {}
@@ -512,8 +531,10 @@ class TradingPipeline:
                           if scan.symbol in sig.tickers]
             ctx = DecisionContext(
                 scan=scan, regime=regime, news=symbol_news,
-                institutional=self.institutional_engine.signal(scan.symbol),
-                fundamental=self.fundamental_engine.analyze(scan.symbol, now),
+                institutional=(self.institutional_engine.signal(scan.symbol)
+                              if "institutional" not in self.disabled_features else None),
+                fundamental=(self.fundamental_engine.analyze(scan.symbol, now)
+                            if "fundamental" not in self.disabled_features else None),
                 portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name
