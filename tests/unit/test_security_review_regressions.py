@@ -654,3 +654,36 @@ def test_pipeline_records_which_alpha_sources_contributed_to_a_decision(pipeline
     assert snapshots, "no decisions were recorded this session"
     assert any(snap.alpha_scores for snap in snapshots), (
         "no recorded decision ever carried a non-empty alpha_scores")
+
+
+def test_institutional_attribution_requires_what_the_prompt_actually_showed(pipeline):
+    """An InstitutionalSignal with no contributing feature is omitted from
+    the Decision AI prompt (render_institutional), so attributing the
+    decision to "institutional" would credit a signal the AI never saw."""
+    from services.decision.models import DecisionContext
+    from services.institutional.engine import InstitutionalSignal
+    from services.quant.scanner import ScanResult
+
+    scan = ScanResult(symbol="AAPL", last_close=100.0, momentum_20d=0.0,
+                      dollar_volume=1e7, volatility=0.02, score=1.0, bars=())
+    empty = DecisionContext(scan=scan, institutional=InstitutionalSignal("AAPL", 0.0))
+    scores, _, _ = pipeline._decision_signal_summary(empty)  # noqa: SLF001
+    assert "institutional" not in scores
+
+
+def test_constructing_a_pipeline_never_resets_an_existing_feature_lifecycle(clock, universe):
+    """FeatureStore.register() overwrites. A pipeline built on a store that
+    already promoted fundamental_inflection to ACTIVE must leave it ACTIVE,
+    with its history, rather than silently demoting it back to SHADOW."""
+    import dataclasses
+
+    from services.feature_manager.store import FeatureStatus, FeatureStore
+    from tests.conftest import build_pipeline
+
+    store = FeatureStore()
+    store.register("fundamental_inflection", purpose="promoted", status=FeatureStatus.ACTIVE)
+    base = build_pipeline(clock, universe)
+    rebuilt = dataclasses.replace(base, feature_store=store)
+    assert rebuilt.feature_store.meta("fundamental_inflection").status is FeatureStatus.ACTIVE
+    assert rebuilt.feature_store.meta("fundamental_inflection").purpose == "promoted"
+    assert rebuilt.feature_store.is_registered("management_language")

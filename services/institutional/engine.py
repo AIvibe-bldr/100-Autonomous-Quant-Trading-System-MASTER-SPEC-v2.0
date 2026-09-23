@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 
@@ -56,8 +56,18 @@ class InstitutionalFlowEngine:
     def ingest(self, obs: FlowObservation) -> None:
         self._observations.setdefault(obs.symbol, []).append(obs)
 
-    def signal(self, symbol: str) -> Optional[InstitutionalSignal]:
-        obs = self._observations.get(symbol)
+    def signal(self, symbol: str, as_of: Optional[datetime] = None,
+               max_age: Optional[timedelta] = None) -> Optional[InstitutionalSignal]:
+        """`as_of`/`max_age` restrict the aggregate to observations in
+        (as_of - max_age, as_of]. Without a window, every observation ever
+        ingested stays "latest for its feature" forever — so single-feature
+        days weeks apart would add up to the multi-feature agreement §20
+        requires, defeating the rule, and an observation from after `as_of`
+        would leak into an earlier query."""
+        obs = self._observations.get(symbol, [])
+        if as_of is not None:
+            obs = [o for o in obs if o.observed_at <= as_of
+                   and (max_age is None or o.observed_at > as_of - max_age)]
         if not obs:
             return None
         by_feature: dict[FlowFeature, float] = {}

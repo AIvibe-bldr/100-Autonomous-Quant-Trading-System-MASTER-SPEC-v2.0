@@ -72,6 +72,9 @@ class FeatureStore:
     def meta(self, name: str) -> FeatureMeta:
         return self._meta[name]
 
+    def is_registered(self, name: str) -> bool:
+        return name in self._meta
+
     def by_status(self, status: FeatureStatus) -> list[FeatureMeta]:
         return [m for m in self._meta.values() if m.status is status]
 

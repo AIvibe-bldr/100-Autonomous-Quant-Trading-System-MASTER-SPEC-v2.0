@@ -50,7 +50,8 @@ def test_actionable_signals_are_reachable_but_not_the_common_case():
         for o in source.fetch(SYMBOLS, at):
             engine.ingest(o)
         for symbol in SYMBOLS:
-            sig = engine.signal(symbol)
+            # same one-session window TradingPipeline uses
+            sig = engine.signal(symbol, as_of=at, max_age=timedelta(days=1))
             if sig is not None:
                 total += 1
                 if sig.actionable:
@@ -73,3 +74,64 @@ def test_two_feature_days_have_agreeing_direction():
         for values in by_symbol.values():
             if len(values) == 2:
                 assert (values[0] > 0) == (values[1] > 0)
+
+
+# --- InstitutionalFlowEngine.signal() time window ----------------------------
+
+def _obs(feature, value, at):
+    from services.institutional.engine import FlowObservation
+    return FlowObservation(symbol="AAPL", feature=feature, value=value,
+                           observed_at=at, source="test")
+
+
+def test_stale_single_features_from_different_days_do_not_add_up_to_agreement():
+    """§20: "never trade on a single feature". Two single-feature days a
+    week apart are not two features agreeing — without a window the engine
+    kept both as "latest for their feature" forever and reported an
+    actionable two-feature signal."""
+    from services.institutional.engine import FlowFeature
+
+    engine = InstitutionalFlowEngine()
+    engine.ingest(_obs(FlowFeature.BLOCK_TRADES, 0.6, AT - timedelta(days=7)))
+    engine.ingest(_obs(FlowFeature.ETF_FLOW, 0.6, AT))
+
+    assert engine.signal("AAPL").actionable          # the unwindowed failure mode
+    windowed = engine.signal("AAPL", as_of=AT, max_age=timedelta(days=1))
+    assert windowed.contributing == [FlowFeature.ETF_FLOW]
+    assert not windowed.actionable
+
+
+def test_an_observation_after_as_of_never_leaks_into_the_signal():
+    from services.institutional.engine import FlowFeature
+
+    engine = InstitutionalFlowEngine()
+    engine.ingest(_obs(FlowFeature.BLOCK_TRADES, 0.6, AT + timedelta(days=1)))
+    assert engine.signal("AAPL", as_of=AT) is None
+
+
+def test_pipeline_never_shows_more_features_than_one_day_can_produce():
+    """The mock emits at most two features per symbol per day, so across
+    many sessions no DecisionContext may ever carry more than two."""
+    from datetime import date
+
+    from packages.common.clock import FrozenClock
+    from services.decision.models import MockDecisionModel
+    from services.market_data.universe import UniverseManager, UniverseSymbol
+    from tests.conftest import SESSION_TIME, SYMBOLS as UNIVERSE, build_pipeline
+
+    universe = UniverseManager()
+    for s in UNIVERSE:
+        universe.add(UniverseSymbol(symbol=s, listed_from=date(2015, 1, 1)))
+    pipeline = build_pipeline(FrozenClock(current=SESSION_TIME), universe)
+    seen = []
+
+    class _Spy(MockDecisionModel):
+        def decide(self, context):
+            seen.append(context)
+            return super().decide(context)
+
+    pipeline.decision_model = _Spy()
+    for d in range(8):
+        pipeline.run_session(SESSION_TIME + timedelta(days=d))
+    counts = [len(c.institutional.contributing) for c in seen if c.institutional]
+    assert counts and max(counts) <= 2

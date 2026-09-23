@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from packages.common.clock import Clock
@@ -184,12 +184,16 @@ class TradingPipeline:
         default_factory=InstitutionalFlowEngine)
     institutional_source: MockInstitutionalFlowSource = field(
         default_factory=MockInstitutionalFlowSource)
-    # Fundamental Inflection Engine (research-instruction, §0/§3): same
-    # "real engine, Mock data source" status as regime/news/institutional
-    # above — no SEC EDGAR/XBRL adapter exists yet (deliberately deferred
-    # to a later, separate task: real network access + rate limiting).
-    # FundamentalInflectionEngine already defaults to a Mock source
-    # internally, so no separate `fundamental_source` field is needed here.
+    # §20: the engine keeps every observation it ever ingested; only this
+    # window counts toward today's signal. The mock source emits a fresh,
+    # per-day snapshot (two agreeing features on the same day is meant to
+    # be the rare case), so the default is one session.
+    institutional_lookback: timedelta = timedelta(days=1)
+    # Fundamental Inflection Engine (research-instruction, §0/§3). Defaults
+    # to the deterministic Mock source; the real SEC EDGAR adapter
+    # (services.fundamentals.edgar_source) is opt-in by constructing
+    # FundamentalInflectionEngine(source=EdgarFinancialDataSource(...)) —
+    # never switched on implicitly, since it makes network calls.
     fundamental_engine: FundamentalInflectionEngine = field(
         default_factory=FundamentalInflectionEngine)
     # §9: classifies the SAME NewsSignals `news_engine` already clustered
@@ -204,7 +208,7 @@ class TradingPipeline:
     # "management_language"). Empty by
     # default — every existing caller is unaffected. This is what makes a
     # Shadow variant (services.pdca.shadow.ShadowVariant, e.g. NO_NEWS,
-    # NO_FUNDAMENTAL) actually DO something: before this field, the four
+    # NO_FUNDAMENTAL) actually DO something: before this field, the
     # engines above had no off switch, so nothing could run a genuine
     # feature-off comparison session despite ShadowPortfolioManager/
     # AblationEngine already existing to score one.
@@ -243,17 +247,20 @@ class TradingPipeline:
         # and "management_language" are registered here; regime/news/
         # institutional predate this pipeline field and are a separate,
         # pre-existing Feature-Center gap, not something this registration
-        # silently expands to cover.
-        self.feature_store.register(
-            "fundamental_inflection",
-            purpose="Detects structural financial improvement (research-instruction "
-                    "'Fundamental Inflection Engine') as a Decision AI input.",
-            status=FeatureStatus.SHADOW)
-        self.feature_store.register(
-            "management_language",
-            purpose="Classifies earnings-call/IR management tone (research-instruction "
-                    "§7-8) as a Decision AI input.",
-            status=FeatureStatus.SHADOW)
+        # silently expands to cover. Register only if absent: register()
+        # overwrites, so re-registering into a store that already tracks the
+        # feature would reset an earned ACTIVE (or a demoted DORMANT) back to
+        # SHADOW and discard its status history and contribution record.
+        for name, purpose in (
+                ("fundamental_inflection",
+                 "Detects structural financial improvement (research-instruction "
+                 "'Fundamental Inflection Engine') as a Decision AI input."),
+                ("management_language",
+                 "Classifies earnings-call/IR management tone (research-instruction "
+                 "§7-8) as a Decision AI input.")):
+            if not self.feature_store.is_registered(name):
+                self.feature_store.register(name, purpose=purpose,
+                                            status=FeatureStatus.SHADOW)
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
         """Read-only view for callers outside the pipeline (the status API's
@@ -336,9 +343,13 @@ class TradingPipeline:
         (§15, DecisionQualityReporter.by_alpha_source) can ask "how do
         fundamental-driven decisions perform" — which requires knowing
         WHICH decisions those were, not just that a signal existed
-        somewhere in the system that day. A signal absent from `ctx`
-        (None, or empty) contributes no key here, rather than a
-        fabricated neutral score."""
+        somewhere in the system that day. Never attribute a signal Decision
+        AI was not shown: each condition below is at least as strict as the
+        corresponding render_* guard in services/decision/prompts.py, so a
+        signal the prompt omitted (None, empty, not notable, no contributing
+        institutional feature) contributes no key rather than a fabricated
+        neutral score. (An INSUFFICIENT_DATA fundamental verdict is shown
+        but is not a signal, so it is not attributed either.)"""
         scores: dict[str, float] = {}
         if ctx.fundamental is not None:
             if ctx.fundamental.actionable:
@@ -356,7 +367,7 @@ class TradingPipeline:
             scores["management_language"] = 1.0
         if ctx.catalysts:
             scores["catalysts"] = float(len(ctx.catalysts))
-        if ctx.institutional is not None:
+        if ctx.institutional is not None and ctx.institutional.contributing:
             scores["institutional"] = ctx.institutional.score
         news_labels = tuple(n.source for n in ctx.news)
         institutional_labels = (tuple(f.value for f in ctx.institutional.contributing)
@@ -625,7 +636,8 @@ class TradingPipeline:
                 if "management_language" not in self.disabled_features else None)
             ctx = DecisionContext(
                 scan=scan, regime=regime, news=symbol_news, catalysts=symbol_catalysts,
-                institutional=(self.institutional_engine.signal(scan.symbol)
+                institutional=(self.institutional_engine.signal(
+                                   scan.symbol, as_of=now, max_age=self.institutional_lookback)
                               if "institutional" not in self.disabled_features else None),
                 fundamental=fundamental_signal, divergence=divergence_signal,
                 management_language=management_language_signal,
