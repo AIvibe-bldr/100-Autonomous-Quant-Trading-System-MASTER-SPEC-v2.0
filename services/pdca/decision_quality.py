@@ -30,6 +30,7 @@ TRACK_HORIZONS: dict[str, timedelta] = {
 }
 EXTENDED_HORIZONS: dict[str, timedelta] = {
     "1m": timedelta(days=30), "3m": timedelta(days=91), "6m": timedelta(days=182),
+    "12m": timedelta(days=365),
 }
 _HORIZON_ALIASES = {**TRACK_HORIZONS, **EXTENDED_HORIZONS}
 
@@ -295,6 +296,16 @@ class MonthlyReport:
     avg_mfe: float = 0.0
     confidence_buckets: dict[str, dict[str, float]] = field(default_factory=dict)
     by_regime: dict[str, dict[str, float]] = field(default_factory=dict)
+    # §15: which research signal(s) contributed to each decision — e.g.
+    # "fundamental_inflection" — via DecisionSnapshot.alpha_scores keys. A
+    # decision can carry more than one key (fundamental + divergence +
+    # catalysts on the same symbol, say), so it can be counted under more
+    # than one bucket here; this is a per-signal contribution breakdown,
+    # not a claim about independent sample size (§35-37 of the Capital
+    # Cell architecture notes flag that distinction explicitly elsewhere).
+    # "none" holds decisions with no alpha_scores entries at all (e.g. a
+    # pure quant/momentum candidate with no research signal attached).
+    by_alpha_source: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def pct(self, cls: str) -> float:
         return self.counts.get(cls, 0) / self.total if self.total else 0.0
@@ -326,6 +337,7 @@ class DecisionQualityReporter:
         kind_stats: dict[str, dict[str, int]] = {}
         conf_stats: dict[str, dict[str, int]] = {}
         regime_stats: dict[str, dict[str, int]] = {}
+        alpha_stats: dict[str, dict[str, int]] = {}
 
         for did, snap in self.engine._snapshots.items():
             ts = ensure_utc(snap.ts)
@@ -345,6 +357,10 @@ class DecisionQualityReporter:
             r = snap.regime
             regime_stats.setdefault(r, {"total": 0, "good": 0})
             regime_stats[r]["total"] += 1
+            alpha_sources = list(snap.alpha_scores) or ["none"]
+            for a in alpha_sources:
+                alpha_stats.setdefault(a, {"total": 0, "good": 0})
+                alpha_stats[a]["total"] += 1
 
             if ev.outcome_class is OutcomeClass.PENDING:
                 continue
@@ -353,6 +369,8 @@ class DecisionQualityReporter:
                 kind_stats[k]["good"] += 1
                 conf_stats[b]["good"] += 1
                 regime_stats[r]["good"] += 1
+                for a in alpha_sources:
+                    alpha_stats[a]["good"] += 1
 
             key_obs = "expected" if "expected" in ev.observations else (
                 "1w" if "1w" in ev.observations else None)
@@ -384,6 +402,9 @@ class DecisionQualityReporter:
         report.by_regime = {r: {"total": v["total"],
                                 "good_pct": v["good"] / v["total"] if v["total"] else 0.0}
                             for r, v in regime_stats.items()}
+        report.by_alpha_source = {a: {"total": v["total"],
+                                      "good_pct": v["good"] / v["total"] if v["total"] else 0.0}
+                                  for a, v in alpha_stats.items()}
         return report
 
     def trend(self, months: list[tuple[int, int]]) -> list[dict[str, Any]]:
@@ -404,5 +425,6 @@ class DecisionQualityReporter:
                         "good_pct": r.pct("GOOD"),
                         "resolved_good_pct": (good / resolved) if resolved else 0.0,
                         "average_score": r.average_score,
-                        "by_regime": r.by_regime})
+                        "by_regime": r.by_regime,
+                        "by_alpha_source": r.by_alpha_source})
         return out

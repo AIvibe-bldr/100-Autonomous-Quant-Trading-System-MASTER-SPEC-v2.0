@@ -37,6 +37,7 @@ from packages.schemas.core import (
     TradeProposal,
 )
 from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
+from packages.schemas.fundamentals import FundamentalAssessment
 from services.capital_allocation.engine import CapitalAllocationEngine
 from services.cost_manager.engine import OperatingCostEngine
 from services.data_validation.integrity import DataIntegrityEngine
@@ -327,13 +328,51 @@ class TradingPipeline:
             self.cost_engine.record_transaction_fee(
                 at=ts, amount=fees, note=note or symbol)
 
+    def _decision_signal_summary(
+            self, ctx: DecisionContext) -> tuple[dict[str, float], tuple[str, ...], tuple[str, ...]]:
+        """A1-1 alpha_scores/news_signals/institutional_signals: which
+        research signals actually contributed to this candidate's
+        DecisionContext. Recorded so a later Decision Quality breakdown
+        (§15, DecisionQualityReporter.by_alpha_source) can ask "how do
+        fundamental-driven decisions perform" — which requires knowing
+        WHICH decisions those were, not just that a signal existed
+        somewhere in the system that day. A signal absent from `ctx`
+        (None, or empty) contributes no key here, rather than a
+        fabricated neutral score."""
+        scores: dict[str, float] = {}
+        if ctx.fundamental is not None:
+            if ctx.fundamental.actionable:
+                scores["fundamental_inflection"] = 1.0
+            elif ctx.fundamental.assessment is FundamentalAssessment.TEMPORARY_IMPROVEMENT:
+                scores["fundamental_inflection"] = 0.5
+            elif ctx.fundamental.assessment is FundamentalAssessment.DETERIORATION:
+                scores["fundamental_inflection"] = -1.0
+            elif ctx.fundamental.assessment is FundamentalAssessment.UNCERTAIN:
+                scores["fundamental_inflection"] = 0.0
+            # INSUFFICIENT_DATA: no key — there was nothing to score.
+        if ctx.divergence is not None and ctx.divergence.notable:
+            scores["divergence"] = 1.0
+        if ctx.management_language is not None and ctx.management_language.notable:
+            scores["management_language"] = 1.0
+        if ctx.catalysts:
+            scores["catalysts"] = float(len(ctx.catalysts))
+        if ctx.institutional is not None:
+            scores["institutional"] = ctx.institutional.score
+        news_labels = tuple(n.source for n in ctx.news)
+        institutional_labels = (tuple(f.value for f in ctx.institutional.contributing)
+                                if ctx.institutional is not None else ())
+        return scores, news_labels, institutional_labels
+
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
                          had_stop_plan: bool = False, skeptic_consulted: bool = False,
-                         regime: str = "UNKNOWN") -> None:
+                         regime: str = "UNKNOWN",
+                         ctx: Optional[DecisionContext] = None) -> None:
         """A1-1: immutable decision snapshot for EVERY decision kind."""
         from services.data_validation.integrity import DataHealth
 
+        alpha_scores, news_labels, institutional_labels = (
+            self._decision_signal_summary(ctx) if ctx is not None else ({}, (), ()))
         snap = DecisionSnapshot(
             decision_id=f"{decision_id}:{kind.value}",
             symbol=symbol, ts=now, reference_price=reference_price, decision=kind,
@@ -349,6 +388,8 @@ class TradingPipeline:
             invalidation_conditions=(tuple(decision.invalidation_conditions)
                                      if decision else ()),
             regime=regime,
+            alpha_scores=alpha_scores, news_signals=news_labels,
+            institutional_signals=institutional_labels,
             model=self.decision_model.name, model_version=self.decision_model.version,
             rule_compliant=True, had_stop_plan=had_stop_plan,
             skeptic_consulted=skeptic_consulted,
@@ -563,6 +604,11 @@ class TradingPipeline:
 
         sized_candidates: list[SizedProposal] = []
         prices: dict[str, float] = {}
+        # §15: retained per symbol so _record_decision() can attribute an
+        # entry decision to the research signals that fed it, even from the
+        # LATER accepted/skipped loops below where `ctx` itself is out of
+        # scope (each is a fresh local per iteration of THIS loop).
+        symbol_ctx: dict[str, DecisionContext] = {}
         for scan in candidates:
             symbol_news = [self._news_signal_as_untrusted_text(sig) for sig in news_signals
                           if scan.symbol in sig.tickers]
@@ -584,6 +630,7 @@ class TradingPipeline:
                 fundamental=fundamental_signal, divergence=divergence_signal,
                 management_language=management_language_signal,
                 portfolio_summary={"cash": self.ledger.cash})
+            symbol_ctx[scan.symbol] = ctx
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name
             rec.model_version = self.decision_model.version
@@ -612,13 +659,14 @@ class TradingPipeline:
                         detail=f"SELL decision for unheld {scan.symbol}")
                     self._record_decision(rec.decision_id, scan.symbol,
                                           DecisionKind.AVOID, now, scan.last_close,
-                                          decision=decision, regime=regime)
+                                          decision=decision, regime=regime, ctx=ctx)
                     continue
 
             if decision.action is not DecisionAction.BUY:
                 # A1-4: NO_TRADE decisions are tracked and graded too
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.NO_TRADE,
-                                      now, scan.last_close, decision=decision, regime=regime)
+                                      now, scan.last_close, decision=decision, regime=regime,
+                                      ctx=ctx)
                 continue
             result.decision_candidates += 1
 
@@ -630,7 +678,7 @@ class TradingPipeline:
                     f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
                                       now, scan.last_close, decision=decision,
-                                      skeptic_consulted=True, regime=regime)
+                                      skeptic_consulted=True, regime=regime, ctx=ctx)
                 continue
 
             proposal = TradeProposal(symbol=scan.symbol, side=Action.BUY,
@@ -661,7 +709,7 @@ class TradingPipeline:
                 result.no_trade_reasons.append(f"{scan.symbol}: no stop plan — {e}")
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
                                       now, scan.last_close, decision=decision,
-                                      skeptic_consulted=True, regime=regime)
+                                      skeptic_consulted=True, regime=regime, ctx=ctx)
                 continue
             result.stop_planned += 1
             rec.stop_plan = stop.model_dump(mode="json")
@@ -684,7 +732,7 @@ class TradingPipeline:
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
                                       now, scan.last_close, decision=decision,
                                       had_stop_plan=True, skeptic_consulted=True,
-                                      regime=regime)
+                                      regime=regime, ctx=ctx)
                 continue
             result.sized += 1
             rec.position_size = {"qty": sized.qty, "risk_amount": sized.risk_amount,
@@ -706,7 +754,8 @@ class TradingPipeline:
             rec = self.provenance.get(f"{sp.proposal.symbol}-{now.date()}")
             self._record_decision(rec.decision_id, sp.proposal.symbol, DecisionKind.WAIT,
                                   now, sp.stop_plan.entry_price, decision=sp.proposal.decision,
-                                  had_stop_plan=True, skeptic_consulted=True, regime=regime)
+                                  had_stop_plan=True, skeptic_consulted=True, regime=regime,
+                                  ctx=symbol_ctx.get(sp.proposal.symbol))
         result.allocated = len(alloc.accepted)
 
         # 6. Audit AI → Master Risk Controller → Snapshot → Execution (A3-A4, §42, §44)
@@ -737,7 +786,7 @@ class TradingPipeline:
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
                                       had_stop_plan=True, skeptic_consulted=True,
-                                      regime=regime)
+                                      regime=regime, ctx=symbol_ctx.get(symbol))
                 continue
             log_rec.audit_result = audit.model_dump(mode="json")
             if audit.verdict is not AuditVerdict.PASS:
@@ -763,7 +812,7 @@ class TradingPipeline:
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
                                       had_stop_plan=True, skeptic_consulted=True,
-                                      regime=regime)
+                                      regime=regime, ctx=symbol_ctx.get(symbol))
                 continue
             result.audit_passed += 1
 
@@ -784,7 +833,7 @@ class TradingPipeline:
                                       sized.stop_plan.entry_price,
                                       decision=sized.proposal.decision,
                                       had_stop_plan=True, skeptic_consulted=True,
-                                      regime=regime)
+                                      regime=regime, ctx=symbol_ctx.get(symbol))
                 continue
             assert isinstance(verdict, RiskApproval)
             result.risk_passed += 1
@@ -805,7 +854,7 @@ class TradingPipeline:
                                   sized.stop_plan.entry_price,
                                   decision=sized.proposal.decision,
                                   had_stop_plan=True, skeptic_consulted=True,
-                                  regime=regime)
+                                  regime=regime, ctx=symbol_ctx.get(symbol))
 
             state = self.execution.submit(approved, snapshot=snapshot)
             log_rec.final_state = state.value

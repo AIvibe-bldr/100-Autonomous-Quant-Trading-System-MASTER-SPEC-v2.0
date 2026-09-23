@@ -632,3 +632,25 @@ def test_pipeline_wires_a_management_language_signal_into_decisions(pipeline):
               and ctx.management_language.quarters_observed > 0
               for ctx in seen_contexts), (
         "no candidate ever received a management language signal")
+
+
+# --- §15: Decision Quality snapshots never recorded which alpha source ------
+# --- actually contributed (alpha_scores/news_signals/institutional_signals --
+# --- were declared but never populated) --------------------------------------
+
+def test_pipeline_records_which_alpha_sources_contributed_to_a_decision(pipeline):
+    """DecisionSnapshot.alpha_scores/news_signals/institutional_signals had
+    no production writer — every recorded decision carried empty defaults,
+    so DecisionQualityReporter.by_alpha_source could never attribute an
+    outcome to "this was a fundamental-driven decision" versus a pure
+    quant candidate. AAPL is already established (fundamental wiring test
+    above) to receive a real, non-INSUFFICIENT_DATA fundamental signal at
+    SESSION_TIME regardless of which action Decision AI takes on it, so at
+    least one recorded snapshot that session must carry a non-empty
+    alpha_scores."""
+    pipeline.run_session(SESSION_TIME)
+
+    snapshots = pipeline.decision_quality._snapshots.values()  # noqa: SLF001
+    assert snapshots, "no decisions were recorded this session"
+    assert any(snap.alpha_scores for snap in snapshots), (
+        "no recorded decision ever carried a non-empty alpha_scores")
