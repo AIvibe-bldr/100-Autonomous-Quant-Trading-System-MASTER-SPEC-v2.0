@@ -56,14 +56,22 @@ class FundamentalInflectionEngine:
                 symbol=symbol, assessment=FundamentalAssessment.INSUFFICIENT_DATA,
                 as_of=as_of, quarters_observed=len(visible))
 
+        # Comparison quarters are matched by fiscal label, never by list
+        # position: a real source has gaps (SEC never files a standalone Q4
+        # 10-Q, and a quarter missing a required tag is skipped), so
+        # "4 statements back" is not "the same quarter a year ago".
+        by_period = {(s.fiscal_year, s.fiscal_quarter): s for s in visible}
+
+        def period(fy: int, fq: int) -> Optional[FinancialStatement]:
+            return by_period.get((fy, fq))
+
         metrics_history = []
-        for i, stmt in enumerate(visible):
-            prior_quarter = visible[i - 1] if i >= 1 else None
-            year_ago = visible[i - 4] if i >= 4 else None
-            prior_year_ago = visible[i - 8] if i >= 8 else None
+        for stmt in visible:
+            fy, fq = stmt.fiscal_year, stmt.fiscal_quarter
+            prior_quarter = period(fy, fq - 1) if fq > 1 else period(fy - 1, 4)
             metrics_history.append(compute_metrics(
-                stmt, prior_quarter=prior_quarter, year_ago=year_ago,
-                prior_year_ago=prior_year_ago, wacc=self.wacc))
+                stmt, prior_quarter=prior_quarter, year_ago=period(fy - 1, fq),
+                prior_year_ago=period(fy - 2, fq), wacc=self.wacc))
 
         trends = compute_trends(metrics_history, min_periods=self.min_periods)
         latest = visible[-1]

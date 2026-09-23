@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from packages.schemas.fundamentals import FundamentalAssessment, InflectionDirection
 from services.fundamentals.engine import FundamentalInflectionEngine
 from services.fundamentals.mock_source import MockFinancialDataSource, _seed
@@ -111,3 +113,38 @@ def test_result_is_deterministic_across_repeated_calls():
     first = engine.analyze("AAPL", AT)
     second = engine.analyze("AAPL", AT)
     assert first == second
+
+
+class _NoQ4Source:
+    """Real SEC data never contains a standalone Q4 10-Q (see
+    services/fundamentals/edgar_source.py) — wraps the mock to reproduce
+    that gap."""
+
+    def __init__(self) -> None:
+        self._inner = MockFinancialDataSource()
+
+    def fetch_history(self, symbol, as_of, quarters):
+        return [s for s in self._inner.fetch_history(symbol, as_of, quarters)
+                if s.fiscal_quarter != 4]
+
+    def fetch_flags(self, symbol, fiscal_year, fiscal_quarter):
+        return ()
+
+
+def test_year_ago_comparison_matches_fiscal_label_not_list_position():
+    """With Q4 missing, the statement four positions back is NOT the same
+    quarter a year earlier. Against real AAPL data the positional lookup
+    reported FY23 Q3 revenue growth as -15.9% (vs FY22 Q2) when the true
+    year-over-year figure was -1.4% (vs FY22 Q3)."""
+    source = _NoQ4Source()
+    engine = FundamentalInflectionEngine(source=source, lookback_quarters=12)
+    statements = [s for s in source.fetch_history("AAPL", AT, 12)
+                  if s.received_timestamp <= AT]
+    latest = statements[-1]
+    year_ago = next(s for s in statements
+                    if (s.fiscal_year, s.fiscal_quarter)
+                    == (latest.fiscal_year - 1, latest.fiscal_quarter))
+
+    signal = engine.analyze("AAPL", AT)
+    yoy = next(t for t in signal.trends if t.metric_name == "revenue_growth_yoy")
+    assert yoy.latest_value == pytest.approx(latest.revenue / year_ago.revenue - 1)

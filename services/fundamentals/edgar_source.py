@@ -56,6 +56,7 @@ from typing import Any, Optional
 
 import httpx
 
+from packages.common.clock import ensure_utc
 from packages.common.rate_limiter import TokenBucketRateLimiter
 from packages.schemas.fundamentals import FinancialStatement, TemporaryFactorFlag
 from services.fundamentals import xbrl_tags as tags
@@ -123,6 +124,19 @@ def _first_available(us_gaap: dict[str, Any], quarter_end: str,
         if value is not None:
             return value
     return None
+
+
+def _known_as_of(us_gaap: dict[str, Any], as_of: datetime) -> dict[str, Any]:
+    """§16 Point-in-Time: only facts actually filed by `as_of`. Every later
+    "latest filed wins" choice (restatements, a quarter re-reported as a
+    comparative in the next year's 10-Q) must pick among what was knowable
+    then — otherwise a backtest silently reads figures published after its
+    own date."""
+    cutoff = as_of.date().isoformat()
+    return {name: {**concept,
+                   "units": {unit: [f for f in facts if f.get("filed", "") <= cutoff]
+                             for unit, facts in concept.get("units", {}).items()}}
+            for name, concept in us_gaap.items()}
 
 
 def _ytd_value(us_gaap: dict[str, Any], candidates: tuple[str, ...],
@@ -200,7 +214,7 @@ class EdgarFinancialDataSource:
     def fetch_history(self, symbol: str, as_of: datetime,
                       quarters: int = 9) -> list[FinancialStatement]:
         facts = self._company_facts(symbol)
-        us_gaap = facts.get("facts", {}).get("us-gaap", {})
+        us_gaap = _known_as_of(facts.get("facts", {}).get("us-gaap", {}), ensure_utc(as_of))
 
         revenue_facts = self._quarterly_revenue_facts(us_gaap)
         statements = []

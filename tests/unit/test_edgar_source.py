@@ -216,6 +216,33 @@ def test_a_restated_figure_wins_over_the_original_filing():
     assert first.revenue == 101_000_000.0
 
 
+def test_a_restatement_filed_after_as_of_is_invisible_and_the_original_is_used():
+    """§16 Future Leakage: as of a date between the original filing
+    (2025-04-25) and the restatement (2025-05-01), the quarter must be
+    visible with its ORIGINAL figure — not dropped, and not showing the
+    restated number that wasn't published yet."""
+    source, _ = _make_source(_build_facts(include_restatement=True))
+    as_of = datetime(2025, 4, 28, tzinfo=timezone.utc)
+    statements = source.fetch_history(_TICKER, as_of, quarters=9)
+    assert [(s.fiscal_year, s.fiscal_quarter) for s in statements] == [(2025, 1)]
+    assert statements[0].revenue == 100_000_000.0
+
+
+def test_a_later_filed_non_revenue_figure_never_leaks_into_an_earlier_as_of():
+    """Non-revenue concepts are picked "latest filed wins" too — a figure
+    re-reported later (e.g. as a comparative in the next year's 10-Q) must
+    not replace what was actually on file as of the backtest date."""
+    facts = _build_facts()
+    q1 = next(f for f in facts["facts"]["us-gaap"]["CostOfRevenue"]["units"]["USD"]
+              if f["end"] == "2025-03-31")
+    facts["facts"]["us-gaap"]["CostOfRevenue"]["units"]["USD"].append(
+        {**q1, "val": 70_000_000.0, "fy": 2026, "filed": "2026-04-25"})
+    source, _ = _make_source(facts)
+
+    early = source.fetch_history(_TICKER, datetime(2025, 8, 1, tzinfo=timezone.utc), 9)
+    assert next(s for s in early if s.fiscal_quarter == 1).cost_of_revenue == 60_000_000.0
+
+
 def test_a_quarter_missing_a_required_tag_is_skipped_not_fabricated():
     source, _ = _make_source(_build_facts(skip_cost_of_revenue_for="2025-06-30"))
     statements = source.fetch_history(_TICKER, FAR_FUTURE, quarters=9)
