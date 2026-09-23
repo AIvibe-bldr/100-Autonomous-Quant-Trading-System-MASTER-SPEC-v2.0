@@ -202,6 +202,11 @@ const $ = (id) => document.getElementById(id);
 const fmt = (v, d=2) => v.toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
 const money = (v) => "$" + fmt(v);
 const signed = (el, v, f) => { el.textContent = f(v); el.className = "value " + (v >= 0 ? "pos" : "neg"); };
+// Every API string interpolated into innerHTML goes through esc(): theses,
+// skeptic objections, Monitor findings and NO TRADE reasons are LLM output
+// that untrusted news can steer (§19), so they must render as text, never markup.
+const ESC = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"};
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ESC[c]);
 
 async function j(path) { const r = await fetch(path); return r.json(); }
 
@@ -228,7 +233,7 @@ function recBadge(rec) {
             : rec === "NOTIFY" ? "badge-notify"
             : rec === "QUEUE_HUMAN_REVIEW" ? "badge-review"
             : "badge-escalate";
-  return `<span class="badge ${cls}">${rec}</span>`;
+  return `<span class="badge ${cls}">${esc(rec)}</span>`;
 }
 
 const FEATURE_STATUS_BADGE = {ACTIVE: "badge-ok", SHADOW: "badge-notify",
@@ -271,7 +276,7 @@ async function refresh() {
 
   const tb = $("holdings").querySelector("tbody");
   tb.innerHTML = holdings.map(h => `<tr>
-    <td>${h.ticker}${h.themes.map(t => `<span class="theme-tag">${t}</span>`).join("")}</td>
+    <td>${esc(h.ticker)}${h.themes.map(t => `<span class="theme-tag">${esc(t)}</span>`).join("")}</td>
     <td>${fmt(h.entry)}</td><td>${fmt(h.current)}</td><td>${fmt(h.qty, 4)}</td>
     <td class="${h.pnl >= 0 ? "pos" : "neg"}">${money(h.pnl)}</td>
     <td class="${h.pnl >= 0 ? "pos" : "neg"}">${fmt(h.pnl_pct*100)}%</td>
@@ -279,7 +284,7 @@ async function refresh() {
     `<tr><td colspan="7" style="color:var(--muted)">ポジションなし</td></tr>`;
 
   $("themes").innerHTML = Object.entries(themes).sort((a,b) => b[1]-a[1]).map(([t, v]) =>
-    `<div class="bar-row"><div class="bar-label">${t}</div>
+    `<div class="bar-row"><div class="bar-label">${esc(t)}</div>
      <div class="bar-track"><div class="bar-fill ${v > 0.4 && t !== "Cash" ? "warn" : ""}"
        style="width:${Math.min(100, v*100)}%"></div></div>
      <div class="bar-pct">${fmt(v*100, 0)}%</div></div>`).join("");   // §90: 集中警告
@@ -290,7 +295,7 @@ async function refresh() {
       `Decisions ${session.decision_candidates} → Risk passed ${session.risk_passed} → ` +
       `Filled ${session.orders_filled}`;
     $("reasons").innerHTML = session.traded ? ""
-      : (session.no_trade_reasons || []).map(r => `<li>· ${r}</li>`).join("")
+      : (session.no_trade_reasons || []).map(r => `<li>· ${esc(r)}</li>`).join("")
         || "<li>NO TRADE</li>";
   }
 
@@ -324,16 +329,16 @@ async function refresh() {
   $("opportunities").innerHTML = opps.length ? opps.map(o => {
     const tags = Object.entries(o.alpha_scores).map(([name, score]) =>
       `<span class="signal-tag ${score > 0 ? "pos" : score < 0 ? "neg" : ""}">
-       ${name} ${score.toFixed(2)}</span>`).join("");
+       ${esc(name)} ${score.toFixed(2)}</span>`).join("");
     return `<div class="opp-row">
       <div class="opp-head">
-        <span><b>${o.symbol}</b>
-          <span class="decision-${o.decision}">${o.decision}</span>
+        <span><b>${esc(o.symbol)}</b>
+          <span class="decision-${esc(o.decision)}">${esc(o.decision)}</span>
           · confidence ${fmt(o.confidence*100,0)}%</span>
-        <span style="color:var(--muted);font-size:11px">regime ${o.regime}</span>
+        <span style="color:var(--muted);font-size:11px">regime ${esc(o.regime)}</span>
       </div>
       ${tags || `<div style="color:var(--muted);font-size:11px;margin-top:4px">寄与したResearchシグナルなし（純Quant候補）</div>`}
-      ${o.thesis ? `<div class="thesis-obj">${o.thesis}</div>` : ""}
+      ${o.thesis ? `<div class="thesis-obj">${esc(o.thesis)}</div>` : ""}
     </div>`;
   }).join("")
     : `<div style="color:var(--muted)">このセッションで検討された候補はありません</div>`;
@@ -341,10 +346,10 @@ async function refresh() {
   // Feature Center (§94)
   $("featureCenter").innerHTML = Object.entries(features).map(([status, names]) => `
     <div class="feature-status">
-      <span class="fs-label">${status}</span>
+      <span class="fs-label">${esc(status)}</span>
       ${names.length
         ? names.map(n => `<span class="badge ${FEATURE_STATUS_BADGE[status] || "badge-notify"}"
-                                style="margin:2px 4px 2px 0">${n}</span>`).join("")
+                                style="margin:2px 4px 2px 0">${esc(n)}</span>`).join("")
         : `<span style="color:var(--muted);font-size:12px">—</span>`}
     </div>`).join("");
 
@@ -352,12 +357,12 @@ async function refresh() {
   $("theses").innerHTML = theses.length ? theses.map(t => `
     <div class="thesis-row">
       <div class="thesis-head">
-        <span><b>${t.symbol}</b> ${t.action} · confidence ${fmt(t.confidence*100,0)}%</span>
+        <span><b>${esc(t.symbol)}</b> ${esc(t.action)} · confidence ${fmt(t.confidence*100,0)}%</span>
         <span>disagreement ${fmt(t.disagreement_score*100,0)}%</span>
       </div>
-      <div class="thesis-meta">decision_id=${t.decision_id} · skeptic_id=${t.skeptic_id}
+      <div class="thesis-meta">decision_id=${esc(t.decision_id)} · skeptic_id=${esc(t.skeptic_id)}
         ${t.skeptic_severity !== null ? "· skeptic severity " + fmt(t.skeptic_severity*100,0) + "%" : ""}</div>
-      ${t.skeptic_objections.length ? `<div class="thesis-obj">反証: ${t.skeptic_objections.join(" / ")}</div>` : ""}
+      ${t.skeptic_objections.length ? `<div class="thesis-obj">反証: ${t.skeptic_objections.map(esc).join(" / ")}</div>` : ""}
     </div>`).join("")
     : `<div style="color:var(--muted)">このセッションで生き残ったBUY候補はありません</div>`;
 
@@ -365,18 +370,18 @@ async function refresh() {
   const mDiv = $("monitor");
   if (!mon.consulted) {
     mDiv.innerHTML = `${recBadge(mon.recommendation)}
-      <span style="color:var(--muted);margin-left:8px">${mon.findings[0]}</span>`;
+      <span style="color:var(--muted);margin-left:8px">${esc(mon.findings[0])}</span>`;
   } else {
     mDiv.innerHTML = `${recBadge(mon.recommendation)}
       <span style="margin-left:8px">severity ${fmt(mon.severity*100,0)}%</span>
-      <span style="color:var(--muted);margin-left:8px">(${mon.model})</span>
-      <ul class="reasons">${mon.findings.map(f => `<li>· ${f}</li>`).join("")}</ul>`;
+      <span style="color:var(--muted);margin-left:8px">(${esc(mon.model)})</span>
+      <ul class="reasons">${mon.findings.map(f => `<li>· ${esc(f)}</li>`).join("")}</ul>`;
   }
 
   const dh = health.data_health;
   $("health").innerHTML =
     `<span class="${dh === "OK" ? "status-ok" : dh === "DEGRADED" ? "status-warn" : "status-err"}">
-     Data: ${dh}</span> · Risk: ${health.risk_state} · Env: ${health.environment}`;
+     Data: ${esc(dh)}</span> · Risk: ${esc(health.risk_state)} · Env: ${esc(health.environment)}`;
 }
 
 refresh();
