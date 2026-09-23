@@ -603,3 +603,32 @@ def test_pipeline_wires_a_divergence_signal_into_decisions(pipeline):
     assert seen_contexts, "Decision AI was never consulted this session"
     assert any(ctx.divergence is not None for ctx in seen_contexts), (
         "no candidate ever received a fundamental-price divergence signal")
+
+
+# --- §7-8: Management Language Tracker was built but never wired --------------
+
+def test_pipeline_wires_a_management_language_signal_into_decisions(pipeline):
+    """DecisionContext.management_language had no production call site
+    either. Unlike catalysts, management_language_tracker.analyze() is
+    called unconditionally for every candidate (subject only to the
+    "management_language" feature toggle) — it doesn't depend on which
+    symbols happen to match a news keyword that day, so SESSION_TIME
+    (already used by the regime/news/institutional/fundamental wiring
+    tests above) works here too."""
+    from services.decision.models import MockDecisionModel
+
+    seen_contexts = []
+
+    class _SpyDecisionModel(MockDecisionModel):
+        def decide(self, context):
+            seen_contexts.append(context)
+            return super().decide(context)
+
+    pipeline.decision_model = _SpyDecisionModel()
+    pipeline.run_session(SESSION_TIME)
+
+    assert seen_contexts, "Decision AI was never consulted this session"
+    assert any(ctx.management_language is not None
+              and ctx.management_language.quarters_observed > 0
+              for ctx in seen_contexts), (
+        "no candidate ever received a management language signal")

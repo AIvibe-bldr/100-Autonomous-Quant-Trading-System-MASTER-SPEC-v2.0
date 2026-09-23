@@ -12,7 +12,11 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from packages.schemas.fundamentals import DivergenceSignal, FundamentalSignal
+from packages.schemas.fundamentals import (
+    DivergenceSignal,
+    FundamentalSignal,
+    ManagementLanguageSignal,
+)
 from services.decision.models import DecisionContext, UntrustedText
 from services.fundamentals.catalyst_tracker import CatalystEvent
 from services.institutional.engine import InstitutionalSignal
@@ -41,6 +45,9 @@ else you're given.
 - A Fundamental-Price Divergence signal, if present, flags disagreement \
 between price action and the fundamental picture — a prompt to weigh both \
 sides more carefully, never a trade signal by itself.
+- A Management Language signal, if present, reflects keyword-based tone in \
+recent management commentary (confident vs hedging) — corroborating \
+evidence at most, never sufficient grounds for a decision on its own.
 """
 
 
@@ -107,6 +114,16 @@ def render_divergence(signal: Optional[DivergenceSignal]) -> str:
            f"fundamental={signal.fundamental_assessment.value})")
 
 
+def render_management_language(signal: Optional[ManagementLanguageSignal]) -> str:
+    """§7/§8: only worth surfacing when there's a clear tone or an active
+    shift underway — NEUTRAL+FLAT (or no data) adds nothing."""
+    if signal is None or not signal.notable:
+        return ""
+    return (f"Management language: {signal.latest_tone.value} "
+           f"(confidence_trend={signal.confidence_trend.direction.value}, "
+           f"quarters_observed={signal.quarters_observed})")
+
+
 def build_decision_prompt(ctx: DecisionContext) -> str:
     s = ctx.scan
     lines = [
@@ -120,6 +137,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         render_institutional(ctx.institutional),
         render_fundamental(ctx.fundamental),
         render_divergence(ctx.divergence),
+        render_management_language(ctx.management_language),
         render_catalysts(ctx.catalysts),
         f"Portfolio summary: {json.dumps(ctx.portfolio_summary, default=str)}",
         render_news(ctx.news),

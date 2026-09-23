@@ -23,6 +23,9 @@ class ShadowVariant(str, enum.Enum):
     # System + Fundamental Inflection" vs "B: Full System − Fundamental
     # Inflection").
     NO_FUNDAMENTAL = "NO_FUNDAMENTAL"
+    # Management Language Tracker (research-instruction §7-8/§17: same
+    # ablation rationale as NO_FUNDAMENTAL above).
+    NO_MANAGEMENT_LANGUAGE = "NO_MANAGEMENT_LANGUAGE"
     MOONSHOT_ONLY = "MOONSHOT_ONLY"
     BENCHMARK = "BENCHMARK"
 
@@ -37,6 +40,7 @@ SHADOW_VARIANT_DISABLED_FEATURES: dict[ShadowVariant, frozenset[str]] = {
     ShadowVariant.NO_INSTITUTIONAL: frozenset({"institutional"}),
     ShadowVariant.NO_REGIME: frozenset({"regime"}),
     ShadowVariant.NO_FUNDAMENTAL: frozenset({"fundamental"}),
+    ShadowVariant.NO_MANAGEMENT_LANGUAGE: frozenset({"management_language"}),
     # NO_LLM, QUANT_ONLY, MOONSHOT_ONLY, BENCHMARK are deeper structural
     # differences (a different decision_model entirely, a position-count
     # cap, a benchmark-only passive comparator) — not expressible as

@@ -14,7 +14,11 @@ from typing import Any, Optional, Protocol
 from pydantic import ValidationError
 
 from packages.schemas.core import DecisionOutput, SkepticOutput
-from packages.schemas.fundamentals import DivergenceSignal, FundamentalSignal
+from packages.schemas.fundamentals import (
+    DivergenceSignal,
+    FundamentalSignal,
+    ManagementLanguageSignal,
+)
 from services.fundamentals.catalyst_tracker import CatalystEvent
 from services.institutional.engine import InstitutionalSignal
 from services.quant.scanner import ScanResult
@@ -61,6 +65,10 @@ class DecisionContext:
     # separate fetch. Naturally None whenever `fundamental` is (the
     # "fundamental" feature toggle already covers it with no extra switch).
     divergence: Optional[DivergenceSignal] = None
+    # Management Language Tracker (research-instruction §7-8) — same
+    # status as `fundamental`/`institutional`: a structured verdict only,
+    # raw earnings-call/IR text never reaches this context or the prompt.
+    management_language: Optional[ManagementLanguageSignal] = None
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 

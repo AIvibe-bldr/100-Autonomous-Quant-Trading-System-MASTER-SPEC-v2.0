@@ -38,6 +38,7 @@ def test_full_variant_disables_nothing(pipeline):
     assert any(ctx.news for ctx in contexts)
     assert any(ctx.institutional is not None for ctx in contexts)
     assert any(ctx.fundamental is not None for ctx in contexts)
+    assert any(ctx.management_language is not None for ctx in contexts)
 
 
 def test_no_regime_variant_forces_unknown_everywhere(pipeline):
@@ -72,6 +73,17 @@ def test_no_fundamental_variant_suppresses_fundamental_only(pipeline):
     assert contexts
     assert all(ctx.fundamental is None for ctx in contexts)
     assert any(ctx.news for ctx in contexts)
+    assert any(ctx.institutional is not None for ctx in contexts)
+
+
+def test_no_management_language_variant_suppresses_management_language_only(pipeline):
+    pipeline.disabled_features = SHADOW_VARIANT_DISABLED_FEATURES[
+        ShadowVariant.NO_MANAGEMENT_LANGUAGE]
+    contexts = _spy_contexts(pipeline)
+    assert contexts
+    assert all(ctx.management_language is None for ctx in contexts)
+    assert any(ctx.news for ctx in contexts)
+    assert any(ctx.fundamental is not None for ctx in contexts)
     assert any(ctx.institutional is not None for ctx in contexts)
 
 

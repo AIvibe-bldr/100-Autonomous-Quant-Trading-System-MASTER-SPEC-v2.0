@@ -222,3 +222,56 @@ class DivergenceSignal(StrictModel):
         research input only, never a BUY/SELL trigger on its own."""
         return self.divergence_type in (DivergenceType.POSITIVE_DIVERGENCE,
                                         DivergenceType.NEGATIVE_DIVERGENCE)
+
+
+class LanguageTone(str, enum.Enum):
+    """§7-8: classification of a management statement's net keyword
+    balance (confident phrasing vs hedging phrasing), never an LLM
+    sentiment call — same "fixed Python logic, not an LLM guess" ethos as
+    §4's financial-metric arithmetic, extended to text."""
+
+    CONFIDENT = "CONFIDENT"
+    HEDGING = "HEDGING"
+    NEUTRAL = "NEUTRAL"
+
+
+class ManagementStatement(StrictModel):
+    """One quarter's earnings-call/IR excerpt for one symbol (§7-8). Mirrors
+    `FinancialStatement`'s §16 Point-in-Time fields — a statement must not
+    be visible to a backtest before it was actually made public."""
+
+    symbol: str = Field(min_length=1)
+    fiscal_year: int = Field(ge=1990, le=2100)
+    fiscal_quarter: int = Field(ge=1, le=4)
+    text: str = Field(min_length=1)
+
+    filing_timestamp: datetime
+    publication_timestamp: datetime
+    received_timestamp: datetime
+    effective_timestamp: datetime
+    source: str = "mock"
+    source_url: str = ""
+
+
+class ManagementLanguageSignal(StrictModel):
+    """The one structured object Decision AI actually sees (mirrors
+    `FundamentalSignal`'s role) — raw transcript text never reaches the
+    prompt, only this verdict. `confidence_trend` reuses the same
+    `MetricTrend` shape `services.fundamentals.detector.detect_trend`
+    already produces for financial metrics, computed over a per-quarter
+    keyword-balance score rather than reimplementing trend logic."""
+
+    symbol: str = Field(min_length=1)
+    latest_tone: LanguageTone
+    confidence_trend: MetricTrend
+    as_of: datetime
+    quarters_observed: int = Field(ge=0)
+
+    @property
+    def notable(self) -> bool:
+        """§7/§11: research input only — worth surfacing only when tone is
+        clearly one-sided or actively shifting; NEUTRAL+FLAT (or no data)
+        adds nothing beyond silence."""
+        return (self.latest_tone is not LanguageTone.NEUTRAL
+               or self.confidence_trend.direction in (InflectionDirection.IMPROVING,
+                                                       InflectionDirection.DETERIORATING))

@@ -61,6 +61,7 @@ from services.feature_manager.store import FeatureStatus, FeatureStore
 from services.fundamentals.catalyst_tracker import GrowthCatalystTracker
 from services.fundamentals.divergence import detect_divergence
 from services.fundamentals.engine import FundamentalInflectionEngine
+from services.fundamentals.management_language import ManagementLanguageTracker
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.mock_source import MockInstitutionalFlowSource
 from services.news.engine import NewsEngine, NewsSignal
@@ -193,8 +194,13 @@ class TradingPipeline:
     # §9: classifies the SAME NewsSignals `news_engine` already clustered
     # this session — no separate fetch, no new data source.
     catalyst_tracker: GrowthCatalystTracker = field(default_factory=GrowthCatalystTracker)
+    # §7-8: same "real engine, Mock data source" status as fundamental_engine
+    # above — no real earnings-call-transcript/IR-feed adapter exists yet.
+    management_language_tracker: ManagementLanguageTracker = field(
+        default_factory=ManagementLanguageTracker)
     # §57 Ablation: which decision-input features to suppress this session,
-    # by name ("regime"/"news"/"institutional"/"fundamental"). Empty by
+    # by name ("regime"/"news"/"institutional"/"fundamental"/
+    # "management_language"). Empty by
     # default — every existing caller is unaffected. This is what makes a
     # Shadow variant (services.pdca.shadow.ShadowVariant, e.g. NO_NEWS,
     # NO_FUNDAMENTAL) actually DO something: before this field, the four
@@ -233,13 +239,19 @@ class TradingPipeline:
                                  self.auditor.environment)
         # §23/§59: a new feature starts in SHADOW, not ACTIVE — it has not
         # earned production status by existing. Only "fundamental_inflection"
-        # is registered here; regime/news/institutional predate this pipeline
-        # field and are a separate, pre-existing Feature-Center gap, not
-        # something this registration silently expands to cover.
+        # and "management_language" are registered here; regime/news/
+        # institutional predate this pipeline field and are a separate,
+        # pre-existing Feature-Center gap, not something this registration
+        # silently expands to cover.
         self.feature_store.register(
             "fundamental_inflection",
             purpose="Detects structural financial improvement (research-instruction "
                     "'Fundamental Inflection Engine') as a Decision AI input.",
+            status=FeatureStatus.SHADOW)
+        self.feature_store.register(
+            "management_language",
+            purpose="Classifies earnings-call/IR management tone (research-instruction "
+                    "§7-8) as a Decision AI input.",
             status=FeatureStatus.SHADOW)
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
@@ -562,11 +574,15 @@ class TradingPipeline:
             # None too whenever "fundamental" is disabled.
             divergence_signal = (detect_divergence(fundamental_signal, scan.momentum_20d, now)
                                  if fundamental_signal is not None else None)
+            management_language_signal = (
+                self.management_language_tracker.analyze(scan.symbol, now)
+                if "management_language" not in self.disabled_features else None)
             ctx = DecisionContext(
                 scan=scan, regime=regime, news=symbol_news, catalysts=symbol_catalysts,
                 institutional=(self.institutional_engine.signal(scan.symbol)
                               if "institutional" not in self.disabled_features else None),
                 fundamental=fundamental_signal, divergence=divergence_signal,
+                management_language=management_language_signal,
                 portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name
