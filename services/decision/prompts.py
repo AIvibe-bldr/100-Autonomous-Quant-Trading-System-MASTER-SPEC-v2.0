@@ -14,6 +14,7 @@ from typing import Optional
 
 from packages.schemas.fundamentals import FundamentalSignal
 from services.decision.models import DecisionContext, UntrustedText
+from services.fundamentals.catalyst_tracker import CatalystEvent
 from services.institutional.engine import InstitutionalSignal
 
 DECISION_SYSTEM_PROMPT = """\
@@ -77,6 +78,21 @@ def render_fundamental(signal: Optional[FundamentalSignal]) -> str:
            f"flags={[f.value for f in signal.flags]})")
 
 
+def render_catalysts(catalysts: tuple[CatalystEvent, ...]) -> str:
+    """§9: catalysts are structured classifications of already-vetted news.
+    A non-tradeable one (sns_only/injection_flagged, §18/§19) is still
+    shown — matching render_news()'s own "label the caveat, don't hide the
+    signal" precedent — with an explicit caveat rather than being silently
+    dropped from the AI's situational awareness."""
+    if not catalysts:
+        return ""
+    parts = []
+    for c in catalysts:
+        caveat = "" if c.tradeable else " [not independently tradeable — SNS-only/flagged]"
+        parts.append(f"{c.catalyst_type.value} ({c.headline}){caveat}")
+    return "Growth catalysts: " + "; ".join(parts)
+
+
 def build_decision_prompt(ctx: DecisionContext) -> str:
     s = ctx.scan
     lines = [
@@ -89,6 +105,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         f"Market regime: {ctx.regime}",
         render_institutional(ctx.institutional),
         render_fundamental(ctx.fundamental),
+        render_catalysts(ctx.catalysts),
         f"Portfolio summary: {json.dumps(ctx.portfolio_summary, default=str)}",
         render_news(ctx.news),
         "\nProduce a decision for this symbol.",

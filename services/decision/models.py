@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from packages.schemas.core import DecisionOutput, SkepticOutput
 from packages.schemas.fundamentals import FundamentalSignal
+from services.fundamentals.catalyst_tracker import CatalystEvent
 from services.institutional.engine import InstitutionalSignal
 from services.quant.scanner import ScanResult
 
@@ -48,6 +49,13 @@ class DecisionContext:
     # Loss Control/Position Sizing/Master Risk Controller are what actually
     # gate an order, unchanged by this field's existence).
     fundamental: Optional[FundamentalSignal] = None
+    # Growth Catalyst Tracker (research-instruction §9) — derived from the
+    # same already-clustered, injection-checked NewsSignals `news` above
+    # comes from, classified into catalyst categories. Structured (like
+    # `institutional`/`fundamental`), not raw untrusted text, but each
+    # event still carries its own `tradeable` gate (§18/§19) through from
+    # the NewsSignal it was built from.
+    catalysts: tuple[CatalystEvent, ...] = ()
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 

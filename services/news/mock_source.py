@@ -21,6 +21,9 @@ _POSITIVE_TEMPLATES = [
     "{symbol} announces buyback program",
     "Analyst upgrades {symbol} on strong demand",
     "{symbol} wins regulatory approval for new product",
+    "{symbol} unveils new product line",
+    "{symbol} signs major multi-year deal with new client",
+    "{symbol} announces strategic partnership with industry leader",
 ]
 _NEGATIVE_TEMPLATES = [
     "{symbol} misses quarterly estimates, guidance cut",

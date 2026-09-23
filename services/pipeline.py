@@ -58,6 +58,7 @@ from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.feature_manager.store import FeatureStatus, FeatureStore
+from services.fundamentals.catalyst_tracker import GrowthCatalystTracker
 from services.fundamentals.engine import FundamentalInflectionEngine
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.mock_source import MockInstitutionalFlowSource
@@ -188,6 +189,9 @@ class TradingPipeline:
     # internally, so no separate `fundamental_source` field is needed here.
     fundamental_engine: FundamentalInflectionEngine = field(
         default_factory=FundamentalInflectionEngine)
+    # §9: classifies the SAME NewsSignals `news_engine` already clustered
+    # this session — no separate fetch, no new data source.
+    catalyst_tracker: GrowthCatalystTracker = field(default_factory=GrowthCatalystTracker)
     # §57 Ablation: which decision-input features to suppress this session,
     # by name ("regime"/"news"/"institutional"/"fundamental"). Empty by
     # default — every existing caller is unaffected. This is what makes a
@@ -534,6 +538,9 @@ class TradingPipeline:
         # cluster correctly).
         news_signals = (self.news_engine.process(self.news_source.fetch(candidate_symbols, now))
                         if "news" not in self.disabled_features else [])
+        # §9: derived from news_signals, not a separate fetch — naturally
+        # empty too when "news" is disabled, with no extra toggle needed.
+        catalyst_events = self.catalyst_tracker.detect(news_signals)
 
         # §20: ingest today's flow observations once; signal() below is then
         # a pure per-symbol lookup against everything ingested so far.
@@ -546,8 +553,9 @@ class TradingPipeline:
         for scan in candidates:
             symbol_news = [self._news_signal_as_untrusted_text(sig) for sig in news_signals
                           if scan.symbol in sig.tickers]
+            symbol_catalysts = tuple(c for c in catalyst_events if scan.symbol in c.tickers)
             ctx = DecisionContext(
-                scan=scan, regime=regime, news=symbol_news,
+                scan=scan, regime=regime, news=symbol_news, catalysts=symbol_catalysts,
                 institutional=(self.institutional_engine.signal(scan.symbol)
                               if "institutional" not in self.disabled_features else None),
                 fundamental=(self.fundamental_engine.analyze(scan.symbol, now)

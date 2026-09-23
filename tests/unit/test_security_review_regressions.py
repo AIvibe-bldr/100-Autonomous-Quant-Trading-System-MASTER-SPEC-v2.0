@@ -548,3 +548,31 @@ def test_pipeline_wires_a_real_fundamental_signal_into_decisions(pipeline):
     assert any(ctx.fundamental is not None and ctx.fundamental.quarters_observed > 0
               for ctx in seen_contexts), (
         "no candidate ever received a fundamental inflection signal")
+
+
+# --- §9: Growth Catalyst Tracker was built but never wired --------------------
+
+def test_pipeline_wires_growth_catalysts_into_decisions(pipeline):
+    """DecisionContext.catalysts had no production call site either.
+    SESSION_TIME + 3 days is verified directly (fetching news for exactly
+    the symbols the scanner actually selects that day, not the full
+    universe — catalysts only reach candidates that survive scanning) to
+    produce real NEW_PRODUCT/REGULATORY_CHANGE catalysts for TSLA/AVGO,
+    both of which are among that day's candidates."""
+    from datetime import timedelta
+
+    from services.decision.models import MockDecisionModel
+
+    seen_contexts = []
+
+    class _SpyDecisionModel(MockDecisionModel):
+        def decide(self, context):
+            seen_contexts.append(context)
+            return super().decide(context)
+
+    pipeline.decision_model = _SpyDecisionModel()
+    pipeline.run_session(SESSION_TIME + timedelta(days=3))
+
+    assert seen_contexts, "Decision AI was never consulted this session"
+    assert any(ctx.catalysts for ctx in seen_contexts), (
+        "no candidate ever received a growth catalyst")
