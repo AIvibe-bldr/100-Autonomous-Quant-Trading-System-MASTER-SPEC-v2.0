@@ -47,7 +47,11 @@ def create_app(pipeline: TradingPipeline,
     else:
         cost_engine = cost_engine or OperatingCostEngine()
         pipeline.cost_engine = cost_engine
-    feature_store = feature_store or FeatureStore()
+    # Same reasoning as cost_engine above: the pipeline registers features
+    # (currently "fundamental_inflection") into its OWN FeatureStore —
+    # reading from a second, separately-constructed instance would make
+    # /features permanently show nothing registered at all.
+    feature_store = feature_store or pipeline.feature_store
     monitor = monitor or MonitorSupervisor(model=MockMonitorModel())
     last_result: dict[str, Any] = {"result": None}
     equity_series: list[dict[str, Any]] = []

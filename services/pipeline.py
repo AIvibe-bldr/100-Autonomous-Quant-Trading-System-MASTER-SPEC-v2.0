@@ -57,6 +57,7 @@ from services.decision.models import (
 from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
+from services.feature_manager.store import FeatureStatus, FeatureStore
 from services.fundamentals.engine import FundamentalInflectionEngine
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.mock_source import MockInstitutionalFlowSource
@@ -196,6 +197,12 @@ class TradingPipeline:
     # feature-off comparison session despite ShadowPortfolioManager/
     # AblationEngine already existing to score one.
     disabled_features: frozenset[str] = frozenset()
+    # §59/§94-95: this pipeline's own Feature Store, so a registered feature's
+    # lifecycle status is reachable from the same instance that actually runs
+    # it. apps.api.main.create_app() defaults to THIS instance (mirroring how
+    # it already does for cost_engine) rather than constructing a second,
+    # permanently-empty one — see __post_init__ for what gets registered here.
+    feature_store: FeatureStore = field(default_factory=FeatureStore)
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -219,6 +226,16 @@ class TradingPipeline:
         """
         require_same_environment(self.environment, self.execution.environment,
                                  self.auditor.environment)
+        # §23/§59: a new feature starts in SHADOW, not ACTIVE — it has not
+        # earned production status by existing. Only "fundamental_inflection"
+        # is registered here; regime/news/institutional predate this pipeline
+        # field and are a separate, pre-existing Feature-Center gap, not
+        # something this registration silently expands to cover.
+        self.feature_store.register(
+            "fundamental_inflection",
+            purpose="Detects structural financial improvement (research-instruction "
+                    "'Fundamental Inflection Engine') as a Decision AI input.",
+            status=FeatureStatus.SHADOW)
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
         """Read-only view for callers outside the pipeline (the status API's

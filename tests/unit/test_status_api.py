@@ -149,3 +149,33 @@ def test_monitor_endpoint_is_read_only(api_pipeline):
     for method in ("post", "put", "delete", "patch"):
         resp = getattr(client, method)("/monitor")
         assert resp.status_code == 405
+
+
+# --- /features -----------------------------------------------------------
+
+def test_features_endpoint_reflects_the_pipelines_own_registrations(api_pipeline):
+    """create_app() used to always construct a fresh, empty FeatureStore
+    when none was passed explicitly — identical to the cost_engine bug
+    this file's docstring precedent already fixed — so /features could
+    never show anything the pipeline itself had registered
+    (TradingPipeline.__post_init__ registers "fundamental_inflection")."""
+    client = TestClient(create_app(api_pipeline))
+    resp = client.get("/features")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "fundamental_inflection" in body["SHADOW"]
+
+
+def test_an_explicitly_passed_feature_store_is_still_honored(api_pipeline):
+    """The pipeline's own store is only the DEFAULT — an explicit
+    feature_store argument (e.g. a test double) must still win, mirroring
+    cost_engine's own explicit-argument precedence."""
+    from services.feature_manager.store import FeatureStatus, FeatureStore
+
+    explicit = FeatureStore()
+    explicit.register("some_other_feature", purpose="test", status=FeatureStatus.ACTIVE)
+    client = TestClient(create_app(api_pipeline, feature_store=explicit))
+    resp = client.get("/features")
+    body = resp.json()
+    assert "some_other_feature" in body["ACTIVE"]
+    assert "fundamental_inflection" not in body["SHADOW"]
