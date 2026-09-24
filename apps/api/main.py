@@ -38,7 +38,8 @@ def create_app(pipeline: TradingPipeline,
                feature_store: Optional[FeatureStore] = None,
                monitor: Optional[MonitorSupervisor] = None,
                heartbeats: Optional[HeartbeatRegistry] = None,
-               lock: Optional[threading.Lock] = None) -> FastAPI:
+               lock: Optional[threading.Lock] = None,
+               initial_equity_series: Optional[list[dict[str, Any]]] = None) -> FastAPI:
     app = FastAPI(title="Quant Trading Platform — Status API", version="0.1.0")
     # None (default) for every existing caller — this API was always built
     # and read from a single thread. `lock` exists for a caller that also
@@ -96,7 +97,12 @@ def create_app(pipeline: TradingPipeline,
     # clock.now() still IS the session's own timestamp (equity_series below
     # already relies on the same ordering).
     last_session_time: dict[str, Any] = {"at": None}
-    equity_series: list[dict[str, Any]] = []
+    # Seeded from packages.common.durable_pipeline_state on a restored run
+    # (scripts/run_live_dashboard.py --db) so /chart shows the full history
+    # immediately after a restart, not just points recorded since. Exposed
+    # on app.state (below) as the SAME list object append() mutates, so a
+    # caller persisting state after each session reads it back current.
+    equity_series: list[dict[str, Any]] = list(initial_equity_series or [])
 
     def _prices() -> dict[str, float]:
         now = pipeline.clock.now()
@@ -111,6 +117,7 @@ def create_app(pipeline: TradingPipeline,
                               "equity": snap.equity})
 
     app.state.record_session = record_session
+    app.state.equity_series = equity_series
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:

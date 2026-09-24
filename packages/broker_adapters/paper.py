@@ -67,6 +67,21 @@ class PaperBroker(BrokerAdapter):
         self._all_fills: list[BrokerFill] = []
         self.fault: Fault = Fault.NONE
 
+    def seed_state(self, settled_cash: float, unsettled_cash: float,
+                   positions: dict[str, BrokerPosition]) -> None:
+        """For a caller restoring a `Ledger` from durable state
+        (packages.common.durable_pipeline_state) across a process restart:
+        this PaperBroker is our own simulation, not a real broker with
+        independent history to replay, so it can simply be told what state
+        the ledger it must reconcile against already settled on, rather
+        than needing every historical fill replayed through submit_order.
+        Startup reconciliation (services.reconciliation.engine) compares
+        exactly these three fields against the ledger — call this BEFORE
+        that runs, or it reports a mismatch and halts new entries."""
+        self._settled_cash = settled_cash
+        self._unsettled_cash = unsettled_cash
+        self._positions = dict(positions)
+
     # -- fault helpers ------------------------------------------------------
     def _check_disconnect(self) -> None:
         if self.fault is Fault.DISCONNECT:

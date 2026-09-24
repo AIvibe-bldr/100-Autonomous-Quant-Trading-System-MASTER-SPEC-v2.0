@@ -6,7 +6,9 @@ from datetime import date, datetime, time, timezone
 from apps.api.main import create_app
 from packages.common.calendar import TradingCalendar
 from packages.common.clock import FrozenClock
-from scripts.run_live_dashboard import advance_one_session
+from packages.common.durable_pipeline_state import DurablePipelineState
+from scripts.run_live_dashboard import _restore_pipeline_state, advance_one_session
+from services.reconciliation.engine import ReconciliationEngine
 from tests.conftest import SESSION_TIME, SYMBOLS, build_pipeline
 from services.market_data.universe import UniverseManager, UniverseSymbol
 
@@ -100,3 +102,49 @@ def test_a_session_error_does_not_kill_the_background_loop():
     thread.join(timeout=2)
 
     assert call_count >= 2, "the loop stopped after the first error instead of retrying"
+
+
+def test_a_restart_round_trip_reproduces_the_pre_restart_state(tmp_path):
+    """Simulates the exact scenario --db exists to fix: run a few sessions,
+    persist after each (as advance_one_session does whenever store is
+    passed), then throw the whole pipeline/app away and build a brand-new
+    one pointed at the same DB file the way main() does on the next
+    process. Cash, positions, decision snapshots and the equity chart must
+    all survive, and the restored ledger must reconcile clean against a
+    freshly-seeded broker (the exact failure mode PaperBroker.seed_state
+    exists to avoid — see test_durable_pipeline_state.py)."""
+    db_path = str(tmp_path / "restart.db")
+    calendar = TradingCalendar()
+
+    clock = FrozenClock(current=SESSION_TIME)
+    pipeline = build_pipeline(clock, _universe())
+    app = create_app(pipeline)
+    store = DurablePipelineState(db_path, pipeline.environment)
+
+    for _ in range(3):
+        advance_one_session(pipeline, calendar, clock, app, store)
+
+    pre_cash = pipeline.ledger.cash
+    pre_positions = pipeline.ledger.positions
+    pre_equity_series = list(app.state.equity_series)
+    pre_snapshot_ids = {s.decision_id for s in pipeline.decision_quality.all_snapshots()}
+    assert pre_equity_series, "no sessions actually ran — test setup is broken"
+
+    # --- "restart": a completely fresh pipeline, same DB file ---
+    resume_date = calendar.next_trading_day(store.load_last_session_at().date())
+    clock2 = FrozenClock(current=datetime.combine(resume_date, time(15, 0), tzinfo=timezone.utc))
+    new_pipeline = build_pipeline(clock2, _universe())
+    store2 = DurablePipelineState(db_path, new_pipeline.environment)
+    assert store2.has_saved_state()
+
+    _restore_pipeline_state(new_pipeline, store2, clock2)
+
+    assert new_pipeline.ledger.cash == pre_cash
+    assert new_pipeline.ledger.positions == pre_positions
+    assert {s.decision_id for s in new_pipeline.decision_quality.all_snapshots()} == pre_snapshot_ids
+    assert store2.load_equity_series() == pre_equity_series
+
+    recon = ReconciliationEngine(broker=new_pipeline.execution.broker, ledger=new_pipeline.ledger,
+                                 risk_controller=new_pipeline.risk_controller)
+    report = recon.reconcile()
+    assert report.consistent, f"unexpected mismatches: {report.mismatches}"

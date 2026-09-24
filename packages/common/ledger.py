@@ -72,6 +72,29 @@ class Ledger:
         self.high_water_mark = initial_cash
         self.deposit(initial_cash, note="initial funding")
 
+    @classmethod
+    def restore(cls, initial_cash: float, cash: float, positions: dict[str, PositionLot],
+               realized_pnl: float, fees_paid: float, high_water_mark: float,
+               entries: list[LedgerEntry], currency: str = "USD") -> "Ledger":
+        """Reconstructs a Ledger from previously-persisted state
+        (packages.common.durable_pipeline_state) — bypasses __init__'s own
+        initial deposit, since the caller already has that (and every other
+        event) as a real entry in `entries`. `high_water_mark` is passed
+        explicitly rather than re-derived: unlike cash/positions it isn't
+        purely a function of `entries`, since every historical `snapshot()`
+        call that could have raised it used a mark price never itself
+        recorded to the entry log."""
+        ledger = cls.__new__(cls)
+        ledger.currency = currency
+        ledger.entries = list(entries)
+        ledger._cash = cash
+        ledger._positions = dict(positions)
+        ledger._realized_pnl = realized_pnl
+        ledger._fees_paid = fees_paid
+        ledger.initial_cash = initial_cash
+        ledger.high_water_mark = high_water_mark
+        return ledger
+
     # -- mutations (append-only) -------------------------------------------
     def _append(self, entry: LedgerEntry) -> None:
         """Validate BEFORE mutating.
