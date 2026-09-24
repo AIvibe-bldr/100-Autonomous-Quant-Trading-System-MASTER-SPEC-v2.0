@@ -236,3 +236,167 @@ def test_opportunities_endpoint_is_read_only(api_pipeline):
     for method in ("post", "put", "delete", "patch"):
         resp = getattr(client, method)("/opportunities")
         assert resp.status_code == 405
+
+
+# --- optional `lock` (scripts/run_live_dashboard.py) -----------------------
+
+def test_without_a_lock_requests_are_not_serialized_against_a_holder():
+    """Baseline: confirms the test below actually exercises the lock, not
+    some other source of serialization (e.g. TestClient itself)."""
+    import threading
+
+    clock = FrozenClock(current=SESSION_TIME)
+    pipeline = build_pipeline(clock, _universe())
+    client = TestClient(create_app(pipeline))
+
+    held = threading.Event()
+    release = threading.Event()
+    external_lock = threading.Lock()
+
+    def hold():
+        with external_lock:
+            held.set()
+            release.wait(timeout=2)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(timeout=2)
+    resp = client.get("/health")   # no `lock` passed to create_app — must not block
+    assert resp.status_code == 200
+    release.set()
+    t.join()
+
+
+def test_a_request_waits_for_an_in_progress_write_to_finish():
+    """A caller running pipeline.run_session() from a background thread
+    (scripts/run_live_dashboard.py) passes its own lock; a request arriving
+    mid-session must wait rather than read a half-updated pipeline."""
+    import threading
+
+    clock = FrozenClock(current=SESSION_TIME)
+    pipeline = build_pipeline(clock, _universe())
+    lock = threading.Lock()
+    client = TestClient(create_app(pipeline, lock=lock))
+
+    order = []
+    holder_has_lock = threading.Event()
+    release_holder = threading.Event()
+
+    def hold():
+        with lock:
+            order.append("writer-acquired")
+            holder_has_lock.set()
+            release_holder.wait(timeout=2)
+            order.append("writer-released")
+
+    t = threading.Thread(target=hold)
+    t.start()
+    holder_has_lock.wait(timeout=2)
+
+    def do_request():
+        client.get("/health")
+        order.append("request-completed")
+
+    req_thread = threading.Thread(target=do_request)
+    req_thread.start()
+    req_thread.join(timeout=0.3)
+    assert req_thread.is_alive(), "request completed before the writer released the lock"
+
+    release_holder.set()
+    t.join()
+    req_thread.join(timeout=2)
+    assert order == ["writer-acquired", "writer-released", "request-completed"]
+
+
+def test_two_concurrent_requests_do_not_deadlock_the_event_loop():
+    """The dashboard fires ~12 endpoints in one Promise.all — several
+    requests' middleware run concurrently on the SAME asyncio event loop.
+    A synchronous `with lock:` inside async middleware blocks that thread:
+    the request holding the lock can't be resumed to release it, because
+    resuming it needs the very event loop thread a second request's
+    blocked acquire has frozen. Reproduced live with curl against a real
+    uvicorn server (requests hung indefinitely on the buggy version) —
+    starlette's TestClient does not reproduce it (each call appears to get
+    its own portal/event loop), so this spins a REAL server on a real
+    socket, the only harness that actually exercises the failure mode."""
+    import socket
+    import threading
+    import time as _time
+
+    import httpx
+    import uvicorn
+
+    clock = FrozenClock(current=SESSION_TIME)
+    pipeline = build_pipeline(clock, _universe())
+    lock = threading.Lock()
+    app = create_app(pipeline, lock=lock)
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            _time.sleep(0.05)
+        assert server.started, "test server never started"
+
+        holder_has_lock = threading.Event()
+        release_holder = threading.Event()
+
+        def hold():
+            with lock:
+                holder_has_lock.set()
+                release_holder.wait(timeout=5)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        holder_has_lock.wait(timeout=2)
+
+        results: list[int] = []
+
+        def request(path):
+            resp = httpx.get(f"http://127.0.0.1:{port}{path}", timeout=5.0)
+            results.append(resp.status_code)
+
+        # two, matching the smallest case that reproduced the deadlock live
+        requesters = [threading.Thread(target=request, args=(p,))
+                     for p in ("/health", "/portfolio")]
+        for t in requesters:
+            t.start()
+        _time.sleep(0.2)  # let both enter the middleware and block on the lock
+        release_holder.set()
+        holder.join(timeout=2)
+
+        for t in requesters:
+            t.join(timeout=5)
+            assert not t.is_alive(), "a request never completed — event loop deadlocked"
+        assert results == [200, 200]
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=5)
+
+
+def test_opportunities_survive_the_clock_advancing_past_the_recorded_session(api_pipeline):
+    """scripts/run_live_dashboard.py calls app.state.record_session() and
+    THEN advances the clock to the next trading day, so by the time any
+    HTTP request arrives pipeline.clock.now() no longer equals the session
+    that was just recorded. /opportunities must still show it — filtering
+    live against pipeline.clock.now() would show "no candidates" forever
+    after the very first session in that mode."""
+    from datetime import timedelta
+
+    app = create_app(api_pipeline)
+    client = TestClient(app)
+    app.state.record_session(None)   # what run_live_dashboard.py does post-session
+    before = client.get("/opportunities").json()
+    assert before, "sanity check: the fixture's session must have real opportunities"
+
+    api_pipeline.clock.current = api_pipeline.clock.current + timedelta(days=1)
+    after = client.get("/opportunities").json()
+    assert after == before, "advancing the clock past the session lost its opportunities"

@@ -10,11 +10,13 @@ the UI can never become a path around the risk pipeline (§2, §78).
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from starlette.concurrency import run_in_threadpool
 
 DASHBOARD_HTML = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
 
@@ -35,8 +37,37 @@ def create_app(pipeline: TradingPipeline,
                cost_engine: Optional[OperatingCostEngine] = None,
                feature_store: Optional[FeatureStore] = None,
                monitor: Optional[MonitorSupervisor] = None,
-               heartbeats: Optional[HeartbeatRegistry] = None) -> FastAPI:
+               heartbeats: Optional[HeartbeatRegistry] = None,
+               lock: Optional[threading.Lock] = None) -> FastAPI:
     app = FastAPI(title="Quant Trading Platform — Status API", version="0.1.0")
+    # None (default) for every existing caller — this API was always built
+    # and read from a single thread. `lock` exists for a caller that also
+    # runs pipeline.run_session() from a background thread while serving
+    # (scripts/run_live_dashboard.py): TradingPipeline/Ledger have no
+    # internal locking, so a request reading mid-session (e.g. a position
+    # appended but its cash entry not yet) could see inconsistent state or
+    # a stale KeyError in positions_value. Serializing each request against
+    # each session is a full read/write lock, not fine-grained — acceptable
+    # here because a Mock-data session completes in well under a second,
+    # not a design for high request concurrency.
+    #
+    # Acquiring MUST happen off the event loop thread: the dashboard fires
+    # ~12 endpoints in one Promise.all, so several requests' middleware run
+    # concurrently on the SAME asyncio event loop. A plain `with lock:`
+    # blocks that thread synchronously — the request holding the lock
+    # can never be resumed to release it, because resuming it requires the
+    # very event loop thread that a second request's blocked acquire has
+    # frozen. Real deadlock, reproduced with a live browser load. Routing
+    # the blocking acquire through the threadpool (already used for every
+    # sync route handler here) keeps the event loop free to make progress.
+    if lock is not None:
+        @app.middleware("http")
+        async def _serialize_with_pipeline_writes(request, call_next):
+            await run_in_threadpool(lock.acquire)
+            try:
+                return await call_next(request)
+            finally:
+                lock.release()
     # The pipeline records each fill's fee into whichever cost_engine it holds
     # (see TradingPipeline._record_fill) — so the API must read from THAT
     # instance, not a second one of its own, or transaction fees would be
@@ -54,6 +85,17 @@ def create_app(pipeline: TradingPipeline,
     feature_store = feature_store or pipeline.feature_store
     monitor = monitor or MonitorSupervisor(model=MockMonitorModel())
     last_result: dict[str, Any] = {"result": None}
+    # Set inside record_session(), at the moment it's called — NOT read
+    # live from pipeline.clock.now() by /opportunities. A caller that keeps
+    # the pipeline running (scripts/run_live_dashboard.py) advances the
+    # clock to the NEXT session date immediately after each run_session()
+    # returns, so by the time any HTTP request arrives, clock.now() no
+    # longer equals the session that was actually just recorded — filtering
+    # live against it would show "no candidates" forever after the first
+    # session. record_session() is called before that advance, while
+    # clock.now() still IS the session's own timestamp (equity_series below
+    # already relies on the same ordering).
+    last_session_time: dict[str, Any] = {"at": None}
     equity_series: list[dict[str, Any]] = []
 
     def _prices() -> dict[str, float]:
@@ -63,6 +105,7 @@ def create_app(pipeline: TradingPipeline,
     def record_session(result: PipelineResult) -> None:
         """Called by the session runner after each run_session."""
         last_result["result"] = result
+        last_session_time["at"] = pipeline.clock.now()
         snap = pipeline.ledger.snapshot(_prices())
         equity_series.append({"at": pipeline.clock.now().isoformat(),
                               "equity": snap.equity})
@@ -257,11 +300,17 @@ def create_app(pipeline: TradingPipeline,
         news) actually contributed to each candidate Decision AI reviewed
         this session — unlike Final Trade Thesis above, this also covers
         NO_TRADE/AVOID/WAIT candidates, not just BUY survivors, so a
-        symbol's reasoning is visible even when nothing was ordered."""
-        now = pipeline.clock.now()
+        symbol's reasoning is visible even when nothing was ordered.
+
+        Prefers `last_session_time` (set by record_session(), so it still
+        matches after a caller advances the clock post-session); falls back
+        to the live clock for a caller that calls pipeline.run_session()
+        directly without ever going through record_session() — the clock
+        then simply never moves past that session either."""
+        session_at = last_session_time["at"] or pipeline.clock.now()
         out = []
         for snap in pipeline.decision_quality.all_snapshots():
-            if snap.ts != now:
+            if snap.ts != session_at:
                 continue
             out.append({
                 "symbol": snap.symbol, "decision": snap.decision.value,
