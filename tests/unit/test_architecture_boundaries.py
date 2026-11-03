@@ -87,3 +87,15 @@ def test_learning_layers_cannot_import_risk_state():
                     f"{py.relative_to(REPO)} imports {name!r} — "
                     f"services/{layer} must not touch live Risk state "
                     f"(CLAUDE.md §4)")
+
+
+def test_llm_usage_ledger_is_service_independent():
+    """packages/common/llm_usage.py is shared infra: it must not import services/* or apps/*."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).resolve().parents[2] / "packages/common/llm_usage.py").read_text())
+    for node in ast.walk(tree):
+        mods = ([node.module or ""] + [f"{node.module}.{a.name}" for a in node.names]
+                if isinstance(node, ast.ImportFrom) else
+                [a.name for a in node.names] if isinstance(node, ast.Import) else [])
+        assert not any(m.startswith(("services", "apps")) for m in mods), mods

@@ -230,3 +230,13 @@ class MonitorModel(Protocol):
 - 「この株を買いたい」→ 即注文禁止 → Manual Analysis（分析UI表示）→ 提案化
 - Human Override は可能だが Master Risk Controller は突破不可（INV-8）
 - Override結果は追跡され、Human vs AI analytics に入る（§79）
+
+## AI別 LLM使用量（§80-83）
+
+`packages/common/llm_usage.py` の `LLMUsageLedger` / `MeteredClient` が、`build_llm_stack(usage=...)` /
+`build_monitor(usage=...)` 経由で各AIのSDKクライアントを包み、`agent_id` 単位で呼び出し数・失敗数・
+トークン数を記録する（SkepticとAuditが同一モデルでも別行）。単価は組み込まず環境変数
+`QUANT_LLM_PRICES`（JSON `{"model":[入力$/1M, 出力$/1M]}`）で与える。未設定ならコストは `None`
+（0ではない）。`on_cost` コールバックで `OperatingCostEngine` の AI カテゴリへ計上できる。
+表示: `GET /llm-usage`（read-only）とダッシュボードの「AI別 使用量」表、
+`scripts/run_llm_paper_demo.py` の末尾サマリ。

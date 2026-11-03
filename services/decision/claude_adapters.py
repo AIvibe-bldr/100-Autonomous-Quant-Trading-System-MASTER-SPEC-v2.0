@@ -35,6 +35,7 @@ from packages.common.llm_client import (
     resolve_decision_agent,
 )
 from packages.common.environment import Environment
+from packages.common.llm_usage import LLMUsageLedger, MeteredClient
 from packages.schemas.audit import AuditOutput, AuditVerdict, DetectedConflict
 from packages.schemas.core import DecisionOutput, OrderIntent, SizedProposal, SkepticOutput
 from packages.schemas.monitor import MonitorRecommendation
@@ -417,7 +418,8 @@ class ClaudeMonitorModel:
 
 def build_llm_stack(config: Optional[LLMModelConfig] = None,
                     client: Optional[Any] = None,
-                    environment: Environment = Environment.PAPER) -> tuple[
+                    environment: Environment = Environment.PAPER,
+                    usage: Optional[LLMUsageLedger] = None) -> tuple[
         Any, ClaudeSkepticModel, IndependentAuditor]:
     """Wire the three agents. Skeptic and Pre-Trade Audit are separate agents
     with separate prompts, call sites and agent ids even when they resolve to
@@ -432,29 +434,43 @@ def build_llm_stack(config: Optional[LLMModelConfig] = None,
     always gets its own OpenAI client, since the two providers' SDKs are not
     interchangeable.
 
+    `usage`, when given, meters every call per agent_id (tokens, failures,
+    optional cost) — see packages/common/llm_usage.py.
+
     Raises LLMUnavailableError immediately if credentials aren't configured
     for whichever provider ends up in use, rather than failing mid-session."""
     cfg = config or DEFAULT_MODEL_CONFIG
-    anthropic_client = client or get_client(Provider.ANTHROPIC)
+    base_client = client or get_client(Provider.ANTHROPIC)
+
+    def metered(inner: Any, agent: AgentModel) -> Any:
+        if usage is None:
+            return inner
+        return MeteredClient(inner, usage, agent.agent_id, agent.model)
+
+    anthropic_client = base_client
 
     decision_agent = resolve_decision_agent(cfg)
     decision: Any
     if decision_agent.provider is Provider.OPENAI:
         from services.decision.openai_adapters import OpenAIDecisionModel
 
-        decision = OpenAIDecisionModel(agent=decision_agent, client=get_client(Provider.OPENAI))
+        decision = OpenAIDecisionModel(
+            agent=decision_agent,
+            client=metered(get_client(Provider.OPENAI), decision_agent))
     else:
-        decision = ClaudeDecisionModel(agent=decision_agent, client=anthropic_client)
+        decision = ClaudeDecisionModel(agent=decision_agent,
+                                       client=metered(anthropic_client, decision_agent))
 
-    skeptic = ClaudeSkepticModel(agent=cfg.skeptic, client=anthropic_client)
-    audit_model = ClaudeAuditModel(agent=cfg.audit, client=anthropic_client)
+    skeptic = ClaudeSkepticModel(agent=cfg.skeptic, client=metered(anthropic_client, cfg.skeptic))
+    audit_model = ClaudeAuditModel(agent=cfg.audit, client=metered(anthropic_client, cfg.audit))
     auditor = IndependentAuditor(model=audit_model, audit_all=True,
                                  environment=environment)
     return decision, skeptic, auditor
 
 
 def build_monitor(config: Optional[LLMModelConfig] = None,
-                  client: Optional[Any] = None) -> "MonitorSupervisor":
+                  client: Optional[Any] = None,
+                  usage: Optional[LLMUsageLedger] = None) -> "MonitorSupervisor":
     """Separate from `build_llm_stack` because the Monitor is consulted on a
     different trigger (anomaly, §66) than the per-candidate pipeline — wiring
     it alongside Decision/Skeptic/Audit would imply it runs every scan, which
@@ -462,5 +478,8 @@ def build_monitor(config: Optional[LLMModelConfig] = None,
     from services.decision.monitor import MonitorSupervisor
 
     cfg = config or DEFAULT_MODEL_CONFIG
-    monitor_model = ClaudeMonitorModel(agent=cfg.monitor, client=client or get_client())
+    inner = client or get_client()
+    if usage is not None:
+        inner = MeteredClient(inner, usage, cfg.monitor.agent_id, cfg.monitor.model)
+    monitor_model = ClaudeMonitorModel(agent=cfg.monitor, client=inner)
     return MonitorSupervisor(model=monitor_model)

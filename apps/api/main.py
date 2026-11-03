@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse
 
 DASHBOARD_HTML = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
 
+from packages.common.llm_usage import LLMUsageLedger
 from packages.common.risk_config import RiskConfig
 from services.cost_manager.engine import OperatingCostEngine
 from services.decision.monitor import (
@@ -35,7 +36,8 @@ def create_app(pipeline: TradingPipeline,
                cost_engine: Optional[OperatingCostEngine] = None,
                feature_store: Optional[FeatureStore] = None,
                monitor: Optional[MonitorSupervisor] = None,
-               heartbeats: Optional[HeartbeatRegistry] = None) -> FastAPI:
+               heartbeats: Optional[HeartbeatRegistry] = None,
+               llm_usage: Optional[LLMUsageLedger] = None) -> FastAPI:
     app = FastAPI(title="Quant Trading Platform — Status API", version="0.1.0")
     # The pipeline records each fill's fee into whichever cost_engine it holds
     # (see TradingPipeline._record_fill) — so the API must read from THAT
@@ -48,6 +50,7 @@ def create_app(pipeline: TradingPipeline,
         cost_engine = cost_engine or OperatingCostEngine()
         pipeline.cost_engine = cost_engine
     feature_store = feature_store or FeatureStore()
+    llm_usage = llm_usage or LLMUsageLedger()
     monitor = monitor or MonitorSupervisor(model=MockMonitorModel())
     last_result: dict[str, Any] = {"result": None}
     equity_series: list[dict[str, Any]] = []
@@ -273,6 +276,19 @@ def create_app(pipeline: TradingPipeline,
         result = out.model_dump(mode="json")
         result["consulted"] = True
         return result
+
+    @app.get("/llm-usage")
+    def llm_usage_status() -> dict[str, Any]:
+        """AI cost visibility (§80-83): calls / failures / tokens / cost per
+        agent. cost_usd is null for a model with no configured price
+        (QUANT_LLM_PRICES) — unknown is never reported as zero."""
+        return {
+            "agents": [{"agent_id": r.agent_id, "model": r.model, "calls": r.calls,
+                        "failures": r.failures, "input_tokens": r.input_tokens,
+                        "output_tokens": r.output_tokens, "cost_usd": r.cost_usd}
+                       for r in llm_usage.snapshot()],
+            "total_cost_usd": llm_usage.total_cost_usd(),
+        }
 
     @app.get("/risk-config")
     def risk_config() -> dict[str, Any]:

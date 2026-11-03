@@ -31,6 +31,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.common.clock import FrozenClock
+from packages.common.llm_usage import LLMUsageLedger
+from services.cost_manager.engine import CostCategory, CostEntry
 from packages.common.llm_client import DEFAULT_MODEL_CONFIG, credentials_available
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.reconciliation.engine import ReconciliationEngine
@@ -49,11 +51,15 @@ def main() -> None:
     clock = FrozenClock(current=datetime.combine(date(2026, 8, 10), time(15, 0),
                                                  tzinfo=timezone.utc))
 
+    usage = None
+    cost_sink: list[CostEntry] = []
     if credentials_available():
         from services.decision.claude_adapters import build_llm_stack
 
         cfg = DEFAULT_MODEL_CONFIG
-        decision, skeptic, auditor = build_llm_stack(config=cfg)
+        usage = LLMUsageLedger(on_cost=lambda at, agent, usd: cost_sink.append(
+            CostEntry(at=at, category=CostCategory.AI, amount=usd, note=agent)))
+        decision, skeptic, auditor = build_llm_stack(config=cfg, usage=usage)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor)
@@ -96,6 +102,15 @@ def main() -> None:
     print(f"\nequity ${snap.equity:,.2f} | reconciliation: "
           f"{'CONSISTENT' if report.consistent else 'MISMATCH'}")
     print(f"audit completeness: {pipeline.provenance.audit_completeness():.0%}")
+    if usage is not None:
+        print("\nLLM usage per AI (cost needs QUANT_LLM_PRICES):")
+        for r in usage.snapshot():
+            cost = "n/a (no price set)" if r.cost_usd is None else f"${r.cost_usd:.4f}"
+            print(f"  {r.agent_id}: calls {r.calls} fail {r.failures} "
+                  f"in {r.input_tokens} out {r.output_tokens} cost {cost}")
+        if pipeline.cost_engine is not None:
+            for e in cost_sink:
+                pipeline.cost_engine.record(e)
 
 
 if __name__ == "__main__":
