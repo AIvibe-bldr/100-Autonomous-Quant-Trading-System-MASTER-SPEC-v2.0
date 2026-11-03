@@ -18,6 +18,7 @@ from typing import Optional
 from packages.common.clock import Clock
 from packages.common.durable_store import DurableAuditStore
 from packages.common.environment import Environment, require_same_environment
+from packages.common.llm_client import LLMCallError
 from packages.common.ledger import Ledger
 from packages.common.provenance import ProvenanceStore
 from packages.schemas.core import (
@@ -436,6 +437,14 @@ class TradingPipeline:
             except MalformedDecisionError as e:
                 result.no_trade_reasons.append(f"{scan.symbol}: malformed decision rejected (§28)")
                 rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
+                continue
+            except LLMCallError as e:
+                # A provider outage / exhausted credit / refusal on ONE candidate
+                # must not abort the whole session (and with it exit management
+                # for open positions). No decision == no trade for this symbol.
+                result.no_trade_reasons.append(
+                    f"{scan.symbol}: Decision AI unavailable — no trade ({type(e).__name__})")
+                rec.result = {"rejected": "decision AI unavailable", "error": str(e)[:200]}
                 continue
             rec.output = decision.model_dump(mode="json")
             # §2: a SELL is only ever a reduction of an EXISTING long. A SELL

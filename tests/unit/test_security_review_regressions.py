@@ -452,3 +452,22 @@ def test_broker_fill_rejects_infinite_price():
     with pytest.raises(pydantic.ValidationError):
         BrokerFill(broker_fill_id="bf-1", client_order_id="f1-order-0002", symbol="AAPL",
                    side=Action.BUY, qty=1.0, price=float("inf"), fees=0.0, ts=SESSION_TIME)
+
+
+# --- Decision AI outage must not crash the session ---------------------------
+
+def test_decision_ai_outage_skips_candidate_instead_of_crashing(clock, universe):
+    from packages.common.llm_client import LLMCallError
+    from tests.conftest import build_pipeline
+
+    class _DownModel:
+        name = "down"
+        version = "0"
+
+        def decide(self, context):
+            raise LLMCallError("429 no credits remaining")
+
+    pipe = build_pipeline(clock, universe, decision_model=_DownModel())
+    result = pipe.run_session(SESSION_TIME)          # must not raise
+    assert result.orders_filled == 0
+    assert any("Decision AI unavailable" in r for r in result.no_trade_reasons)
