@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from packages.schemas.core import Bar
-from services.market_data.service import MarketDataService
+from services.market_data.service import MarketDataService, MarketDataUnavailable
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class ScannerFunnel:
     scanned: int = 0
     passed_basic: int = 0
     passed_advanced: int = 0
+    data_unavailable: int = 0
 
 
 class QuantScanner:
@@ -45,7 +46,11 @@ class QuantScanner:
         funnel = ScannerFunnel(scanned=len(symbols))
         stage1: list[ScanResult] = []
         for sym in symbols:
-            stamped = self.md.bars(sym, as_of, days=40, received_at=as_of)
+            try:
+                stamped = self.md.bars(sym, as_of, days=40, received_at=as_of)
+            except MarketDataUnavailable:
+                funnel.data_unavailable += 1      # skipped, never guessed
+                continue
             bars = [s.bar for s in stamped]
             if len(bars) < 21:
                 continue

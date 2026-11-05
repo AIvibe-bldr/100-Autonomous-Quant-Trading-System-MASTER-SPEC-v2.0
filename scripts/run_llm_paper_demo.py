@@ -43,13 +43,29 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--cash", type=float, default=670.0)
+    parser.add_argument("--real-data", action="store_true",
+                        help="use Alpaca market data (needs APCA_API_KEY_ID / "
+                             "APCA_API_SECRET_KEY; run during US market hours, "
+                             "quotes are unavailable when the market is closed). "
+                             "Orders still go to the PaperBroker — nothing is sent "
+                             "to a real broker.")
     args = parser.parse_args()
+    provider = None
+    if args.real_data:
+        from services.market_data.alpaca_provider import AlpacaMarketDataProvider
+        from services.market_data.service import MarketDataUnavailable
+        try:
+            provider = AlpacaMarketDataProvider.from_env()
+        except MarketDataUnavailable as e:
+            sys.exit(f"--real-data: {e} (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)")
+        args.days = 1      # real data has no replay; one live session
 
     universe = UniverseManager()
     for s in SYMBOLS:
         universe.add(UniverseSymbol(symbol=s, listed_from=date(2015, 1, 1)))
-    clock = FrozenClock(current=datetime.combine(date(2026, 8, 10), time(15, 0),
-                                                 tzinfo=timezone.utc))
+    clock = FrozenClock(current=(datetime.now(timezone.utc) if provider is not None
+                                 else datetime.combine(date(2026, 8, 10), time(15, 0),
+                                                       tzinfo=timezone.utc)))
 
     usage = None
     cost_sink: list[CostEntry] = []
@@ -62,7 +78,7 @@ def main() -> None:
         decision, skeptic, auditor = build_llm_stack(config=cfg, usage=usage)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
                                   decision_model=decision, skeptic_model=skeptic,
-                                  auditor=auditor)
+                                  auditor=auditor, provider=provider)
         # decision.name reflects whichever provider build_llm_stack actually
         # resolved (OpenAI if configured, Claude fallback otherwise) — never
         # trust cfg.decision.agent_id here, it only names the fallback (§25)
@@ -71,7 +87,7 @@ def main() -> None:
               f"  Skeptic AI  : {cfg.skeptic.agent_id}\n"
               f"  Audit AI    : {cfg.audit.agent_id}  (separate agent, same model)")
     else:
-        pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
+        pipeline = build_pipeline(clock, universe, initial_cash=args.cash, provider=provider)
         print("=== No Anthropic credentials found — using deterministic Mock "
               "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")

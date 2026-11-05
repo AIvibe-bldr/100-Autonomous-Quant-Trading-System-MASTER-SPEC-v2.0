@@ -65,7 +65,7 @@ from services.pdca.decision_quality import (
     DecisionSnapshot,
 )
 from services.loss_control.engine import LossControlEngine, NoStopPlanError
-from services.market_data.service import MarketDataService
+from services.market_data.service import MarketDataService, MarketDataUnavailable
 from services.market_data.universe import UniverseManager
 from services.position_sizing.engine import (
     PortfolioContext,
@@ -225,7 +225,7 @@ class TradingPipeline:
             bars = {sym: [b.bar for b in self.market_data.bars(sym, now, days=40, received_at=now)]
                     for sym in symbols}
             reading = self.regime_engine.classify(universe_composite_bars(bars))
-        except ValueError:
+        except (ValueError, MarketDataUnavailable):
             self._session_regime = "UNKNOWN"
             return "UNKNOWN"
         self._session_regime = reading.primary.value
@@ -436,9 +436,20 @@ class TradingPipeline:
             return result
 
         # data integrity gate (§11)
+        gated = []
         for s in scans:
             self.integrity.validate_bars(s.symbol, list(s.bars))
-            self.integrity.validate_quote(self.market_data.quote(s.symbol, now), now)
+            try:
+                quote = self.market_data.quote(s.symbol, now)
+            except MarketDataUnavailable:
+                result.no_trade_reasons.append(f"{s.symbol}: no valid quote — skipped")
+                continue
+            self.integrity.validate_quote(quote, now)
+            gated.append(s)
+        scans = gated
+        if not scans:
+            result.no_trade_reasons.append("no candidate has a valid quote")
+            return result
 
         # 2. Decision AI + Skeptic (§27-29) — proposals only, no broker access
         sized_candidates: list[SizedProposal] = []

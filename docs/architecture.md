@@ -95,3 +95,18 @@ Broker API を呼べるのは Execution Engine のみで、Execution Engine は
   `transaction_fees_total` で内訳として確認できる。ただしTrading P&Lに既に含まれているため
   `total()`（Operating Costsの実際の控除額）からは除外し、**二重控除を防止**している
   （`TradingPipeline._record_fill` が全ての約定経路を一本化して記録）
+
+## 実市場データ（Alpaca、データ専用）
+
+`services/market_data/alpaca_provider.py` は `MockProvider` と同じ `MarketDataProvider` の実装で、
+日足（調整済み）と最新気配のみを扱う。発注APIには触れない（Brokerは `packages/broker_adapters`）。
+- 認証: 環境変数 `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`（ログ・例外に出さない）。
+- 取得できない（市場クローズで気配なし、空の系列、HTTPエラー）ときは推測せず
+  `MarketDataUnavailable`。スキャナは当該銘柄を飛ばし、パイプラインは有効な気配のない候補を
+  見送る（fail-closed）。
+- 先読み禁止: バーは `end` の日付より前のみ。気配は「現在」のみ（過去時刻は拒否）。
+- 無料プランは IEX のみ（`source="alpaca-iex"`、出来高は統合テープより少ない）。AIにもその旨が渡る。
+- 実行: `python3 scripts/run_llm_paper_demo.py --real-data`（米国市場の営業時間中）。注文は
+  PaperBroker のまま、実ブローカーには何も送らない。
+- 既知の制約: 保有ポジションの手仕舞い判定（`manage_open_positions`）は、気配が取れない場合の
+  扱いが未整備。

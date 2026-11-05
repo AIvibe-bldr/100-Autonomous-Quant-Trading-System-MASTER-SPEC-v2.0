@@ -19,6 +19,11 @@ from packages.common.clock import EventTimes, ensure_utc
 from packages.schemas.core import Bar, Quote
 
 
+class MarketDataUnavailable(RuntimeError):
+    """Real data could not be obtained. Providers raise this instead of
+    inventing a value; callers skip the symbol / fail closed."""
+
+
 class MarketDataProvider(Protocol):
     def get_bars(self, symbol: str, end: datetime, days: int) -> list[Bar]: ...
     def get_quote(self, symbol: str, at: datetime) -> Quote: ...

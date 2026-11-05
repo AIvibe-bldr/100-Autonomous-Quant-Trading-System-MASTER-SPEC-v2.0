@@ -65,14 +65,14 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
                    decision_model=None, skeptic_model=None,
                    auditor: IndependentAuditor | None = None,
                    cost_engine: OperatingCostEngine | None = None,
-                   wall_clock=None, audit_store=None) -> TradingPipeline:
+                   wall_clock=None, audit_store=None, provider=None) -> TradingPipeline:
     """decision_model / skeptic_model / auditor default to the deterministic
     Mocks (keeps tests network-free and reproducible); pass real Claude
     adapters (services.decision.claude_adapters.build_llm_stack) to run the
     pipeline against the actual API — see scripts/run_llm_paper_demo.py."""
     env = Environment.PAPER
     cfg = config or RiskConfig()
-    md = MarketDataService(MockProvider())
+    md = MarketDataService(provider or MockProvider())
     ledger = Ledger(initial_cash=initial_cash)
     broker = PaperBroker(quote_fn=lambda s: md.quote(s, clock.now()), clock=clock,
                          initial_cash=initial_cash)
