@@ -73,6 +73,8 @@ from services.position_sizing.engine import (
     SizingRejected,
 )
 from services.quant.scanner import QuantScanner
+from services.regime.engine import (RegimeEngine, describe_universe_regime,
+                                    universe_composite_bars)
 from services.risk.gap_risk import gap_risk_score
 from services.risk.master_controller import (
     MasterRiskController,
@@ -156,6 +158,11 @@ class TradingPipeline:
     # None — fully additive, no behavior change for the many tests that
     # construct TradingPipeline without one).
     audit_store: Optional[DurableAuditStore] = None
+    # §26: market regime fed to Decision AI. Read from the universe composite
+    # (an estimate — see services/regime/engine.universe_composite_bars).
+    regime_engine: RegimeEngine = field(default_factory=RegimeEngine)
+    # short label (e.g. "BULL") stamped on decision snapshots for this session
+    _session_regime: str = field(default="UNKNOWN", repr=False)
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -211,10 +218,23 @@ class TradingPipeline:
             self.cost_engine.record_transaction_fee(
                 at=ts, amount=fees, note=note or symbol)
 
+    def _read_regime(self, symbols: list[str], now: datetime) -> str:
+        """Classify the market from the universe composite. Any shortfall
+        (too few symbols/bars) degrades to "UNKNOWN" — never a guess."""
+        try:
+            bars = {sym: [b.bar for b in self.market_data.bars(sym, now, days=40, received_at=now)]
+                    for sym in symbols}
+            reading = self.regime_engine.classify(universe_composite_bars(bars))
+        except ValueError:
+            self._session_regime = "UNKNOWN"
+            return "UNKNOWN"
+        self._session_regime = reading.primary.value
+        return describe_universe_regime(reading, len(bars))
+
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
                          had_stop_plan: bool = False, skeptic_consulted: bool = False,
-                         regime: str = "UNKNOWN") -> None:
+                         regime: Optional[str] = None) -> None:
         """A1-1: immutable decision snapshot for EVERY decision kind."""
         from services.data_validation.integrity import DataHealth
 
@@ -232,7 +252,7 @@ class TradingPipeline:
             thesis=decision.base_case.description if decision else "",
             invalidation_conditions=(tuple(decision.invalidation_conditions)
                                      if decision else ()),
-            regime=regime,
+            regime=regime or self._session_regime,
             model=self.decision_model.name, model_version=self.decision_model.version,
             rule_compliant=True, had_stop_plan=had_stop_plan,
             skeptic_consulted=skeptic_consulted,
@@ -423,8 +443,10 @@ class TradingPipeline:
         # 2. Decision AI + Skeptic (§27-29) — proposals only, no broker access
         sized_candidates: list[SizedProposal] = []
         prices: dict[str, float] = {}
+        regime_text = self._read_regime(symbols, now)
         for scan in scans[: self.max_new_positions * 3]:
-            ctx = DecisionContext(scan=scan, portfolio_summary={"cash": self.ledger.cash})
+            ctx = DecisionContext(scan=scan, regime=regime_text, as_of=now,
+                                  portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name
             rec.model_version = self.decision_model.version

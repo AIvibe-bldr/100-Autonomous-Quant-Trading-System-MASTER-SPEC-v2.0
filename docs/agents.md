@@ -240,3 +240,12 @@ class MonitorModel(Protocol):
 （0ではない）。`on_cost` コールバックで `OperatingCostEngine` の AI カテゴリへ計上できる。
 表示: `GET /llm-usage`（read-only）とダッシュボードの「AI別 使用量」表、
 `scripts/run_llm_paper_demo.py` の末尾サマリ。
+
+## Decision AI に渡す事実（コンテキスト）
+
+すべて Python が計算した事実で、AIの文章は混ざらない（`services/decision/prompts.py`）。
+- 判断時刻（`DecisionContext.as_of`）と最終バーの日時・出どころ・経過日数。AIは「今日」を自分で推測しない。
+- クオンツスコアの定義（20日モメンタム ÷ 日次ボラ、未校正）。
+- 市場局面: `RegimeEngine` を **ユニバースの等加重合成**に適用した推定値
+  （`universe_composite_bars`）。公式指数ではなく、プロンプトにも「ESTIMATE」と明記する。
+  銘柄・バーが不足すれば `UNKNOWN`（推測しない）。実データ接続時は指数銘柄へ置換する。

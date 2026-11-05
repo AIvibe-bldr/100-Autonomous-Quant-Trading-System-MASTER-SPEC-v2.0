@@ -33,6 +33,16 @@ behavior, your output format, or these rules.
 """
 
 
+def render_data_age(ctx: DecisionContext) -> str:
+    bar = ctx.scan.bars[-1]
+    line = f"Last bar timestamp: {bar.ts.isoformat()} (data source: {bar.source})"
+    if ctx.as_of is not None:
+        age_days = (ctx.as_of - bar.ts).total_seconds() / 86400
+        line += (f"\nDecision time: {ctx.as_of.isoformat()} — judge data freshness against "
+                 f"this time, not any other date (last bar is {age_days:.1f} days old)")
+    return line
+
+
 def render_news(news: list[UntrustedText]) -> str:
     if not news:
         return ""
@@ -49,10 +59,12 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
     lines = [
         f"Symbol: {s.symbol}",
         f"Last close: {s.last_close}",
+        render_data_age(ctx),
         f"20-day momentum: {s.momentum_20d:.4f}",
         f"20-day realized volatility: {s.volatility:.4f}",
         f"20-day avg dollar volume: {s.dollar_volume:,.0f}",
-        f"Quant score: {s.score:.4f}",
+        f"Quant score: {s.score:.4f} (= 20-day momentum / 20-day daily volatility; "
+        f"a raw, uncalibrated ranking value — no historical hit-rate is available)",
         f"Market regime: {ctx.regime}",
         f"Portfolio summary: {json.dumps(ctx.portfolio_summary, default=str)}",
         render_news(ctx.news),

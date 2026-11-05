@@ -9,7 +9,8 @@ External text (news etc.) reaches the model only as UntrustedText (§19).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any, Optional, Protocol
 
 from pydantic import ValidationError
 
@@ -32,6 +33,10 @@ class UntrustedText:
 @dataclass
 class DecisionContext:
     scan: ScanResult
+    # the session's decision time (simulated or real). Without it the model
+    # judges data age against its own idea of "today" (a live run called a
+    # replayed session's bars "three months stale").
+    as_of: Optional[datetime] = None
     regime: str = "UNKNOWN"
     news: list[UntrustedText] = field(default_factory=list)
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
