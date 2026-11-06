@@ -21,6 +21,7 @@ from packages.broker_adapters.base import (
     DuplicateClientOrderIdError,
 )
 from packages.common.clock import Clock, ensure_utc
+from packages.common.quote_unavailable import QuoteUnavailableError
 from packages.schemas.core import (
     Action,
     BrokerAck,
@@ -186,7 +187,13 @@ class PaperBroker(BrokerAdapter):
         before = len(self._all_fills)
         for po in list(self._orders.values()):
             if po.state in (OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED):
-                self._execute(po)
+                try:
+                    self._execute(po)
+                except QuoteUnavailableError:
+                    # no quote (market closed / feed outage): the order simply
+                    # keeps resting, as it would at a real broker — it must not
+                    # abort evaluation of the other resting stops
+                    continue
         return self._all_fills[before:]
 
     def cancel_order(self, client_order_id: str) -> BrokerAck:

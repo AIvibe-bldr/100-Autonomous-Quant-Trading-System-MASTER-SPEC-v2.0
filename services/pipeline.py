@@ -306,7 +306,7 @@ class TradingPipeline:
         return self.risk_controller.state is not RiskState.FULL_BROKER_DISCONNECT
 
     def _exit_risk_view(self, symbol: str, qty: float, now: datetime) -> PortfolioRiskView:
-        prices = self._mark_prices({}, now)
+        prices = self.mark_prices({}, now)
         pos_notional = self._position_notional({}, now)
         snapshot = self.ledger.snapshot(prices)
         return PortfolioRiskView(
@@ -553,7 +553,7 @@ class TradingPipeline:
             rec.stop_plan = stop.model_dump(mode="json")
 
             # 4. Position Sizing (§35)
-            snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
+            snapshot = self.ledger.snapshot(self.mark_prices(prices, now))
             level = throttle_level(snapshot.drawdown, self.risk_controller.config)
             pctx = PortfolioContext(
                 equity=snapshot.equity, settled_cash=self._settled_cash(),
@@ -582,7 +582,7 @@ class TradingPipeline:
             return result
 
         # 5. Capital Allocation (§36)
-        snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
+        snapshot = self.ledger.snapshot(self.mark_prices(prices, now))
         alloc = self.allocation.allocate(sized_candidates, equity=snapshot.equity,
                                          settled_cash=self._settled_cash(),
                                          current_exposure_notional=snapshot.positions_value)
@@ -722,15 +722,28 @@ class TradingPipeline:
         return result
 
     # -- helpers -------------------------------------------------------------
-    def _mark_prices(self, known: dict[str, float], now: datetime) -> dict[str, float]:
+    def mark_prices(self, known: dict[str, float], now: datetime) -> dict[str, float]:
         prices = dict(known)
         for sym in self.ledger.positions:
             if sym not in prices:
-                prices[sym] = self.market_data.quote(sym, now).mid
+                prices[sym] = self._mark_price(sym, now)
         return prices
 
+    def _mark_price(self, symbol: str, now: datetime) -> float:
+        """Valuation price for a HELD symbol. A missing quote (market closed,
+        bid/ask 0) must not abort the session that manages the exits: fall back
+        to the last daily close, then to cost basis. Never used to open risk."""
+        try:
+            return self.market_data.quote(symbol, now).mid
+        except MarketDataUnavailable:
+            pass
+        try:
+            return self.market_data.bars(symbol, now, days=5, received_at=now)[-1].bar.close
+        except (MarketDataUnavailable, IndexError):
+            return self.ledger.positions[symbol].avg_cost
+
     def _position_notional(self, prices: dict[str, float], now: datetime) -> dict[str, float]:
-        marks = self._mark_prices(prices, now)
+        marks = self.mark_prices(prices, now)
         return {sym: lot.qty * marks[sym] for sym, lot in self.ledger.positions.items()}
 
     def _theme_exposure(self, prices: dict[str, float], now: datetime) -> dict[str, float]:
@@ -742,7 +755,7 @@ class TradingPipeline:
 
     def _risk_view(self, sized: SizedProposal, prices: dict[str, float],
                    now: datetime) -> PortfolioRiskView:
-        snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
+        snapshot = self.ledger.snapshot(self.mark_prices(prices, now))
         pos_notional = self._position_notional(prices, now)
         return PortfolioRiskView(
             equity=snapshot.equity, settled_cash=self._settled_cash(),

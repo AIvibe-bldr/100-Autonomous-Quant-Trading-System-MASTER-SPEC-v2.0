@@ -128,8 +128,7 @@ def main() -> None:
         from datetime import timedelta
         clock.current = clock.current + timedelta(days=1)
 
-    prices = {s: pipeline.market_data.quote(s, clock.now()).mid
-              for s in pipeline.ledger.positions}
+    prices = pipeline.mark_prices({}, clock.now())   # quote → last close → cost
     snap = pipeline.ledger.snapshot(prices)
     recon = ReconciliationEngine(broker=pipeline.execution.broker, ledger=pipeline.ledger,
                                  risk_controller=pipeline.risk_controller, cash_tolerance=1.0)
