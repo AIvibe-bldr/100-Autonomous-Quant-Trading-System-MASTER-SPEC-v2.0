@@ -91,3 +91,28 @@ def test_prompt_gives_decision_time_and_bar_age_so_freshness_is_not_guessed():
     age = (now - scan.bars[-1].ts).total_seconds() / 86400
     assert f"Decision time: {now.isoformat()}" in text and f"{age:.1f} days old" in text
     assert "Decision time" not in build_decision_prompt(DecisionContext(scan=scan))
+
+
+def test_prompt_gives_current_quote_and_says_so_when_missing():
+    p, clock = _pipeline()
+    now = clock.now()
+    scan = p.scanner.scan(p.universe.symbols_as_of(now.date()), now)[0]
+    quote = p.market_data.quote(scan.symbol, now)
+    text = build_decision_prompt(DecisionContext(scan=scan, as_of=now, quote=quote))
+    assert f"bid {quote.bid:.4f}" in text and f"ask {quote.ask:.4f}" in text and "spread" in text
+    missing = build_decision_prompt(DecisionContext(scan=scan, as_of=now))
+    assert "Current quote: not available" in missing
+
+
+def test_pipeline_passes_the_gated_quote_to_decision_ai():
+    p, clock = _pipeline()
+    seen = []
+    real = p.decision_model.decide
+
+    def spy(ctx):
+        seen.append(ctx)
+        return real(ctx)
+
+    p.decision_model.decide = spy
+    p.run_session(clock.now())
+    assert seen and all(c.quote is not None and c.quote.symbol == c.scan.symbol for c in seen)

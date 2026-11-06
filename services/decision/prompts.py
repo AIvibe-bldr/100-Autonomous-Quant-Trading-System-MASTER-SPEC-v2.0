@@ -43,6 +43,18 @@ def render_data_age(ctx: DecisionContext) -> str:
     return line
 
 
+def render_quote(ctx: DecisionContext) -> str:
+    q = ctx.quote
+    if q is None:
+        return "Current quote: not available — do not assume a current price."
+    spread_pct = q.spread / q.mid
+    line = (f"Current quote ({q.source}, {q.ts.isoformat()}): bid {q.bid:.4f} x {q.bid_size}, "
+            f"ask {q.ask:.4f} x {q.ask_size}, spread {spread_pct:.3%}")
+    if ctx.as_of is not None:
+        line += f", quote age {(ctx.as_of - q.ts).total_seconds():.0f}s"
+    return line
+
+
 def render_news(news: list[UntrustedText]) -> str:
     if not news:
         return ""
@@ -60,6 +72,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         f"Symbol: {s.symbol}",
         f"Last close: {s.last_close}",
         render_data_age(ctx),
+        render_quote(ctx),
         f"20-day momentum: {s.momentum_20d:.4f}",
         f"20-day realized volatility: {s.volatility:.4f}",
         f"20-day avg dollar volume: {s.dollar_volume:,.0f}",

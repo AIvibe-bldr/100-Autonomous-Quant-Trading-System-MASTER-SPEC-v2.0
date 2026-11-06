@@ -30,6 +30,7 @@ from packages.schemas.core import (
     OrderState,
     OrderType,
     ProposalSource,
+    Quote,
     RiskApproval,
     RiskApprovedOrder,
     RiskRejection,
@@ -437,6 +438,7 @@ class TradingPipeline:
 
         # data integrity gate (§11)
         gated = []
+        quotes: dict[str, Quote] = {}
         for s in scans:
             self.integrity.validate_bars(s.symbol, list(s.bars))
             try:
@@ -445,6 +447,7 @@ class TradingPipeline:
                 result.no_trade_reasons.append(f"{s.symbol}: no valid quote — skipped")
                 continue
             self.integrity.validate_quote(quote, now)
+            quotes[s.symbol] = quote
             gated.append(s)
         scans = gated
         if not scans:
@@ -457,6 +460,7 @@ class TradingPipeline:
         regime_text = self._read_regime(symbols, now)
         for scan in scans[: self.max_new_positions * 3]:
             ctx = DecisionContext(scan=scan, regime=regime_text, as_of=now,
+                                  quote=quotes.get(scan.symbol),
                                   portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name

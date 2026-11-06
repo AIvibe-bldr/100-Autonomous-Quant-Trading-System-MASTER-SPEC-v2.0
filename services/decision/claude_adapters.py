@@ -45,6 +45,7 @@ from services.decision.monitor import MonitorContext
 from services.decision.prompts import (
     DECISION_SYSTEM_PROMPT as _DECISION_SYSTEM_PROMPT,
     build_decision_prompt as _build_decision_prompt,
+    render_quote as _render_quote,
 )
 
 DECISION_ADAPTER_VERSION = "claude-adapter-1.0.0"
@@ -168,6 +169,7 @@ def _build_skeptic_prompt(decision: DecisionOutput, ctx: DecisionContext) -> str
         f"risk_factors={decision.risk_factors}\n"
         f"expected_horizon={decision.expected_horizon}\n"
         f"Market regime: {ctx.regime}\n"
+        f"{_render_quote(ctx)}\n"
         f"Quant score={s.score:.4f} volatility={s.volatility:.4f} "
         f"momentum_20d={s.momentum_20d:.4f}\n\n"
         "Critique this proposal. List concrete objections (empty list only if "
