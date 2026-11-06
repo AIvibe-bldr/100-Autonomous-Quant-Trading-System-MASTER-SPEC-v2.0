@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from packages.common.llm_usage import LLMUsageLedger, MeteredClient, prices_from_env
+from packages.common.llm_usage import (DEFAULT_BUDGET_USD, LLMBudgetExceeded, LLMUsageLedger,
+                                       MeteredClient, budget_from_env, prices_from_env)
 
 
 class _Sub:
@@ -21,7 +22,7 @@ def _client():
 
 
 def test_anthropic_and_openai_usage_shapes():
-    led = LLMUsageLedger(prices={})
+    led = LLMUsageLedger(prices={}, budget_usd=float("inf"))
     MeteredClient(_client(), led, "a:x", "m").messages.create()
     MeteredClient(_client(), led, "b:x", "m").messages.create(shape="openai")
     rows = {r.agent_id: r for r in led.snapshot()}
@@ -30,7 +31,7 @@ def test_anthropic_and_openai_usage_shapes():
 
 
 def test_unknown_price_is_none_not_zero():
-    led = LLMUsageLedger(prices={})
+    led = LLMUsageLedger(prices={}, budget_usd=float("inf"))
     MeteredClient(_client(), led, "a", "m").messages.create()
     assert led.snapshot()[0].cost_usd is None and led.total_cost_usd() is None
 
@@ -44,7 +45,7 @@ def test_cost_and_callback_when_price_known():
 
 
 def test_failures_counted_and_reraised():
-    led = LLMUsageLedger(prices={})
+    led = LLMUsageLedger(prices={}, budget_usd=float("inf"))
     with pytest.raises(RuntimeError):
         MeteredClient(_client(), led, "a", "m").messages.create(fail=True)
     r = led.snapshot()[0]
@@ -52,7 +53,7 @@ def test_failures_counted_and_reraised():
 
 
 def test_shared_model_agents_stay_separate():
-    led = LLMUsageLedger(prices={})
+    led = LLMUsageLedger(prices={}, budget_usd=float("inf"))
     MeteredClient(_client(), led, "skeptic:p:m", "m").messages.create()
     MeteredClient(_client(), led, "audit:p:m", "m").messages.create()
     MeteredClient(_client(), led, "audit:p:m", "m").messages.create()
@@ -86,3 +87,40 @@ def test_llm_usage_endpoint():
     assert body["total_cost_usd"] == pytest.approx(150e-6)
     empty = TestClient(create_app(build_pipeline(clock, u))).get("/llm-usage").json()
     assert empty == {"agents": [], "total_cost_usd": None}
+
+
+# --- spending cap -----------------------------------------------------------
+
+def test_calls_are_refused_once_the_budget_is_reached_and_no_call_is_made():
+    # one call costs (100*10 + 50*20)/1e6 = $0.002
+    led = LLMUsageLedger(prices={"m": (10.0, 20.0)}, budget_usd=0.003)
+    c = MeteredClient(_client(), led, "a:x", "m")
+    c.messages.create()
+    c.messages.create()          # starts under the cap ($0.002 < $0.003), may overshoot
+    with pytest.raises(LLMBudgetExceeded):
+        c.messages.create()
+    assert led.snapshot()[0].calls == 2      # the refused call never reached the SDK
+
+
+def test_budget_is_shared_across_agents():
+    led = LLMUsageLedger(prices={"m": (10.0, 20.0)}, budget_usd=0.002)
+    MeteredClient(_client(), led, "a:x", "m").messages.create()
+    with pytest.raises(LLMBudgetExceeded):
+        MeteredClient(_client(), led, "b:x", "m").messages.create()
+
+
+def test_unpriced_model_is_refused_while_a_cap_is_active():
+    led = LLMUsageLedger(prices={}, budget_usd=1.0)
+    with pytest.raises(LLMBudgetExceeded):
+        MeteredClient(_client(), led, "a:x", "m").messages.create()
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "0", "-5", "nan", "inf"])
+def test_bad_budget_env_falls_back_to_default_never_uncapped(monkeypatch, raw):
+    monkeypatch.setenv("QUANT_LLM_BUDGET_USD", raw)
+    assert budget_from_env() == DEFAULT_BUDGET_USD
+
+
+def test_budget_env_is_honoured(monkeypatch):
+    monkeypatch.setenv("QUANT_LLM_BUDGET_USD", "0.5")
+    assert budget_from_env() == 0.5

@@ -138,6 +138,8 @@ def main() -> None:
     print(f"audit completeness: {pipeline.provenance.audit_completeness():.0%}")
     if usage is not None:
         print("\nLLM usage per AI (cost needs QUANT_LLM_PRICES):")
+        print(f"  spending cap ${usage.budget_usd:.2f} (QUANT_LLM_BUDGET_USD), "
+              f"spent {usage.total_cost_usd() or 0.0:.4f} USD")
         for r in usage.snapshot():
             cost = "n/a (no price set)" if r.cost_usd is None else f"${r.cost_usd:.4f}"
             print(f"  {r.agent_id}: calls {r.calls} fail {r.failures} "

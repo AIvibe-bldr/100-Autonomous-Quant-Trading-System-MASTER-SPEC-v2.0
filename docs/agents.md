@@ -241,6 +241,12 @@ class MonitorModel(Protocol):
 表示: `GET /llm-usage`（read-only）とダッシュボードの「AI別 使用量」表、
 `scripts/run_llm_paper_demo.py` の末尾サマリ。
 
+**費用の自動上限**: `MeteredClient` が全LLM呼び出しの直前に累計コストを確認し、`QUANT_LLM_BUDGET_USD`
+（既定 $1.00 / 1台帳＝1実行。不正値・0以下・無限大は既定に戻る）に達したら `LLMBudgetExceeded` で
+呼び出しを拒否する。Decision は取引なし、Skeptic は拒否、Audit は監査不能として、既存どおり
+安全側に倒れる。呼び出し開始時点で上限未満なら完了でき、超過は最大1回分。単価未設定のモデルは
+上限を守れないため、上限有効中は拒否する。上限は実行（プロセス）単位で、日次・永続の上限は未実装。
+
 ## Decision AI に渡す事実（コンテキスト）
 
 すべて Python が計算した事実で、AIの文章は混ざらない（`services/decision/prompts.py`）。
