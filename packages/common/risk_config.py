@@ -8,6 +8,7 @@ AI agents have no code path that can construct or replace a RiskConfig.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -49,6 +50,11 @@ class RiskConfig:
     exposure_cap_stage: float = 1.0
 
     def __post_init__(self) -> None:
+        # NaN passes every `<`/`>` comparison below, so finiteness is checked first
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if isinstance(v, float) and not math.isfinite(v):
+                raise ValueError(f"non-finite risk parameter {f.name}={v}")
         if self.max_leverage > 1.0:
             raise ValueError("max_leverage may never exceed 1.0 (IMMUTABLE SAFETY RULE §2)")
         if self.max_total_exposure_pct > 1.0:

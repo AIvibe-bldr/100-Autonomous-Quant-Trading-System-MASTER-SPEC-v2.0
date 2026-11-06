@@ -632,7 +632,7 @@ not a code change.
 
 ### P3 — forward-looking, document now rather than fix now
 
-#### F11. Single-threaded safety is implicit, not enforced or documented as an invariant
+#### F11. Single-threaded safety is implicit, not enforced or documented as an invariant — DOCUMENTED (docs/invariants.md)
 
 Covered in §1 above. Not an active gap (nothing concurrent exists to
 race), but nothing currently documents this as a *load-bearing*
@@ -648,7 +648,7 @@ implements exactly the atomic-reservation pattern this would need if
 concurrency is ever introduced — worth reusing rather than re-designing
 from scratch when that day comes.
 
-#### F12. RiskConfig doesn't reject NaN/Infinity in its own fields
+#### F12. RiskConfig doesn't reject NaN/Infinity in its own fields — RESOLVED
 
 Lower severity than F1: `RiskConfig` loads from a human-edited file, not
 network/AI input. Worth the same one-line-per-field fix as F1 for

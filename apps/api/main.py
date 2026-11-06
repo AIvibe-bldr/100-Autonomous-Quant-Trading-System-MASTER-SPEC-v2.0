@@ -57,7 +57,7 @@ def create_app(pipeline: TradingPipeline,
 
     def _prices() -> dict[str, float]:
         now = pipeline.clock.now()
-        return {s: pipeline.market_data.quote(s, now).mid for s in pipeline.ledger.positions}
+        return pipeline.mark_prices({}, now)   # quote → last close → cost; never raises on a closed market
 
     def record_session(result: PipelineResult) -> None:
         """Called by the session runner after each run_session."""
