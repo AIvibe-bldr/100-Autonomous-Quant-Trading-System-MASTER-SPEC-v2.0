@@ -39,6 +39,24 @@ from services.reconciliation.engine import ReconciliationEngine
 from tests.conftest import SYMBOLS, build_pipeline
 
 
+def _print_decision_rationale(records, limit: int = 3) -> None:
+    """Display-only: why each candidate got its action (read from the
+    provenance records the pipeline already keeps — no extra LLM calls)."""
+    print("\nDecision AI rationale per candidate:")
+    for rec in records:
+        out = rec.output
+        if not out:
+            err = (rec.result or {}).get("rejected", "no decision recorded")
+            print(f"  {rec.decision_id}: {err}")
+            continue
+        print(f"  {out['symbol']}: {out['action']} (confidence {out['confidence']:.2f}, "
+              f"horizon {out['expected_horizon']})")
+        for label, key in (("evidence", "key_evidence"), ("counter", "counter_evidence"),
+                           ("risks", "risk_factors"), ("unknowns", "unknowns")):
+            for item in out[key][:limit]:
+                print(f"      {label}: {item}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1)
@@ -105,6 +123,7 @@ def main() -> None:
             print("  NO TRADE — top reasons:")
             for r in result.no_trade_reasons[:5]:
                 print(f"    · {r}")
+        _print_decision_rationale(pipeline.provenance.all())
         pipeline.execution.broker.settle()
         from datetime import timedelta
         clock.current = clock.current + timedelta(days=1)
