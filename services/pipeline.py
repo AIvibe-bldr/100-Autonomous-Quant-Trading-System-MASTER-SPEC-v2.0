@@ -39,6 +39,7 @@ from packages.schemas.core import (
     TradeProposal,
 )
 from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
+from services.supervisor.heartbeat_alerts import HeartbeatAlerter
 from services.capital_allocation.engine import CapitalAllocationEngine
 from services.cost_manager.engine import OperatingCostEngine
 from services.data_validation.integrity import DataIntegrityEngine
@@ -181,6 +182,8 @@ class TradingPipeline:
     event_source: Optional[EventSource] = None
     event_horizon_days: int = 7          # gap-risk window for scheduled events
     event_display_days: int = 14         # how far ahead Decision is shown events
+    # F10: when set, checked at every session start (None = no heartbeat producers wired)
+    heartbeat_alerter: Optional[HeartbeatAlerter] = None
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
     # order that reaches execution.submit() is durably persisted (default
     # None — fully additive, no behavior change for the many tests that
@@ -460,6 +463,9 @@ class TradingPipeline:
         self._final_theses.clear()
         self._signal_captured_at.clear()
         self._book_correlation.clear()
+
+        if self.heartbeat_alerter is not None:
+            self.heartbeat_alerter.check()
 
         # 0. Exit management first: resting protective stops may have triggered
         #    since the last session (§33-34, §43)
@@ -784,7 +790,9 @@ class TradingPipeline:
                                   decision=sized.proposal.decision,
                                   had_stop_plan=True, skeptic_consulted=True)
 
-            state = self.execution.submit(approved, snapshot=snapshot)
+            state = self.execution.submit(
+                approved, snapshot=snapshot,
+                reference_price=sized.stop_plan.entry_price)   # planned entry (ask) -> F6 slippage
             log_rec.final_state = state.value
             rec.order_ref = intent.client_order_id
             if state in (OrderState.FILLED, OrderState.PARTIALLY_FILLED):

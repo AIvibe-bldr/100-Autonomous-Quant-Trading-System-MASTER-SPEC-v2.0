@@ -10,6 +10,7 @@ UNKNOWN state (§45) triggers reconciliation and halts new entries.
 """
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -33,7 +34,12 @@ from packages.schemas.core import (
     RiskApprovedOrder,
 )
 from services.execution.state_machine import OrderStateMachine
-from services.risk.circuit_breaker import RejectionCircuitBreaker
+from packages.common.alerts import AlertSeverity, notify
+from services.risk.circuit_breaker import (
+    RejectionCircuitBreaker,
+    SlippageCircuitBreaker,
+    adverse_slippage_bps,
+)
 from services.risk.master_controller import MasterRiskController, RiskState
 
 
@@ -67,6 +73,10 @@ class ExecutionEngine:
     _snapshots: dict[str, ApprovedOrderSnapshot] = field(default_factory=dict)
     # F6: rate trigger for broker rejections; built from RiskConfig unless injected
     circuit_breaker: Optional[RejectionCircuitBreaker] = None
+    # F6: abnormal-slippage trigger (needs the decision-time reference price)
+    slippage_breaker: Optional[SlippageCircuitBreaker] = None
+    _reference_prices: dict[str, float] = field(default_factory=dict)
+    _slippage_checked: set[str] = field(default_factory=set)
     # F5: operator kill switch (flag file). None = not configured (tests).
     kill_switch: Optional[KillSwitch] = None
 
@@ -75,6 +85,10 @@ class ExecutionEngine:
             cfg = self.risk_controller.config
             self.circuit_breaker = RejectionCircuitBreaker(
                 cfg.circuit_breaker_max_rejections, cfg.circuit_breaker_window_sec, self.clock)
+        if self.slippage_breaker is None:
+            cfg = self.risk_controller.config
+            self.slippage_breaker = SlippageCircuitBreaker(
+                cfg.circuit_breaker_max_slippage_fills, cfg.circuit_breaker_window_sec, self.clock)
 
     def entries_blocked_by_kill_switch(self) -> Optional[str]:
         """The reason when the operator kill switch is engaged, else None. When
@@ -91,8 +105,14 @@ class ExecutionEngine:
         return reason
 
     def submit(self, order: RiskApprovedOrder,
-               snapshot: Optional[ApprovedOrderSnapshot] = None) -> OrderState:
+               snapshot: Optional[ApprovedOrderSnapshot] = None,
+               reference_price: Optional[float] = None) -> OrderState:
+        """`reference_price` is the price the decision assumed (e.g. the ask when the
+        entry was planned). It is an OBSERVATION used only to measure slippage after
+        the fill — not an order field, so it is neither hashed nor signed."""
         intent = order.intent
+        if reference_price is not None and math.isfinite(reference_price) and reference_price > 0:
+            self._reference_prices[intent.client_order_id] = reference_price
 
         # §7: only risk-approved orders reach the broker — verify the token
         if not self.risk_controller.verify_signature(order.approval):
@@ -216,11 +236,36 @@ class ExecutionEngine:
                 OrderState.REJECTED, OrderState.EXPIRED):
             sm.transition(client_order_id, status.state, reason="broker status poll")
             self._sync_store(client_order_id, status.state)
-            if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED) and self.on_fill:
-                for f in self.broker.get_fills(since=self.clock.now().replace(year=2000)):
-                    if f.client_order_id == client_order_id:
-                        self.on_fill(f)
+            if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED):
+                self._route_fills(client_order_id)
         return sm.get(client_order_id).state
+
+    def _route_fills(self, client_order_id: str) -> None:
+        for f in self.broker.get_fills(since=self.clock.now().replace(year=2000)):
+            if f.client_order_id == client_order_id:
+                self._check_slippage(f)
+                if self.on_fill:
+                    self.on_fill(f)
+
+    def _check_slippage(self, fill: BrokerFill) -> None:
+        """F6: a fill far worse than the decision-time reference is counted once;
+        enough of them inside the window halt new entries (never un-halts)."""
+        ref = self._reference_prices.get(fill.client_order_id)
+        if ref is None or fill.broker_fill_id in self._slippage_checked:
+            return
+        self._slippage_checked.add(fill.broker_fill_id)
+        cfg = self.risk_controller.config
+        bps = adverse_slippage_bps(fill.side, ref, fill.price)
+        if bps <= cfg.max_slippage_bps:
+            return
+        notify(self.risk_controller.alert_sink, AlertSeverity.WARNING,
+               f"abnormal slippage on {fill.symbol}: {bps:.0f} bps worse than reference "
+               f"{ref:.2f} (fill {fill.price:.2f}, limit {cfg.max_slippage_bps:.0f} bps)")
+        if self.slippage_breaker.record_abnormal_fill() and (
+                self.risk_controller.state is RiskState.NORMAL):
+            self.risk_controller.set_state(
+                RiskState.HALT_NEW_ENTRIES,
+                reason=f"circuit breaker: repeated abnormal slippage (last {bps:.0f} bps on {fill.symbol})")
 
     def sync_open_orders(self) -> list[BrokerFill]:
         """Re-check resting orders (e.g. protective stops) and return any new
@@ -252,10 +297,8 @@ class ExecutionEngine:
             sm.transition(client_order_id, status.state,
                           reason="resolved via broker reconciliation")
             self._sync_store(client_order_id, status.state)
-            if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED) and self.on_fill:
-                for f in self.broker.get_fills(since=self.clock.now().replace(year=2000)):
-                    if f.client_order_id == client_order_id:
-                        self.on_fill(f)
+            if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED):
+                self._route_fills(client_order_id)
         return sm.get(client_order_id).state
 
     def recover_from_store(self) -> int:

@@ -81,8 +81,8 @@ def test_switch_engaged_mid_session_blocks_the_next_entry(tmp_path):
     real = p.execution.submit
     n = []
 
-    def submit(order, snapshot=None):
-        state = real(order, snapshot=snapshot)
+    def submit(order, snapshot=None, **kw):
+        state = real(order, snapshot=snapshot, **kw)
         if order.intent.side is Action.BUY:
             n.append(1)
             if len(n) == 1:                   # the first entry went out; now the operator stops

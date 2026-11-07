@@ -507,7 +507,7 @@ first write endpoint the system would ever have.
 
 ---
 
-#### F6. No Circuit Breaker for consecutive failures — trips on the first occurrence, never on a rate — RESOLVED (rejections)
+#### F6. No Circuit Breaker for consecutive failures — trips on the first occurrence, never on a rate — RESOLVED
 
 **Evidence.** Grepped `services/risk`, `services/supervisor`,
 `services/execution` for `consecutive|circuit_breaker|fail_count`: no
@@ -528,8 +528,16 @@ state model is needed.
 **Resolution.** `services/risk/circuit_breaker.py` (`RejectionCircuitBreaker`, rolling
 window, thresholds `circuit_breaker_max_rejections` / `circuit_breaker_window_sec` in `RiskConfig`)
 is consulted from `ExecutionEngine.submit` on every broker rejection and trips
-`HALT_NEW_ENTRIES` via `set_state`. **Not done:** the abnormal-slippage trigger — it needs a
-reference price in the approved snapshot for MARKET orders; add it when a real broker adapter exists.
+`HALT_NEW_ENTRIES` via `set_state`. **Abnormal slippage (2026-11-07):** the reference price is NOT put in the approved
+snapshot (that would change the signed/hashed order identity); `ExecutionEngine.submit(...,
+reference_price=)` takes it as an observation (the pipeline passes the planned entry = the ask at
+decision time). Each fill is compared once (`adverse_slippage_bps`, side-aware); worse than
+`max_slippage_bps` (75) sends a WARNING alert, and `circuit_breaker_max_slippage_fills` (2) such fills in
+`circuit_breaker_window_sec` trip `HALT_NEW_ENTRIES` (only from NORMAL — it never downgrades
+SAFE_EXIT/disconnect). Protective stops carry no reference (gap fills are expected). **Limits:** the
+75 bps/2-fill thresholds are untuned defaults (paper fills are simulated, so real slippage is unmeasured);
+only entries are checked. Note: the older rejection trigger calls `set_state(HALT_NEW_ENTRIES)`
+unguarded, so it could downgrade a worse state — not changed here, worth a separate fix.
 
 **Scope.** New small module, likely `services/risk/circuit_breaker.py`,
 consulted from `services/execution/engine.py`'s fill/reject handling.
@@ -630,7 +638,7 @@ three original consumers of this finding are closed; the full 15-table V1
 schema in `docs/database.md` (decision provenance, fills, ledger, etc.)
 remains future work beyond what any P0/P1 finding here requires.
 
-#### F10. No external alerting sink — RESOLVED (risk-state transitions; sink interface)
+#### F10. No external alerting sink — RESOLVED (sink interface; risk-state and heartbeat alerts)
 
 **Evidence.** `services/supervisor/heartbeat.py`'s `HeartbeatRegistry` is
 real and correctly computes `ServiceStatus` (including "silent service =
@@ -653,8 +661,12 @@ not a code change.
 **Resolution.** `packages/common/alerts.py` (`AlertSink`, `NullAlertSink` default,
 `LoggingAlertSink`, guarded `notify`). `MasterRiskController.set_state` alerts CRITICAL once per
 transition into `HALT_NEW_ENTRIES`/`SAFE_EXIT`/`FULL_BROKER_DISCONNECT` (so the circuit breaker is
-covered). **Not done:** a `HeartbeatRegistry.overall() == ERROR` alert (no scheduler/runner exists
-to poll it yet) and a real destination (Slack/e-mail) — a deployment-time choice.
+covered). **Heartbeat (2026-11-07):** `services/supervisor/heartbeat_alerts.py` (`HeartbeatAlerter`) sends one
+CRITICAL when a service ENTERS ERROR (missing, stale or self-reported), stays silent while it remains
+there, and a WARNING on recovery; an empty registry is not alerted. `TradingPipeline.heartbeat_alerter`
+(optional) checks at each session start. **Not done:** nothing produces heartbeats yet (only the API
+reads a registry), so in practice the alerter has nothing to watch until a runner reports them; and
+a real destination (Slack/e-mail) is a deployment-time choice.
 
 **Scope.** New small interface in `services/supervisor/`.
 

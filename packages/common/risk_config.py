@@ -53,6 +53,11 @@ class RiskConfig:
     # inside the window halt new entries
     circuit_breaker_max_rejections: int = 3
     circuit_breaker_window_sec: float = 3600.0
+    # Abnormal slippage (F6): a fill this many bps worse than the decision-time
+    # reference counts; that many such fills inside the same window halt entries.
+    # 75 bps is beyond half of the 1% spread cap, i.e. not explained by crossing the spread.
+    max_slippage_bps: float = 75.0
+    circuit_breaker_max_slippage_fills: int = 2
 
     def __post_init__(self) -> None:
         # NaN passes every `<`/`>` comparison below, so finiteness is checked first
@@ -62,6 +67,8 @@ class RiskConfig:
                 raise ValueError(f"non-finite risk parameter {f.name}={v}")
         if self.circuit_breaker_max_rejections < 1 or self.circuit_breaker_window_sec <= 0:
             raise ValueError("circuit breaker needs max_rejections >= 1 and window_sec > 0")
+        if self.max_slippage_bps <= 0 or self.circuit_breaker_max_slippage_fills < 1:
+            raise ValueError("slippage breaker needs max_slippage_bps > 0 and max fills >= 1")
         if self.max_leverage > 1.0:
             raise ValueError("max_leverage may never exceed 1.0 (IMMUTABLE SAFETY RULE §2)")
         if self.max_total_exposure_pct > 1.0:
