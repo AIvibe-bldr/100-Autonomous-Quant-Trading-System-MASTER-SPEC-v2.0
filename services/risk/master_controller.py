@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Union
 
+from packages.common.alerts import AlertSeverity, AlertSink, NullAlertSink, notify
 from packages.common.calendar import SessionStatus, TradingCalendar
 from packages.common.clock import Clock
 from packages.common.risk_config import RiskConfig
@@ -99,10 +100,16 @@ class MasterRiskController:
     state: RiskState = RiskState.NORMAL
     _signing_key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     decisions_log: list[Union[RiskApproval, RiskRejection]] = field(default_factory=list)
+    alert_sink: AlertSink = field(default_factory=NullAlertSink)
 
     # -- state management ---------------------------------------------------
     def set_state(self, state: RiskState, reason: str = "") -> None:
+        changed = state is not self.state
         self.state = state
+        # F10: tell a human whenever the system stops itself (once per transition)
+        if changed and state is not RiskState.NORMAL:
+            notify(self.alert_sink, AlertSeverity.CRITICAL,
+                   f"risk state -> {state.value}" + (f": {reason}" if reason else ""))
 
     def _entry_allowed_by_state(self, throttle: ThrottleLevel) -> tuple[bool, str]:
         if self.state is RiskState.FULL_BROKER_DISCONNECT:

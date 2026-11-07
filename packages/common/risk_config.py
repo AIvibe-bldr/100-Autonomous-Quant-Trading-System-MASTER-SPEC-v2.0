@@ -49,12 +49,19 @@ class RiskConfig:
     # Live capital ramp (§104) — fraction of account allowed as exposure
     exposure_cap_stage: float = 1.0
 
+    # Rejection circuit breaker (SAFETY_AUDIT F6): this many broker rejections
+    # inside the window halt new entries
+    circuit_breaker_max_rejections: int = 3
+    circuit_breaker_window_sec: float = 3600.0
+
     def __post_init__(self) -> None:
         # NaN passes every `<`/`>` comparison below, so finiteness is checked first
         for f in fields(self):
             v = getattr(self, f.name)
             if isinstance(v, float) and not math.isfinite(v):
                 raise ValueError(f"non-finite risk parameter {f.name}={v}")
+        if self.circuit_breaker_max_rejections < 1 or self.circuit_breaker_window_sec <= 0:
+            raise ValueError("circuit breaker needs max_rejections >= 1 and window_sec > 0")
         if self.max_leverage > 1.0:
             raise ValueError("max_leverage may never exceed 1.0 (IMMUTABLE SAFETY RULE §2)")
         if self.max_total_exposure_pct > 1.0:

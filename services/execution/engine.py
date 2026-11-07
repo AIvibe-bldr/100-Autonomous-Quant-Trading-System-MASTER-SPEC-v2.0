@@ -31,6 +31,7 @@ from packages.schemas.core import (
     RiskApprovedOrder,
 )
 from services.execution.state_machine import OrderStateMachine
+from services.risk.circuit_breaker import RejectionCircuitBreaker
 from services.risk.master_controller import MasterRiskController, RiskState
 
 
@@ -58,6 +59,14 @@ class ExecutionEngine:
     store: Optional[DurableOrderStore] = None
     _submitted: dict[str, RiskApprovedOrder] = field(default_factory=dict)
     _snapshots: dict[str, ApprovedOrderSnapshot] = field(default_factory=dict)
+    # F6: rate trigger for broker rejections; built from RiskConfig unless injected
+    circuit_breaker: Optional[RejectionCircuitBreaker] = None
+
+    def __post_init__(self) -> None:
+        if self.circuit_breaker is None:
+            cfg = self.risk_controller.config
+            self.circuit_breaker = RejectionCircuitBreaker(
+                cfg.circuit_breaker_max_rejections, cfg.circuit_breaker_window_sec, self.clock)
 
     def submit(self, order: RiskApprovedOrder,
                snapshot: Optional[ApprovedOrderSnapshot] = None) -> OrderState:
@@ -149,6 +158,10 @@ class ExecutionEngine:
         if not ack.accepted:
             sm.transition(intent.client_order_id, OrderState.REJECTED, reason=ack.reason)
             self._sync_store(intent.client_order_id, OrderState.REJECTED)
+            if self.circuit_breaker.record_rejection():
+                self.risk_controller.set_state(
+                    RiskState.HALT_NEW_ENTRIES,
+                    reason=f"circuit breaker: repeated broker rejections (last: {ack.reason})")
             return OrderState.REJECTED
 
         sm.transition(intent.client_order_id, OrderState.ACKNOWLEDGED,

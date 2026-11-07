@@ -487,7 +487,7 @@ first write endpoint the system would ever have.
 
 ---
 
-#### F6. No Circuit Breaker for consecutive failures — trips on the first occurrence, never on a rate
+#### F6. No Circuit Breaker for consecutive failures — trips on the first occurrence, never on a rate — RESOLVED (rejections)
 
 **Evidence.** Grepped `services/risk`, `services/supervisor`,
 `services/execution` for `consecutive|circuit_breaker|fail_count`: no
@@ -504,6 +504,12 @@ centralizes thresholds — this fits the same pattern) that trips
 `HALT_NEW_ENTRIES` after N rejections or M abnormal-slippage fills within
 a rolling window; reuses the existing `RiskState` machinery, so no new
 state model is needed.
+
+**Resolution.** `services/risk/circuit_breaker.py` (`RejectionCircuitBreaker`, rolling
+window, thresholds `circuit_breaker_max_rejections` / `circuit_breaker_window_sec` in `RiskConfig`)
+is consulted from `ExecutionEngine.submit` on every broker rejection and trips
+`HALT_NEW_ENTRIES` via `set_state`. **Not done:** the abnormal-slippage trigger — it needs a
+reference price in the approved snapshot for MARKET orders; add it when a real broker adapter exists.
 
 **Scope.** New small module, likely `services/risk/circuit_breaker.py`,
 consulted from `services/execution/engine.py`'s fill/reject handling.
@@ -559,7 +565,7 @@ symbol/side/qty, risk checks, rejection reasons, etc.) — this is largely
 
 ---
 
-#### F8. `broker_connected` RiskCheck is permanently green regardless of actual connectivity
+#### F8. `broker_connected` RiskCheck is permanently green regardless of actual connectivity — RESOLVED
 
 **Evidence.** `services/pipeline.py:256,657`: `broker_connected=True` is a
 literal at both `PortfolioRiskView` construction sites.
@@ -604,7 +610,7 @@ three original consumers of this finding are closed; the full 15-table V1
 schema in `docs/database.md` (decision provenance, fills, ledger, etc.)
 remains future work beyond what any P0/P1 finding here requires.
 
-#### F10. No external alerting sink
+#### F10. No external alerting sink — RESOLVED (risk-state transitions; sink interface)
 
 **Evidence.** `services/supervisor/heartbeat.py`'s `HeartbeatRegistry` is
 real and correctly computes `ServiceStatus` (including "silent service =
@@ -623,6 +629,12 @@ other findings).
 `HALT_NEW_ENTRIES`/`SAFE_EXIT`/`FULL_BROKER_DISCONNECT`. Actual
 integration (Slack, email, PagerDuty) is a deployment-time config choice,
 not a code change.
+
+**Resolution.** `packages/common/alerts.py` (`AlertSink`, `NullAlertSink` default,
+`LoggingAlertSink`, guarded `notify`). `MasterRiskController.set_state` alerts CRITICAL once per
+transition into `HALT_NEW_ENTRIES`/`SAFE_EXIT`/`FULL_BROKER_DISCONNECT` (so the circuit breaker is
+covered). **Not done:** a `HeartbeatRegistry.overall() == ERROR` alert (no scheduler/runner exists
+to poll it yet) and a real destination (Slack/e-mail) — a deployment-time choice.
 
 **Scope.** New small interface in `services/supervisor/`.
 
