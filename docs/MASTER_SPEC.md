@@ -144,3 +144,64 @@ Decision AI → Structured Trade Proposal → Loss/Exit Plan → Position Sizing
 - **RISK**: 目標progress表示が Risk-taking バイアスを生む。
 - **PROPOSED FIX**: 進捗表示は参考値とし、Risk 計算系から完全に分離（実装済み: PDCA は Risk 入力を持たない）。
 - **AFFECTED**: PDCA / UI / Risk。
+
+## 実装状況の監査（2026-11-07）
+
+要件表の各行を実コードと突き合わせた結果。判定方法は、(1) 記載パスの存在確認、(2) `ast` による
+import 解析（他の本番コードから参照されるか／テスト・スクリプトからのみか）、(3) `grep` による
+リテラル値・未配線の確認。**動作の正しさそのものの保証ではない**（テストの範囲は別）。
+
+### A. 要件表のパス訂正（記載のファイルが存在しない）
+
+| 仕様§ | 記載 | 実体 |
+|---|---|---|
+| 2 | `packages/common/safety.py` | 専用ファイルなし。不変条件は `packages/common/risk_config.py`（`__post_init__`）＋ `tests/unit/test_invariants.py` |
+| 32 | `services/pdca/forecast_tracker.py` | `services/decision/forecast.py` |
+| 38 | `services/risk/correlation.py` | `services/capital_cells/correlation.py`、`services/position_sizing/engine.py`、`services/risk/master_controller.py` |
+| 39 | `services/risk/throttle.py` | `packages/common/risk_config.py`（`throttle_level` / `throttle_factor`） |
+| 41, 84 | `services/risk/liquidity.py` | `services/risk/master_controller.py`、`services/position_sizing/engine.py`、`services/capital_cells/capacity_tail_risk.py` |
+| 72-74 | `packages/common/security.py` | 専用ファイルなし。HMAC署名＝`services/risk/master_controller.py`、未信頼テキスト＝`services/decision/models.py`（`UntrustedText`） |
+| 98-99 | `packages/common/versioning.py` | 専用モジュールなし。version は各スキーマ／ログの列として保持（`packages/common/experiments.py` 等） |
+| 103 | `docs/phases.md` | 未作成 |
+| 104-106 | `docs/paper_live_gate.md` | 未作成（Paper→Live 移行基準は未定義） |
+
+### B. 実装済みだがライブのパイプラインに配線されていないもの
+
+テストまたはスクリプトからのみ使われ、`run_session` の流れには入っていない。
+
+| 仕様§ | モジュール | 影響 |
+|---|---|---|
+| 17-19 | `services/news` | Decision AI に**ニュースが渡らない**（`DecisionContext.news` は常に空）。価格系特徴量のみで判断している |
+| 20 | `services/institutional` | 同上（機関投資家フロー未使用） |
+| 16 | `services/market_data/event_calendar.py` | 決算等のイベント回避が働かない（Decision も「イベント不明」と指摘） |
+| 15 | `services/market_data/corporate_actions.py` | 分割・配当調整が未反映 |
+| 10 | `packages/common/pit_store.py` | Point-in-Time ストア未使用 |
+| 14 | `packages/common/settlement.py` | 決済はブローカー報告（`get_cash().settled_cash`）を権威として使用。Settlement Manager 自体は未使用 |
+| 23-24, 56-61 | `services/alpha_factory`, `pdca/shadow.py` ほか | 推奨のみで設計上、Risk へ書き込まない（意図的）。ただし本番フローには未接続 |
+| 30 | `services/decision/disagreement.py` | Skeptic/Decision の不一致集計が未使用 |
+| 32 | `services/decision/forecast.py` | Forecast Tracker 未接続 |
+| 50-55 | `pdca/attribution.py`, `exit_optimizer.py` | 損益分解・出口最適化が未接続（`review.py` はスクリプトのみ） |
+| 68 | `services/supervisor/recovery.py` | 復旧処理が未接続 |
+| 76-79 | `services/decision/human_intent.py` | 人の意図解析が未接続 |
+| 48-49 | `services/reconciliation/engine.py` | 起動時（`run_dashboard.py`）のみ。**セッション中の定期照合なし** |
+| — | `services/capital_cells/*` | 資本セル設計（`docs/capital_cell_architecture.md`）。ライブには未接続 |
+
+### C. パイプライン内のリテラル値（監査証跡・機能の空洞化）
+
+| 箇所 | 内容 | 重大度 |
+|---|---|---|
+| `services/pipeline.py`（Master Risk View 2か所）`reconciliation_ok=True` | F8 と同型。`reconcile()` が不一致で `HALT_NEW_ENTRIES` にするため**状態ゲートで実際には止まる**が、`decisions_log` の `reconciliation` チェックは常に PASS と記録される。さらにセッション中の定期照合が無いため、途中で台帳とブローカーがずれても検知されない | 中（実運用前に要対応） |
+| `services/pipeline.py` `correlation_to_book=0.0`（Risk View 2か所＋`PortfolioContext` 未指定） | §38 の相関ペナルティは**ライブフローで一度も発動しない**（相関が計算・渡されていない） | 中 |
+
+### D. 実運用（LIVE）に向けて未着手
+
+- 実ブローカーアダプタ（現状 `PaperBroker` のみ）、LIVE ゲート／Paper→Live 基準（`docs/paper_live_gate.md` 未作成）
+- 緊急停止（SAFETY_AUDIT F5：書き込み口の設計判断待ち）、異常スリッページ・ハートビート異常のアラート（F6/F10 の残り）
+- 複数日のペーパー成績の記録・モデル比較（永続化は注文／監査ログのみ）
+
+### 優先して直すべき順（LLM不要）
+
+1. C の `reconciliation_ok` を実値化し、セッション開始時に照合を実行（`ReconciliationEngine` を再利用）。
+2. C の `correlation_to_book` を計算して渡す（`services/capital_cells/correlation.py` の再利用を先に検討）。
+3. B のうち Decision の質に直結する news / event_calendar / corporate_actions の接続（LLM入力が変わるため、実行前に §23 報告）。
+4. D（LIVE準備）。判断事項は F5 の方式と Paper→Live 基準。
