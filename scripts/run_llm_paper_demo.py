@@ -71,6 +71,7 @@ def main() -> None:
     args = parser.parse_args()
     provider = None
     news_source = None
+    event_source = None
     if args.real_data:
         from services.market_data.alpaca_provider import AlpacaMarketDataProvider
         from services.market_data.service import MarketDataUnavailable
@@ -81,6 +82,12 @@ def main() -> None:
         args.days = 1      # real data has no replay; one live session
         from services.news.alpaca_news import AlpacaNewsSource
         from services.news.source import NewsUnavailable
+        from services.market_data.alpaca_events import AlpacaCorporateActionsSource
+        from services.market_data.event_source import EventsUnavailable
+        try:
+            event_source = AlpacaCorporateActionsSource.from_env()
+        except EventsUnavailable:
+            event_source = None
         try:
             news_source = AlpacaNewsSource.from_env()      # same Alpaca credentials
         except NewsUnavailable:
@@ -103,7 +110,7 @@ def main() -> None:
             CostEntry(at=at, category=CostCategory.AI, amount=usd, note=agent)))
         decision, skeptic, auditor = build_llm_stack(config=cfg, usage=usage)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
-                                  kill_switch=KillSwitch.from_env(), news_source=news_source,
+                                  kill_switch=KillSwitch.from_env(), news_source=news_source, event_source=event_source,
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor, provider=provider)
         # decision.name reflects whichever provider build_llm_stack actually
@@ -115,7 +122,8 @@ def main() -> None:
               f"  Audit AI    : {cfg.audit.agent_id}  (separate agent, same model)")
     else:
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash, provider=provider,
-                                  kill_switch=KillSwitch.from_env(), news_source=news_source)
+                                  kill_switch=KillSwitch.from_env(), news_source=news_source,
+                                  event_source=event_source)
         print("=== No Anthropic credentials found — using deterministic Mock "
               "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")

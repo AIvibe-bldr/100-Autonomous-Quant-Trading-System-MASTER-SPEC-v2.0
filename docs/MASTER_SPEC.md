@@ -173,8 +173,8 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 |---|---|---|
 | 17-19 | `services/news` | ~~Decision AI にニュースが渡らない~~ → 2026-11-07 から接続（下記「ニュース接続」）。実行は `--real-data` のデモのみ |
 | 20 | `services/institutional` | 同上（機関投資家フロー未使用） |
-| 16 | `services/market_data/event_calendar.py` | 決算等のイベント回避が働かない（Decision も「イベント不明」と指摘） |
-| 15 | `services/market_data/corporate_actions.py` | 分割・配当調整が未反映 |
+| 16 | `services/market_data/event_calendar.py` | ~~未接続~~ → 2026-11-07 から接続（下記「イベントカレンダー接続」）。**決算日は取得元が無く未対応** |
+| 15 | `services/market_data/corporate_actions.py` | 価格調整は不要（Alpaca の日足は `adjustment=all` で調整済み）。今後の分割・配当等は上記イベントカレンダー経由で接続済み。エンジン自体は未使用のまま |
 | 10 | `packages/common/pit_store.py` | Point-in-Time ストア未使用 |
 | 14 | `packages/common/settlement.py` | 決済はブローカー報告（`get_cash().settled_cash`）を権威として使用。Settlement Manager 自体は未使用 |
 | 23-24, 56-61 | `services/alpha_factory`, `pdca/shadow.py` ほか | 推奨のみで設計上、Risk へ書き込まない（意図的）。ただし本番フローには未接続 |
@@ -216,3 +216,12 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 - 失敗時: セッションは止めず、プロンプトに「News: not available」と明示（「ニュースなし」とは別の文言）。`data_warnings` に記録。
 - 追加した防御: 記事本文に `</untrusted_external_data>` 等があっても枠を破れないよう `< > "` を無害化。
 - 既知の限界: `NewsEngine` のクラスタリング（銘柄の組＋日付）は粗く、パイプラインでは記事ごとに処理して回避している。方向性（direction）・影響度（impact）はキーワードによる粗い推定で、Decision AI には渡していない（見出し・要約・出典・時刻のみ）。Alpaca ニュースには集約サイトの再掲が混ざり、出典の信頼度は粗い。ニュースは助言的入力であり、売買の可否は引き続き Risk 側が決める。
+
+### イベントカレンダー接続（2026-11-07）
+
+- 取得元: `services/market_data/alpaca_events.py`（Alpaca corporate-actions API、市場データと同じ `APCA_*` キー、データのみ）。配当落ち日・分割・併合・スピンオフを `EventCalendar` の `RiskEvent` に変換（`EX_DIVIDEND` / `STOCK_SPLIT` / `MERGER` / `COMPANY_EVENT`）。
+- 流れ: セッションごとに1回、候補全銘柄を取得 → `EventCalendar` → ①`DecisionContext.upcoming_events`（今後14日、プロンプトに表示）、②`gap_risk_score(has_event_before_horizon=…)`（今後7日に該当イベントがあればスコア +0.35、上限1.0。従来はこの入力がパイプラインから一度も渡されていなかった）。
+- `EX_DIVIDEND` は情報表示のみでギャップリスクには数えない（落ち幅が配当額で予測可能なため）。分割・併合などは数える。
+- 失敗時: セッションは止めず、プロンプトに「Upcoming events: not available」と明示（「イベントなし」とは別の文言）、`data_warnings` に記録。
+- **決算日は取得元が無い。** プロンプトは常に「決算日はこのカレンダーの対象外で、不明は“近くに無い”の証拠ではない」と明記する。決算日の取得は EDGAR（過去の 8-K Item 2.02 からの推定）または別プロバイダの契約が必要で、後者は判断事項。
+- 接続範囲: `--real-data` のデモのみ（ニュースと同じ）。

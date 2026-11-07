@@ -69,6 +69,8 @@ from services.pdca.decision_quality import (
 from services.loss_control.engine import LossControlEngine, NoStopPlanError
 from services.market_data.service import MarketDataService, MarketDataUnavailable
 from services.market_data.universe import UniverseManager
+from services.market_data.event_calendar import EventCalendar, RiskEvent
+from services.market_data.event_source import EventSource, EventsUnavailable
 from services.news.engine import NewsEngine, NewsSignal
 from services.news.selection import select_for_symbol
 from services.news.source import NewsSource, NewsUnavailable
@@ -175,6 +177,10 @@ class TradingPipeline:
     news_source: Optional[NewsSource] = None
     news_engine: NewsEngine = field(default_factory=NewsEngine)
     news_lookback: timedelta = timedelta(days=3)
+    # Event Calendar → Decision AI and gap risk (§16, §40). None = not connected.
+    event_source: Optional[EventSource] = None
+    event_horizon_days: int = 7          # gap-risk window for scheduled events
+    event_display_days: int = 14         # how far ahead Decision is shown events
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
     # order that reaches execution.submit() is durably persisted (default
     # None — fully additive, no behavior change for the many tests that
@@ -523,12 +529,21 @@ class TradingPipeline:
         prices: dict[str, float] = {}
         regime_text = self._read_regime(symbols, now)
         news_signals, news_fetched = self._load_news([s.symbol for s in scans], now, result)
+        calendar, events_fetched = self._load_events([s.symbol for s in scans], now, result)
         for scan in scans[: self.max_new_positions * 3]:
             chosen = select_for_symbol(news_signals, scan.symbol) if news_fetched else []
             ctx = DecisionContext(scan=scan, regime=regime_text,
                                   as_of=decision_times.get(scan.symbol, now),
                                   news=[self._untrusted(s) for s in chosen],
                                   news_fetched=news_fetched,
+                                  upcoming_events=[
+                                      f"{e.on.isoformat()} {e.event_type.value}"
+                                      + (f" — {e.description}" if e.description else "")
+                                      for e in calendar.events_between(
+                                          now.date(), now.date() + timedelta(
+                                              days=self.event_display_days),
+                                          symbol=scan.symbol)] if events_fetched else [],
+                                  events_fetched=events_fetched,
                                   quote=quotes.get(scan.symbol),
                                   portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
@@ -613,7 +628,9 @@ class TradingPipeline:
             quote = self.market_data.quote(scan.symbol, now)
             entry_price = quote.ask
             prices[scan.symbol] = quote.mid
-            gap = gap_risk_score(list(scan.bars))
+            has_event = events_fetched and calendar.has_event_before(
+                scan.symbol, now.date(), self.event_horizon_days)
+            gap = gap_risk_score(list(scan.bars), has_event_before_horizon=has_event)
             try:
                 stop = self.loss_control.plan(proposal, list(scan.bars), entry_price, gap)
             except NoStopPlanError as e:
@@ -883,6 +900,24 @@ class TradingPipeline:
             result.data_warnings.append(
                 f"{quarantined} news item(s) quarantined as directive-like text (§19)")
         return signals, True
+
+    def _load_events(self, symbols: list[str], now: datetime,
+                     result: "PipelineResult") -> tuple[EventCalendar, bool]:
+        """Known upcoming events for the session's candidates (one fetch). Same
+        contract as news: `fetched=False` is stated to the model as "not
+        available", never as "no events"; the session carries on."""
+        calendar = EventCalendar()
+        if self.event_source is None or not symbols:
+            return calendar, False
+        try:
+            events = self.event_source.fetch(
+                symbols, now.date(), now.date() + timedelta(days=self.event_display_days))
+        except EventsUnavailable as e:
+            result.data_warnings.append(f"events unavailable — Decision runs without them ({e})")
+            return calendar, False
+        for ev in events:
+            calendar.add(ev)
+        return calendar, True
 
     @staticmethod
     def _untrusted(signal: NewsSignal) -> UntrustedText:

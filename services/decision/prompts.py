@@ -60,6 +60,16 @@ def _defang(text: str) -> str:
     return text.replace("<", "‹").replace(">", "›").replace('"', "'")
 
 
+def render_events(ctx: DecisionContext) -> str:
+    note = ("Earnings dates are NOT covered by this calendar source: an unknown earnings "
+            "date is not evidence that none is near.")
+    if not ctx.events_fetched:
+        return f"Upcoming events: not available. {note}"
+    if not ctx.upcoming_events:
+        return f"Upcoming events (next days): none in the calendar. {note}"
+    return "Upcoming events:\n" + "\n".join(f"- {e}" for e in ctx.upcoming_events) + f"\n{note}"
+
+
 def render_news(news: list[UntrustedText], fetched: bool = True) -> str:
     if not news:
         if fetched:
@@ -81,6 +91,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         f"Last close: {s.last_close}",
         render_data_age(ctx),
         render_quote(ctx),
+        render_events(ctx),
         f"20-day momentum: {s.momentum_20d:.4f}",
         f"20-day realized volatility: {s.volatility:.4f}",
         f"20-day avg dollar volume: {s.dollar_volume:,.0f}",

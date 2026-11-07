@@ -66,7 +66,8 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
                    auditor: IndependentAuditor | None = None,
                    cost_engine: OperatingCostEngine | None = None,
                    wall_clock=None, audit_store=None, provider=None,
-                   kill_switch=None, news_source=None) -> TradingPipeline:
+                   kill_switch=None, news_source=None,
+                   event_source=None) -> TradingPipeline:
     """decision_model / skeptic_model / auditor default to the deterministic
     Mocks (keeps tests network-free and reproducible); pass real Claude
     adapters (services.decision.claude_adapters.build_llm_stack) to run the
@@ -98,7 +99,8 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
         # V1 paper mode: audit every order to collect data (A3-6)
         auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
                                               audit_all=True),
-        cost_engine=cost_engine, symbol_themes=THEMES, news_source=news_source)
+        cost_engine=cost_engine, symbol_themes=THEMES, news_source=news_source,
+        event_source=event_source)
 
 
 @pytest.fixture

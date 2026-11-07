@@ -44,6 +44,10 @@ class DecisionContext:
     # True when a news fetch succeeded (an empty `news` then means "none found");
     # False means news was not provided / unavailable — a different statement.
     news_fetched: bool = False
+    # known upcoming events for this symbol (one line each), from the Event Calendar;
+    # `events_fetched=False` means the calendar was not available — not "no events"
+    upcoming_events: list[str] = field(default_factory=list)
+    events_fetched: bool = False
     news: list[UntrustedText] = field(default_factory=list)
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)

@@ -21,10 +21,17 @@ class EventType(str, enum.Enum):
     FDA_DATE = "FDA_DATE"
     HEARING = "HEARING"
     EXPIRATION = "EXPIRATION"
+    EX_DIVIDEND = "EX_DIVIDEND"      # informational: a predictable price drop, not gap risk
+    STOCK_SPLIT = "STOCK_SPLIT"
+    MERGER = "MERGER"
 
 
 # market-wide events apply to every symbol
 _MARKET_WIDE = {EventType.ECONOMIC_RELEASE, EventType.FOMC, EventType.EXPIRATION}
+
+
+# events that can move a price overnight; EX_DIVIDEND is listed but not counted
+_NOT_GAP_RISK = {EventType.EX_DIVIDEND}
 
 
 @dataclass(frozen=True)
@@ -59,5 +66,6 @@ class EventCalendar:
     def has_event_before(self, symbol: str, as_of: date, horizon_days: int) -> bool:
         """Gap-risk input (§16 → §40): any event for this symbol (or market-
         wide) inside the holding horizon."""
-        return bool(self.events_between(as_of, as_of + timedelta(days=horizon_days),
-                                        symbol=symbol))
+        return any(e.event_type not in _NOT_GAP_RISK
+                   for e in self.events_between(as_of, as_of + timedelta(days=horizon_days),
+                                                symbol=symbol))
