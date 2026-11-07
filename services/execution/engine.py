@@ -261,8 +261,7 @@ class ExecutionEngine:
         notify(self.risk_controller.alert_sink, AlertSeverity.WARNING,
                f"abnormal slippage on {fill.symbol}: {bps:.0f} bps worse than reference "
                f"{ref:.2f} (fill {fill.price:.2f}, limit {cfg.max_slippage_bps:.0f} bps)")
-        if self.slippage_breaker.record_abnormal_fill() and (
-                self.risk_controller.state is RiskState.NORMAL):
+        if self.slippage_breaker.record_abnormal_fill():
             self.risk_controller.set_state(
                 RiskState.HALT_NEW_ENTRIES,
                 reason=f"circuit breaker: repeated abnormal slippage (last {bps:.0f} bps on {fill.symbol})")

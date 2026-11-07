@@ -13,6 +13,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -39,6 +40,12 @@ class RiskState(str, enum.Enum):
     HALT_NEW_ENTRIES = "HALT_NEW_ENTRIES"
     SAFE_EXIT = "SAFE_EXIT"
     FULL_BROKER_DISCONNECT = "FULL_BROKER_DISCONNECT"
+
+
+# Restrictiveness of the MASTER STOP states: FULL_BROKER_DISCONNECT is the only one
+# that also blocks exits, SAFE_EXIT adds reduce-only on top of the entry halt.
+_STATE_SEVERITY = {RiskState.NORMAL: 0, RiskState.HALT_NEW_ENTRIES: 1,
+                   RiskState.SAFE_EXIT: 2, RiskState.FULL_BROKER_DISCONNECT: 3}
 
 
 class ThrottleLevel(str, enum.Enum):
@@ -104,6 +111,13 @@ class MasterRiskController:
 
     # -- state management ---------------------------------------------------
     def set_state(self, state: RiskState, reason: str = "") -> None:
+        """Escalate or reset, never relax by accident: an automatic trigger asking for a
+        milder stop (e.g. a rejection breaker's HALT_NEW_ENTRIES while the broker is
+        disconnected) is ignored. Only an explicit NORMAL lowers the state."""
+        if state is not RiskState.NORMAL and _STATE_SEVERITY[state] < _STATE_SEVERITY[self.state]:
+            logging.getLogger("quant.risk").info(
+                "ignored %s request (%s): already %s", state.value, reason, self.state.value)
+            return
         changed = state is not self.state
         self.state = state
         # F10: tell a human whenever the system stops itself (once per transition)

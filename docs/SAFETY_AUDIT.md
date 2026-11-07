@@ -536,8 +536,13 @@ decision time). Each fill is compared once (`adverse_slippage_bps`, side-aware);
 `circuit_breaker_window_sec` trip `HALT_NEW_ENTRIES` (only from NORMAL — it never downgrades
 SAFE_EXIT/disconnect). Protective stops carry no reference (gap fills are expected). **Limits:** the
 75 bps/2-fill thresholds are untuned defaults (paper fills are simulated, so real slippage is unmeasured);
-only entries are checked. Note: the older rejection trigger calls `set_state(HALT_NEW_ENTRIES)`
-unguarded, so it could downgrade a worse state — not changed here, worth a separate fix.
+only entries are checked. **Fixed (2026-11-07):** `MasterRiskController.set_state` used to overwrite the state unconditionally, so a
+milder automatic trigger (rejection/timeout breaker, reconciliation mismatch) could relax a stricter stop —
+e.g. `FULL_BROKER_DISCONNECT` (the only state that also blocks exits) → `HALT_NEW_ENTRIES`. It now only escalates
+(NORMAL < HALT_NEW_ENTRIES < SAFE_EXIT < FULL_BROKER_DISCONNECT); a milder request is ignored (logged, no alert),
+and only an explicit `NORMAL` resets. `SAFE_EXIT` is never set by production code today, so the realistic
+path was the disconnect case. Side effect: after a reconnect the state stays `FULL_BROKER_DISCONNECT` until an
+explicit reset to `NORMAL` (no auto-recovery exists, as before).
 
 **Scope.** New small module, likely `services/risk/circuit_breaker.py`,
 consulted from `services/execution/engine.py`'s fill/reject handling.
