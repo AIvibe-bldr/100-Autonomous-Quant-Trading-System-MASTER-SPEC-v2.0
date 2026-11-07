@@ -17,6 +17,7 @@ from services.market_data.event_source import EventsUnavailable
 UNCERTAINTY_DAYS = 7
 _YEAR = timedelta(days=364)           # keeps the weekday; the uncertainty covers the drift
 _LOOKBACK = timedelta(days=500)
+_SAME_CYCLE_DAYS = 45
 
 
 class EdgarEarningsEstimator:
@@ -32,6 +33,10 @@ class EdgarEarningsEstimator:
                                and start - _LOOKBACK <= f.filing_date < start})
                 for d in past:
                     est = d + _YEAR
+                    # this quarter already reported (a real 2.02 sits near the
+                    # estimate and before `start`): it is not upcoming
+                    if any(abs((est - p).days) <= _SAME_CYCLE_DAYS for p in past if p != d):
+                        continue
                     if start - timedelta(days=UNCERTAINTY_DAYS) <= est <= end + timedelta(
                             days=UNCERTAINTY_DAYS):
                         events.append(RiskEvent(

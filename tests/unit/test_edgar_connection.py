@@ -113,12 +113,19 @@ def test_edgar_news_failure_is_news_unavailable():
 
 def test_next_earnings_is_estimated_from_last_years_item_202_dates():
     est = EdgarEarningsEstimator(_client())
-    ev = est.fetch(["AAPL"], date(2026, 11, 6), date(2026, 11, 20))
+    ev = est.fetch(["AAPL"], date(2026, 10, 20), date(2026, 11, 20))     # not yet reported
     assert len(ev) == 1
     e = ev[0]
     assert e.event_type is EventType.EARNINGS and e.symbol == "AAPL"
     assert e.uncertainty_days >= 5 and "estimated" in e.description.lower()
-    assert abs((e.on - date(2026, 11, 5)).days) <= 7 or abs((e.on - date(2026, 11, 6)).days) <= 7
+    assert abs((e.on - date(2026, 11, 5)).days) <= 7
+
+
+def test_a_cycle_that_has_already_reported_is_not_estimated_again():
+    # live regression (PFE): last year's date + 364d = 2026-11-03, but the 8-K
+    # Item 2.02 for that quarter was already filed — nothing is upcoming
+    est = EdgarEarningsEstimator(_client())
+    assert est.fetch(["AAPL"], date(2026, 11, 6), date(2026, 11, 20)) == []
 
 
 def test_no_estimate_without_history_and_none_inside_a_window_that_misses_it():
