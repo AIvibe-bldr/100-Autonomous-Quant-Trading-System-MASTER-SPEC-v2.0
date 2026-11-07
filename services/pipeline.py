@@ -894,6 +894,8 @@ class TradingPipeline:
         # one article at a time: the engine clusters by (tickers, day), which would
         # merge distinct stories and let one directive-like item quarantine every
         # legitimate story for the same symbol. Dedup state still carries across.
+        for err in getattr(self.news_source, "last_errors", []):
+            result.data_warnings.append(f"partial news failure — one source is down ({err})")
         signals = [sig for item in items for sig in self.news_engine.process([item])]
         quarantined = sum(1 for s in signals if s.injection_flagged)
         if quarantined:
@@ -915,6 +917,8 @@ class TradingPipeline:
         except EventsUnavailable as e:
             result.data_warnings.append(f"events unavailable — Decision runs without them ({e})")
             return calendar, False
+        for err in getattr(self.event_source, "last_errors", []):
+            result.data_warnings.append(f"partial events failure — one source is down ({err})")
         for ev in events:
             calendar.add(ev)
         return calendar, True

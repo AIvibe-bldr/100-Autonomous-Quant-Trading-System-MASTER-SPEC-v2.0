@@ -92,6 +92,22 @@ def main() -> None:
             news_source = AlpacaNewsSource.from_env()      # same Alpaca credentials
         except NewsUnavailable:
             news_source = None                              # Decision is told "news not available"
+        # SEC EDGAR (8-K filings as tier-1 news + earnings-date estimates) needs an
+        # operator-supplied contact in QUANT_SEC_USER_AGENT; without it, skipped.
+        from services.market_data.edgar_client import EdgarClient, EdgarUnavailable
+        try:
+            edgar = EdgarClient.from_env()
+        except EdgarUnavailable as e:
+            print(f"(EDGAR disabled: {e})")
+        else:
+            from services.market_data.edgar_earnings import EdgarEarningsEstimator
+            from services.market_data.event_composite import CompositeEventSource
+            from services.news.composite import CompositeNewsSource
+            from services.news.edgar_news import EdgarFilingsNewsSource
+            news_source = CompositeNewsSource(
+                [x for x in (news_source, EdgarFilingsNewsSource(edgar)) if x is not None])
+            event_source = CompositeEventSource(
+                [x for x in (event_source, EdgarEarningsEstimator(edgar)) if x is not None])
 
     universe = UniverseManager()
     for s in SYMBOLS:

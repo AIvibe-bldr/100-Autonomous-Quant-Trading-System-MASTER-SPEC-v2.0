@@ -40,6 +40,8 @@ class RiskEvent:
     on: date
     symbol: Optional[str] = None       # None = market-wide
     description: str = ""
+    # >0: the date is an estimate; the event may fall this many days either side
+    uncertainty_days: int = 0
 
     @property
     def market_wide(self) -> bool:
@@ -57,7 +59,8 @@ class EventCalendar:
                        symbol: Optional[str] = None) -> list[RiskEvent]:
         out = []
         for e in self._events:
-            if not (start <= e.on <= end):
+            if not (start - timedelta(days=e.uncertainty_days) <= e.on
+                    <= end + timedelta(days=e.uncertainty_days)):
                 continue
             if e.market_wide or symbol is None or e.symbol == symbol:
                 out.append(e)

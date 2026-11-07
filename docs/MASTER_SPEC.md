@@ -173,7 +173,7 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 |---|---|---|
 | 17-19 | `services/news` | ~~Decision AI にニュースが渡らない~~ → 2026-11-07 から接続（下記「ニュース接続」）。実行は `--real-data` のデモのみ |
 | 20 | `services/institutional` | 同上（機関投資家フロー未使用） |
-| 16 | `services/market_data/event_calendar.py` | ~~未接続~~ → 2026-11-07 から接続（下記「イベントカレンダー接続」）。**決算日は取得元が無く未対応** |
+| 16 | `services/market_data/event_calendar.py` | ~~未接続~~ → 2026-11-07 から接続（下記「イベントカレンダー接続」）。決算日は EDGAR による推定のみ（下記「SEC EDGAR 接続」） |
 | 15 | `services/market_data/corporate_actions.py` | 価格調整は不要（Alpaca の日足は `adjustment=all` で調整済み）。今後の分割・配当等は上記イベントカレンダー経由で接続済み。エンジン自体は未使用のまま |
 | 10 | `packages/common/pit_store.py` | Point-in-Time ストア未使用 |
 | 14 | `packages/common/settlement.py` | 決済はブローカー報告（`get_cash().settled_cash`）を権威として使用。Settlement Manager 自体は未使用 |
@@ -225,3 +225,14 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 - 失敗時: セッションは止めず、プロンプトに「Upcoming events: not available」と明示（「イベントなし」とは別の文言）、`data_warnings` に記録。
 - **決算日は取得元が無い。** プロンプトは常に「決算日はこのカレンダーの対象外で、不明は“近くに無い”の証拠ではない」と明記する。決算日の取得は EDGAR（過去の 8-K Item 2.02 からの推定）または別プロバイダの契約が必要で、後者は判断事項。
 - 接続範囲: `--real-data` のデモのみ（ニュースと同じ）。
+
+### SEC EDGAR 接続（2026-11-07）
+
+- 認証: APIキーは不要。SEC のルールで全リクエストに「アプリ名＋連絡先メール」の `User-Agent` が必須（毎秒10リクエスト上限、実装は約6.6/秒に抑制）。**環境変数 `QUANT_SEC_USER_AGENT`（例: `QuantPaper you@your-domain.com`）で運用者が設定する。** コードへの埋め込み・既定値・補完はしない。未設定／形式不正なら EDGAR は無効（フェイルクローズ。他の取得元で続行）。
+- `services/market_data/edgar_client.py`: ティッカー→CIK、提出一覧（キャッシュ付き）。失敗は `EdgarUnavailable`。
+- `services/news/edgar_news.py`: **8-K** を `SEC_PRIMARY`（§18 最上位）のニュースに。SEC 索引の事実（様式・受理時刻・項目番号）のみを自前の項目名表で文章化し、提出者が書いた本文は取得も受け渡しもしない（注入経路なし）。決定時刻より後の提出は除外。
+- `services/market_data/edgar_earnings.py`: 過去の 8-K **Item 2.02**（決算発表）の提出日の364日後を**次回決算日の推定**として `EARNINGS` イベント化（`uncertainty_days=7`、説明文に「estimated」と明記）。`EventCalendar` は不確実性の幅だけ判定窓を広げる（ギャップリスクは保守側）。
+- 合成: `CompositeNewsSource` / `CompositeEventSource`。1つが失敗しても他は使い、`PipelineResult.data_warnings` に「partial … failure」を出す。全滅した場合のみ「未取得」扱い。
+- プロンプト: 決算日は「推定のみ。無い＝近くに無い、ではない」と常に明記。
+- 配線範囲: `--real-data` のデモのみ。確認用: `QUANT_SEC_USER_AGENT=... python3 scripts/check_edgar.py`（LLM不使用、実際の応答形式の確認）。
+- **未検証事項**: SEC の応答形式（`company_tickers.json`、`submissions`）は公開仕様に基づくフィクスチャでのオフラインテストのみ。実サービスでの確認は連絡先設定後に `check_edgar.py` で行う。Form 4（インサイダー取引）は未対応。

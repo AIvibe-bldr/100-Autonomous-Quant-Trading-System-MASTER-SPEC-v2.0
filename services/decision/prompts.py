@@ -61,8 +61,8 @@ def _defang(text: str) -> str:
 
 
 def render_events(ctx: DecisionContext) -> str:
-    note = ("Earnings dates are NOT covered by this calendar source: an unknown earnings "
-            "date is not evidence that none is near.")
+    note = ("Earnings dates are only ever ESTIMATES from last year's SEC filings (when shown "
+            "above); a missing earnings date is not evidence that none is near.")
     if not ctx.events_fetched:
         return f"Upcoming events: not available. {note}"
     if not ctx.upcoming_events:
