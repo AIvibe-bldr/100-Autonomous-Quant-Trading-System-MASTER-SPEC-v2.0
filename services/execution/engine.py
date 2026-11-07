@@ -82,6 +82,9 @@ class ExecutionEngine:
     slippage_breaker: Optional[SlippageCircuitBreaker] = None
     _reference_prices: dict[str, float] = field(default_factory=dict)
     _slippage_checked: set[str] = field(default_factory=set)
+    # every fill already handed on (slippage check, on_fill, or returned by a sync), so a
+    # fill is reported once no matter how many times its order is polled
+    _seen_fill_ids: set[str] = field(default_factory=set)
     # F5: operator kill switch (flag file). None = not configured (tests).
     kill_switch: Optional[KillSwitch] = None
     # §105-106: human approval required for LIVE entries; mandatory when environment is LIVE
@@ -265,6 +268,9 @@ class ExecutionEngine:
 
     def poll_order(self, client_order_id: str) -> OrderState:
         """Sync our state machine with broker-reported status and route fills."""
+        return self._poll(client_order_id)[0]
+
+    def _poll(self, client_order_id: str) -> tuple[OrderState, list[BrokerFill]]:
         status = self.broker.get_order_status(client_order_id)
         sm = self.state_machine
         current = sm.get(client_order_id).state
@@ -273,16 +279,23 @@ class ExecutionEngine:
                 OrderState.REJECTED, OrderState.EXPIRED):
             sm.transition(client_order_id, status.state, reason="broker status poll")
             self._sync_store(client_order_id, status.state)
-            if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED):
-                self._route_fills(client_order_id)
-        return sm.get(client_order_id).state
+        fills: list[BrokerFill] = []
+        if status.state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED):
+            fills = self._route_fills(client_order_id)     # also later partials of a resting order
+        return sm.get(client_order_id).state, fills
 
-    def _route_fills(self, client_order_id: str) -> None:
-        for f in self.broker.get_fills(since=self.clock.now().replace(year=2000)):
-            if f.client_order_id == client_order_id:
-                self._check_slippage(f)
-                if self.on_fill:
-                    self.on_fill(f)
+    def _route_fills(self, client_order_id: str) -> list[BrokerFill]:
+        """The order's fills not handed on before (each fill exactly once)."""
+        new: list[BrokerFill] = []
+        for f in self.broker.get_order_fills(client_order_id):
+            if f.broker_fill_id in self._seen_fill_ids:
+                continue
+            self._seen_fill_ids.add(f.broker_fill_id)
+            self._check_slippage(f)
+            if self.on_fill:
+                self.on_fill(f)
+            new.append(f)
+        return new
 
     def _check_slippage(self, fill: BrokerFill) -> None:
         """F6: a fill far worse than the decision-time reference is counted once;
@@ -309,12 +322,16 @@ class ExecutionEngine:
 
         A broker outage here is not fatal to the session: it is recorded as a
         disconnect so the risk controller blocks new entries (§43, §48)."""
-        broker_poll = getattr(self.broker, "poll_resting_orders", None)
         try:
-            new_fills: list[BrokerFill] = list(broker_poll()) if broker_poll else []
+            resting = self.broker.poll_resting_orders()      # simulator hook; real brokers: []
+            new_fills: list[BrokerFill] = []
             for cid, rec in list(self.state_machine._orders.items()):   # noqa: SLF001
                 if rec.state in (OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED):
-                    self.poll_order(cid)
+                    new_fills.extend(self._poll(cid)[1])
+            for f in resting:                                # fills of orders outside the loop above
+                if f.broker_fill_id not in self._seen_fill_ids:
+                    self._seen_fill_ids.add(f.broker_fill_id)
+                    new_fills.append(f)
         except BrokerDisconnectedError:
             self.risk_controller.set_state(RiskState.FULL_BROKER_DISCONNECT,
                                            reason="broker unreachable while syncing orders")

@@ -804,15 +804,14 @@ class TradingPipeline:
             rec.order_ref = intent.client_order_id
             if state in (OrderState.FILLED, OrderState.PARTIALLY_FILLED):
                 filled_qty = 0.0
-                for f in self.execution.broker.get_fills(since=now.replace(year=2000)):
-                    if f.client_order_id == intent.client_order_id:
-                        filled_qty += f.qty
-                        self._record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
-                                          f.price, f.fees, f.ts,
-                                          note=intent.client_order_id)
-                        rec.fill_refs.append(f.broker_fill_id)
-                        log_rec.fills.append(f.broker_fill_id)
-                        result.fills.append(f)
+                for f in self.execution.broker.get_order_fills(intent.client_order_id):
+                    filled_qty += f.qty
+                    self._record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
+                                      f.price, f.fees, f.ts,
+                                      note=intent.client_order_id)
+                    rec.fill_refs.append(f.broker_fill_id)
+                    log_rec.fills.append(f.broker_fill_id)
+                    result.fills.append(f)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
                 self._persist_audit_record(log_rec, now)

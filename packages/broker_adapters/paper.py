@@ -25,6 +25,7 @@ from packages.common.environment import Environment
 from packages.common.quote_unavailable import QuoteUnavailableError
 from packages.schemas.core import (
     Action,
+    BrokerAccountStatus,
     BrokerAck,
     BrokerCashBalance,
     BrokerFill,
@@ -241,3 +242,12 @@ class PaperBroker(BrokerAdapter):
         self._check_disconnect()
         since = ensure_utc(since)
         return [f for f in self._all_fills if f.ts >= since]
+
+    def get_order_fills(self, client_order_id: str) -> list[BrokerFill]:
+        self._check_disconnect()
+        po = self._orders.get(client_order_id)
+        return list(po.fills) if po is not None else []
+
+    def get_account_status(self) -> BrokerAccountStatus:
+        self._check_disconnect()
+        return BrokerAccountStatus()

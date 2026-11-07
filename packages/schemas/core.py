@@ -456,6 +456,12 @@ class BrokerPosition(StrictModel):
     avg_cost: float = Field(ge=0, allow_inf_nan=False)
 
 
+class BrokerAccountStatus(StrictModel):
+    """What the broker says about the account itself (not the money in it)."""
+    trading_blocked: bool = False
+    reason: str = ""
+
+
 class BrokerCashBalance(StrictModel):
     settled_cash: float = Field(ge=0, allow_inf_nan=False)
     unsettled_cash: float = Field(ge=0, allow_inf_nan=False)
