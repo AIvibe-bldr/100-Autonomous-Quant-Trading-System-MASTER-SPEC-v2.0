@@ -13,6 +13,12 @@ PositionSizingEngine (§35)
    - risk_amount = equity × per_trade_risk_budget × throttle_factor × confidence_scaler
    - qty = risk_amount / stop_distance
    - 制約: liquidity cap (ADV%), spread cost, existing/theme exposure, correlation, gap risk
+   - 決定前の事前フィルタ: 気配のスプレッドが `RiskConfig.max_spread_pct` を超える候補は
+     Decision AI を呼ばずに除外する（LLM費用の節約。上限値は Master Risk Controller と同一の
+     設定を参照し再定義しない。最終判断は引き続き Master Risk Controller）。
+   - 気配時刻: 気配はセッションの `as_of` より後に取得されるため、`quote_sampling_lag`（60秒）以内の
+     先行は取得遅延として扱い決定時刻を気配時刻まで進める。それ以上の未来時刻は従来どおり
+     `timestamp_anomaly`（CRITICAL → HALT_ENTRIES）。
    - Anti-Martingale: 直近損失後のサイズ増加を拒否 (INV-10)
    ↓ SizedProposal
 CapitalAllocationEngine (§36)

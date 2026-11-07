@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from packages.common.clock import Clock
@@ -154,6 +154,10 @@ class TradingPipeline:
     # need to inject a fake one (see test_security_review_regressions.py) to
     # assert staleness deterministically without a real sleep.
     wall_clock: Clock = field(default_factory=Clock)
+    # A live quote is fetched some seconds AFTER the session's `as_of` was fixed,
+    # so its own timestamp is slightly "later" than as_of. Up to this much is our
+    # sampling lag, not a data anomaly; anything beyond it is still flagged.
+    quote_sampling_lag: timedelta = timedelta(seconds=60)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
     # order that reaches execution.submit() is durably persisted (default
     # None — fully additive, no behavior change for the many tests that
@@ -439,6 +443,7 @@ class TradingPipeline:
         # data integrity gate (§11)
         gated = []
         quotes: dict[str, Quote] = {}
+        decision_times: dict[str, datetime] = {}
         for s in scans:
             self.integrity.validate_bars(s.symbol, list(s.bars))
             try:
@@ -446,8 +451,21 @@ class TradingPipeline:
             except MarketDataUnavailable:
                 result.no_trade_reasons.append(f"{s.symbol}: no valid quote — skipped")
                 continue
-            self.integrity.validate_quote(quote, now)
+            decided_at = self._decision_time(now, quote)
+            self.integrity.validate_quote(quote, decided_at)
+            # Cost/quality pre-filter using the SAME cap the Master Risk Controller
+            # enforces (single source: RiskConfig.max_spread_pct) — a quote already
+            # too wide to trade must not buy an LLM call. The controller still
+            # decides for everything that passes.
+            spread_pct = quote.spread / quote.mid
+            cap = self.risk_controller.config.max_spread_pct
+            if spread_pct > cap:
+                result.no_trade_reasons.append(
+                    f"{s.symbol}: quote spread {spread_pct:.2%} exceeds cap {cap:.2%} — "
+                    f"no Decision call")
+                continue
             quotes[s.symbol] = quote
+            decision_times[s.symbol] = decided_at
             gated.append(s)
         scans = gated
         if not scans:
@@ -459,7 +477,8 @@ class TradingPipeline:
         prices: dict[str, float] = {}
         regime_text = self._read_regime(symbols, now)
         for scan in scans[: self.max_new_positions * 3]:
-            ctx = DecisionContext(scan=scan, regime=regime_text, as_of=now,
+            ctx = DecisionContext(scan=scan, regime=regime_text,
+                                  as_of=decision_times.get(scan.symbol, now),
                                   quote=quotes.get(scan.symbol),
                                   portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
@@ -781,6 +800,14 @@ class TradingPipeline:
                             - self._signal_captured_at[sized.proposal.proposal_id]
                             ).total_seconds(),
             margin_requirement=0.0)
+
+    def _decision_time(self, now: datetime, quote: Quote) -> datetime:
+        """`now`, advanced to the quote's own timestamp when the quote is at most
+        `quote_sampling_lag` ahead of it. A quote further in the future keeps the
+        original `now`, so the integrity engine still flags it."""
+        if now < quote.ts <= now + self.quote_sampling_lag:
+            return quote.ts
+        return now
 
     def _spread_pct(self, symbol: str, now: datetime) -> float:
         quote = self.market_data.quote(symbol, now)
