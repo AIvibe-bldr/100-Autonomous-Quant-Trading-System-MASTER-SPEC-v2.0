@@ -30,6 +30,8 @@ _MIN_INTERVAL_SEC = 0.15          # ~6.6 req/s, under SEC's 10/s
 _UA_SHAPE = re.compile(r"^\S+(\s+\S+)*\s+\S+@\S+\.\S+$")      # a name, then an email
 
 HttpGet = Callable[[str, dict[str, str]], Any]
+HttpGetText = Callable[[str, dict[str, str]], str]
+_MAX_DOCUMENT_BYTES = 262_144       # a Form 4 is a few KB; refuse anything absurd
 
 
 class EdgarUnavailable(RuntimeError):
@@ -51,6 +53,13 @@ class Filing:
         return ARCHIVE_URL.format(cik=self.cik, acc=self.accession.replace("-", ""),
                                   doc=self.primary_document)
 
+    @property
+    def raw_url(self) -> str:
+        """The filing's raw document. SEC lists Form 3/4/5 under a rendering
+        folder (`xslF345X06/doc4.xml` = styled HTML); the raw XML is the bare name."""
+        return ARCHIVE_URL.format(cik=self.cik, acc=self.accession.replace("-", ""),
+                                  doc=self.primary_document.rsplit("/", 1)[-1])
+
 
 def _urllib_get(url: str, headers: dict[str, str]) -> Any:
     req = urllib.request.Request(url, headers=headers)
@@ -63,14 +72,31 @@ def _urllib_get(url: str, headers: dict[str, str]) -> Any:
         raise EdgarUnavailable(f"SEC request failed ({type(e).__name__})") from None
 
 
+def _urllib_get_text(url: str, headers: dict[str, str]) -> str:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read(_MAX_DOCUMENT_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        raise EdgarUnavailable(f"SEC HTTP {e.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise EdgarUnavailable(f"SEC request failed ({type(e).__name__})") from None
+    if len(raw) > _MAX_DOCUMENT_BYTES:
+        raise EdgarUnavailable("SEC document too large")
+    return raw.decode("utf-8", errors="replace")
+
+
 class EdgarClient:
     def __init__(self, user_agent: str, *, http_get: Optional[HttpGet] = None,
+                 http_get_text: Optional[HttpGetText] = None,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         if not user_agent or not _UA_SHAPE.match(user_agent.strip()):
             raise EdgarUnavailable(
                 f"{ENV_VAR} must be '<app name> <contact email>' (SEC fair-access policy)")
         self._headers = {"User-Agent": user_agent.strip(), "Accept-Encoding": "identity"}
         self._get = http_get or _urllib_get
+        self._get_text = http_get_text or _urllib_get_text
+        self._documents: dict[str, str] = {}
         self._sleep = sleep
         self._last = 0.0
         self._cik: Optional[dict[str, int]] = None
@@ -80,12 +106,12 @@ class EdgarClient:
     def from_env(cls, **kw: Any) -> "EdgarClient":
         return cls(os.environ.get(ENV_VAR, ""), **kw)
 
-    def _fetch(self, url: str) -> Any:
+    def _fetch(self, url: str, getter: Optional[Callable[[str, dict[str, str]], Any]] = None) -> Any:
         wait = _MIN_INTERVAL_SEC - (time.monotonic() - self._last)
         if wait > 0:
             self._sleep(wait)
         self._last = time.monotonic()
-        return self._get(url, self._headers)
+        return (getter or self._get)(url, self._headers)
 
     def _cik_for(self, ticker: str) -> Optional[int]:
         if self._cik is None:
@@ -117,3 +143,10 @@ class EdgarClient:
                     continue                                   # one bad row must not hide the rest
         self._filings[key] = out
         return out
+
+    def document_text(self, filing: Filing) -> str:
+        """The filing's raw document text (cached). Failure raises, never reads as empty."""
+        url = filing.raw_url
+        if url not in self._documents:
+            self._documents[url] = self._fetch(url, self._get_text)
+        return self._documents[url]

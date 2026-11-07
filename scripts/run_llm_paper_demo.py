@@ -103,9 +103,11 @@ def main() -> None:
             from services.market_data.edgar_earnings import EdgarEarningsEstimator
             from services.market_data.event_composite import CompositeEventSource
             from services.news.composite import CompositeNewsSource
+            from services.news.edgar_insider import EdgarInsiderNewsSource
             from services.news.edgar_news import EdgarFilingsNewsSource
             news_source = CompositeNewsSource(
-                [x for x in (news_source, EdgarFilingsNewsSource(edgar)) if x is not None])
+                [x for x in (news_source, EdgarFilingsNewsSource(edgar),
+                             EdgarInsiderNewsSource(edgar)) if x is not None])
             event_source = CompositeEventSource(
                 [x for x in (event_source, EdgarEarningsEstimator(edgar)) if x is not None])
 

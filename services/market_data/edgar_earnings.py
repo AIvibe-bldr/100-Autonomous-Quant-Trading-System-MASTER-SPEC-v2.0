@@ -18,6 +18,12 @@ UNCERTAINTY_DAYS = 7
 _YEAR = timedelta(days=364)           # keeps the weekday; the uncertainty covers the drift
 _LOOKBACK = timedelta(days=500)
 _SAME_CYCLE_DAYS = 45
+# A ticker with under ~a year of 8-K history (e.g. XOM after its 2026-07 holding-
+# company reorganisation, which gave it a new CIK) has no "same quarter last year".
+# Fall back to the quarterly cadence, with a wider margin.
+_MIN_YEAR_HISTORY = timedelta(days=300)
+QUARTER = timedelta(days=91)
+QUARTERLY_UNCERTAINTY_DAYS = 14
 
 
 class EdgarEarningsEstimator:
@@ -31,6 +37,9 @@ class EdgarEarningsEstimator:
                 past = sorted({f.filing_date for f in self._client.recent_filings(sym)
                                if f.form == "8-K" and "2.02" in f.items
                                and start - _LOOKBACK <= f.filing_date < start})
+                if past and past[0] > start - _MIN_YEAR_HISTORY:
+                    events.extend(self._quarterly(sym, past[-1], start, end))
+                    continue
                 for d in past:
                     est = d + _YEAR
                     # this quarter already reported (a real 2.02 sits near the
@@ -47,3 +56,14 @@ class EdgarEarningsEstimator:
         except EdgarUnavailable as e:
             raise EventsUnavailable(str(e)) from None
         return events
+
+    @staticmethod
+    def _quarterly(sym: str, latest: date, start: date, end: date) -> list[RiskEvent]:
+        est = latest + QUARTER
+        if not (start - timedelta(days=QUARTERLY_UNCERTAINTY_DAYS) <= est
+                <= end + timedelta(days=QUARTERLY_UNCERTAINTY_DAYS)):
+            return []
+        return [RiskEvent(
+            EventType.EARNINGS, on=est, symbol=sym, uncertainty_days=QUARTERLY_UNCERTAINTY_DAYS,
+            description=f"earnings (estimated ±{QUARTERLY_UNCERTAINTY_DAYS}d: latest 8-K Item 2.02 "
+                        f"on {latest.isoformat()} + ~91d; under a year of EDGAR history)")]
