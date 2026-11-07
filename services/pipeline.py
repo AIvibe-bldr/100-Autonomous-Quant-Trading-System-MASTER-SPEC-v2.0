@@ -68,6 +68,7 @@ from services.pdca.decision_quality import (
 from services.loss_control.engine import LossControlEngine, NoStopPlanError
 from services.market_data.service import MarketDataService, MarketDataUnavailable
 from services.market_data.universe import UniverseManager
+from services.position_sizing.correlation import max_abs_correlation_to_book
 from services.position_sizing.engine import (
     PortfolioContext,
     PositionSizingEngine,
@@ -76,6 +77,7 @@ from services.position_sizing.engine import (
 from services.quant.scanner import QuantScanner
 from services.regime.engine import (RegimeEngine, describe_universe_regime,
                                     universe_composite_bars)
+from services.reconciliation.engine import ReconciliationEngine
 from services.risk.gap_risk import gap_risk_score
 from services.risk.master_controller import (
     MasterRiskController,
@@ -111,6 +113,10 @@ class PipelineResult:
     @property
     def traded(self) -> bool:
         return self.orders_filled > 0
+
+
+def _daily_returns(closes: list[float]) -> list[float]:
+    return [b / a - 1.0 for a, b in zip(closes, closes[1:]) if a > 0]
 
 
 @dataclass
@@ -179,6 +185,12 @@ class TradingPipeline:
     # proposal) was captured, for F2's signal_age_sec (services.pipeline
     # is the only writer/reader; not a durable audit trail — see F7).
     _signal_captured_at: dict[str, datetime] = field(default_factory=dict, repr=False)
+    # Result of the latest ledger-vs-broker reconciliation (§48). False until the
+    # first reconcile of a session has run: "not yet verified" is not "consistent".
+    _reconciliation_ok: bool = field(default=False, repr=False)
+    # symbol -> max |corr| against holdings, computed at the sizing step this session
+    _book_correlation: dict[str, float] = field(default_factory=dict, repr=False)
+    reconciliation: ReconciliationEngine = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """§73: reject a mixed-environment component graph at construction.
@@ -191,6 +203,9 @@ class TradingPipeline:
         """
         require_same_environment(self.environment, self.execution.environment,
                                  self.auditor.environment)
+        self.reconciliation = ReconciliationEngine(
+            broker=self.execution.broker, ledger=self.ledger,
+            risk_controller=self.risk_controller)
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
         """Read-only view for callers outside the pipeline (the status API's
@@ -322,7 +337,8 @@ class TradingPipeline:
             symbol_themes=self.symbol_themes, drawdown=snapshot.drawdown,
             stop_plan_exists=True, gap_risk_score=0.0,
             adv_shares=self._adv_shares(symbol, now),
-            correlation_to_book=0.0, reconciliation_ok=True,
+            correlation_to_book=0.0,       # exit view: the correlation check is exempt for exits
+            reconciliation_ok=self._reconciliation_ok,
             data_health=self.integrity.health, broker_connected=self._broker_connected(),
             spread_pct=self._spread_pct(symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
@@ -426,10 +442,22 @@ class TradingPipeline:
         # while claiming to show "this session".
         self._final_theses.clear()
         self._signal_captured_at.clear()
+        self._book_correlation.clear()
 
         # 0. Exit management first: resting protective stops may have triggered
         #    since the last session (§33-34, §43)
         result.stops_triggered, _ = self.manage_open_positions(now)
+
+        # 0b. Reconcile ledger vs broker every session (§48): a mismatch halts new
+        #     entries (the engine sets HALT_NEW_ENTRIES), so stop before spending
+        #     LLM calls on decisions that cannot become orders.
+        report = self.reconciliation.reconcile()
+        self._reconciliation_ok = report.consistent
+        if not report.consistent:
+            result.no_trade_reasons.append(
+                "reconciliation mismatch — new entries halted: "
+                + "; ".join(f"{m.kind} ({m.detail})" for m in report.mismatches[:3]))
+            return result
 
         # 1. Universe + Scanner (§12, §21)
         symbols = self.universe.symbols_as_of(now.date())
@@ -579,6 +607,7 @@ class TradingPipeline:
                 existing_exposure=self._position_notional(prices, now),
                 theme_exposure=self._theme_exposure(prices, now),
                 symbol_themes=self.symbol_themes,
+                correlation_to_book=self._correlation_to_book(scan, now),
                 adv_shares=sum(b.volume for b in scan.bars[-20:]) / 20,
                 throttle_factor=throttle_factor(level, self.risk_controller.config))
             calibrated = self.calibration.calibrate(decision.confidence)
@@ -786,8 +815,8 @@ class TradingPipeline:
             drawdown=snapshot.drawdown, stop_plan_exists=True,
             gap_risk_score=sized.stop_plan.gap_risk_score,
             adv_shares=self._adv_shares(sized.proposal.symbol, now),
-            correlation_to_book=0.0,
-            reconciliation_ok=True, data_health=self.integrity.health,
+            correlation_to_book=self._book_correlation.get(sized.proposal.symbol, 0.0),
+            reconciliation_ok=self._reconciliation_ok, data_health=self.integrity.health,
             broker_connected=self._broker_connected(),
             spread_pct=self._spread_pct(sized.proposal.symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
@@ -800,6 +829,23 @@ class TradingPipeline:
                             - self._signal_captured_at[sized.proposal.proposal_id]
                             ).total_seconds(),
             margin_requirement=0.0)
+
+    def _correlation_to_book(self, scan, now: datetime) -> float:
+        """Max |corr| of the candidate's daily returns against every held name
+        (§38). Holdings whose bars cannot be fetched count as fully correlated
+        (see position_sizing/correlation.py)."""
+        held = [s for s in self.ledger.positions if s != scan.symbol]
+        series: dict[str, list[float]] = {}
+        for sym in held:
+            try:
+                bars = self.market_data.bars(sym, now, days=40, received_at=now)
+                series[sym] = _daily_returns([b.bar.close for b in bars])
+            except MarketDataUnavailable:
+                series[sym] = []
+        corr = max_abs_correlation_to_book(
+            _daily_returns([b.close for b in scan.bars]), series)
+        self._book_correlation[scan.symbol] = corr
+        return corr
 
     def _decision_time(self, now: datetime, quote: Quote) -> datetime:
         """`now`, advanced to the quote's own timestamp when the quote is at most

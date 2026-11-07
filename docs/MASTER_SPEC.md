@@ -183,15 +183,15 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 | 50-55 | `pdca/attribution.py`, `exit_optimizer.py` | 損益分解・出口最適化が未接続（`review.py` はスクリプトのみ） |
 | 68 | `services/supervisor/recovery.py` | 復旧処理が未接続 |
 | 76-79 | `services/decision/human_intent.py` | 人の意図解析が未接続 |
-| 48-49 | `services/reconciliation/engine.py` | 起動時（`run_dashboard.py`）のみ。**セッション中の定期照合なし** |
+| 48-49 | `services/reconciliation/engine.py` | ~~起動時のみ~~ → 2026-11-07 から毎セッション `run_session` 冒頭で実行（配線済み） |
 | — | `services/capital_cells/*` | 資本セル設計（`docs/capital_cell_architecture.md`）。ライブには未接続 |
 
-### C. パイプライン内のリテラル値（監査証跡・機能の空洞化）
+### C. パイプライン内のリテラル値 — 解消（2026-11-07）
 
-| 箇所 | 内容 | 重大度 |
+| 箇所 | 当初の問題 | 対応 |
 |---|---|---|
-| `services/pipeline.py`（Master Risk View 2か所）`reconciliation_ok=True` | F8 と同型。`reconcile()` が不一致で `HALT_NEW_ENTRIES` にするため**状態ゲートで実際には止まる**が、`decisions_log` の `reconciliation` チェックは常に PASS と記録される。さらにセッション中の定期照合が無いため、途中で台帳とブローカーがずれても検知されない | 中（実運用前に要対応） |
-| `services/pipeline.py` `correlation_to_book=0.0`（Risk View 2か所＋`PortfolioContext` 未指定） | §38 の相関ペナルティは**ライブフローで一度も発動しない**（相関が計算・渡されていない） | 中 |
+| `reconciliation_ok=True`（Risk View） | 監査証跡が常に PASS。セッション中の定期照合なし | `run_session` 冒頭（約定同期の直後）で `ReconciliationEngine.reconcile()` を毎回実行し、結果を Risk View に反映。不一致なら `HALT_NEW_ENTRIES` のうえ、Decision AI を呼ばずに終了（LLM費用を使わない）。照合前は `False`（未検証を一致と見なさない） |
+| `correlation_to_book=0.0` | §38 の相関ペナルティが発動しない | `services/position_sizing/correlation.py`（純関数）で候補と保有銘柄の日次リターンの最大絶対相関を計算し、サイジングと Risk View に渡す。測定不能な保有銘柄（データ不足・系列が平坦）は 1.0（分散効果なし）として扱う |
 
 ### D. 実運用（LIVE）に向けて未着手
 
@@ -201,7 +201,7 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 
 ### 優先して直すべき順（LLM不要）
 
-1. C の `reconciliation_ok` を実値化し、セッション開始時に照合を実行（`ReconciliationEngine` を再利用）。
-2. C の `correlation_to_book` を計算して渡す（`services/capital_cells/correlation.py` の再利用を先に検討）。
+1. ~~C の `reconciliation_ok` の実値化と毎セッション照合~~ 完了。
+2. ~~C の `correlation_to_book` の計算~~ 完了（`capital_cells` の相関機構は設計が別系統のため再利用せず、純関数を新設）。
 3. B のうち Decision の質に直結する news / event_calendar / corporate_actions の接続（LLM入力が変わるため、実行前に §23 報告）。
 4. D（LIVE準備）。判断事項は F5 の方式と Paper→Live 基準。
