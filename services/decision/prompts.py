@@ -10,6 +10,10 @@ never drift apart.
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from typing import Optional
+
+from packages.schemas.core import Quote
 
 from services.decision.models import DecisionContext, UntrustedText
 
@@ -43,16 +47,20 @@ def render_data_age(ctx: DecisionContext) -> str:
     return line
 
 
-def render_quote(ctx: DecisionContext) -> str:
-    q = ctx.quote
+def render_quote_line(q: Optional[Quote], as_of: Optional[datetime]) -> str:
+    """One rendering of a quote for every AI prompt (Decision and Audit)."""
     if q is None:
         return "Current quote: not available — do not assume a current price."
     spread_pct = q.spread / q.mid
     line = (f"Current quote ({q.source}, {q.ts.isoformat()}): bid {q.bid:.4f} x {q.bid_size}, "
             f"ask {q.ask:.4f} x {q.ask_size}, spread {spread_pct:.3%}")
-    if ctx.as_of is not None:
-        line += f", quote age {(ctx.as_of - q.ts).total_seconds():.0f}s"
+    if as_of is not None:
+        line += f", quote age {(as_of - q.ts).total_seconds():.0f}s"
     return line
+
+
+def render_quote(ctx: DecisionContext) -> str:
+    return render_quote_line(ctx.quote, ctx.as_of)
 
 
 def _defang(text: str) -> str:

@@ -708,8 +708,15 @@ class TradingPipeline:
 
             # 6a. Independent Audit AI (A3) — semantic gate BEFORE deterministic risk
             try:
-                audit = self.auditor.audit(sized.proposal.decision, sized, intent,
-                                           AuditContext(now=now))
+                audit_quote: Optional[Quote] = self.market_data.quote(symbol, now)
+            except MarketDataUnavailable:
+                audit_quote = None            # the audit prompt says "not available"
+            try:
+                audit = self.auditor.audit(
+                    sized.proposal.decision, sized, intent,
+                    AuditContext(now=now, quote=audit_quote,
+                                 quote_as_of=(self._decision_time(now, audit_quote)
+                                              if audit_quote else None)))
             except AuditUnavailableError as e:
                 result.no_trade_reasons.append(f"{symbol}: audit unavailable — {e}")
                 self.audit_log.record_near_miss(Stage.AUDIT, NearMissKind.OTHER, now,

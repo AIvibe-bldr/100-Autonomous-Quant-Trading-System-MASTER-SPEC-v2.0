@@ -28,7 +28,7 @@ from packages.schemas.audit import (
     MalformedAuditError,
     validate_audit_output,
 )
-from packages.schemas.core import DecisionOutput, OrderIntent, SizedProposal
+from packages.schemas.core import DecisionOutput, OrderIntent, Quote, SizedProposal
 
 AUDIT_MODEL_VERSION = "1.0.0"
 
@@ -43,6 +43,10 @@ class AuditContext:
     signal_age: timedelta = timedelta(0)
     stale_after: timedelta = timedelta(minutes=30)
     portfolio_notes: dict[str, Any] = field(default_factory=dict)
+    # Quote fetched just before the audit (None = not available, which the prompt
+    # says plainly). `quote_as_of` is the decision time its age is judged against.
+    quote: Optional[Quote] = None
+    quote_as_of: Optional[datetime] = None
 
 
 class AuditUnavailableError(RuntimeError):

@@ -46,6 +46,7 @@ from services.decision.prompts import (
     DECISION_SYSTEM_PROMPT as _DECISION_SYSTEM_PROMPT,
     build_decision_prompt as _build_decision_prompt,
     render_quote as _render_quote,
+    render_quote_line as _render_quote_line,
 )
 
 DECISION_ADAPTER_VERSION = "claude-adapter-1.0.0"
@@ -120,7 +121,9 @@ faithfully express that settled judgment? Check:
 - Symbol match between decision and order
 - Side match (a BUY decision must not become a SELL order)
 - Quantity plausibility — especially digit errors (3 vs 300)
-- Price plausibility
+- Price plausibility (a current quote is given when available; a quote that is \
+missing, old or far from the planned entry is a fact to weigh, not proof of an \
+error, and a missing quote alone is not a reason to reject)
 - Stop present, and on the correct side for a long position
 - Stop width consistent with the stated holding horizon
 - Consistency with the stated thesis and confidence
@@ -178,6 +181,18 @@ def _build_skeptic_prompt(decision: DecisionOutput, ctx: DecisionContext) -> str
     )
 
 
+def _render_audit_quote(planned_entry: float, context: AuditContext) -> str:
+    """The quote at audit time plus the drift from the decision-time entry, computed
+    here so the model does not do the arithmetic. A MARKET order fills near the ask."""
+    line = _render_quote_line(context.quote, context.quote_as_of)
+    q = context.quote
+    if q is None:
+        return line
+    drift = (q.ask - planned_entry) / planned_entry
+    return (f"{line}\nPlanned entry (ask when the trade was decided): {planned_entry:.4f}; "
+            f"current ask is {drift:+.2%} versus that. A MARKET buy fills near the ask.")
+
+
 def _build_audit_prompt(decision: DecisionOutput, sized: SizedProposal,
                         intent: OrderIntent, context: AuditContext) -> str:
     stop = sized.stop_plan
@@ -191,7 +206,8 @@ def _build_audit_prompt(decision: DecisionOutput, sized: SizedProposal,
         f"Order intent about to be sent: symbol={intent.symbol} "
         f"side={intent.side.value} qty={intent.qty} "
         f"order_type={intent.order_type.value}\n"
-        f"Signal age: {context.signal_age}\n\n"
+        f"Signal age: {context.signal_age}\n"
+        f"{_render_audit_quote(stop.entry_price, context)}\n\n"
         "Check: does the order's symbol/side/quantity genuinely match the "
         "decision and sized proposal? Is a stop present and on the correct "
         "side for a long position? Is the stop width sane for the stated "
