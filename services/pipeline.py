@@ -54,6 +54,7 @@ from services.decision.models import (
     MockDecisionModel,
     MockSkepticModel,
     validate_decision,
+    UntrustedText,
 )
 from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
@@ -68,6 +69,9 @@ from services.pdca.decision_quality import (
 from services.loss_control.engine import LossControlEngine, NoStopPlanError
 from services.market_data.service import MarketDataService, MarketDataUnavailable
 from services.market_data.universe import UniverseManager
+from services.news.engine import NewsEngine, NewsSignal
+from services.news.selection import select_for_symbol
+from services.news.source import NewsSource, NewsUnavailable
 from services.position_sizing.correlation import max_abs_correlation_to_book
 from services.position_sizing.engine import (
     PortfolioContext,
@@ -108,6 +112,8 @@ class PipelineResult:
     risk_rejected: int = 0
     orders_filled: int = 0
     no_trade_reasons: list[str] = field(default_factory=list)
+    # non-fatal data problems worth a human's attention (e.g. news fetch failed)
+    data_warnings: list[str] = field(default_factory=list)
     fills: list[BrokerFill] = field(default_factory=list)
 
     @property
@@ -164,6 +170,11 @@ class TradingPipeline:
     # so its own timestamp is slightly "later" than as_of. Up to this much is our
     # sampling lag, not a data anomaly; anything beyond it is still flagged.
     quote_sampling_lag: timedelta = timedelta(seconds=60)
+    # News → Decision AI (MASTER SPEC §17-19). None = not connected: Decision is told
+    # "news not available". The engine does dedup / reliability / injection screening.
+    news_source: Optional[NewsSource] = None
+    news_engine: NewsEngine = field(default_factory=NewsEngine)
+    news_lookback: timedelta = timedelta(days=3)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
     # order that reaches execution.submit() is durably persisted (default
     # None — fully additive, no behavior change for the many tests that
@@ -511,9 +522,13 @@ class TradingPipeline:
         sized_candidates: list[SizedProposal] = []
         prices: dict[str, float] = {}
         regime_text = self._read_regime(symbols, now)
+        news_signals, news_fetched = self._load_news([s.symbol for s in scans], now, result)
         for scan in scans[: self.max_new_positions * 3]:
+            chosen = select_for_symbol(news_signals, scan.symbol) if news_fetched else []
             ctx = DecisionContext(scan=scan, regime=regime_text,
                                   as_of=decision_times.get(scan.symbol, now),
+                                  news=[self._untrusted(s) for s in chosen],
+                                  news_fetched=news_fetched,
                                   quote=quotes.get(scan.symbol),
                                   portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
@@ -523,6 +538,10 @@ class TradingPipeline:
                                   "volatility": scan.volatility,
                                   "dollar_volume": scan.dollar_volume}
             rec.data_timestamps = {"last_bar": scan.bars[-1].ts.isoformat()}
+            if chosen:
+                rec.input_features["news_urls"] = [u for s in chosen for u in s.urls[:1]]
+                rec.data_timestamps["latest_news"] = max(
+                    s.published_at for s in chosen if s.published_at).isoformat()
             try:
                 decision = validate_decision(self.decision_model.decide(ctx))
             except MalformedDecisionError as e:
@@ -841,6 +860,38 @@ class TradingPipeline:
                             - self._signal_captured_at[sized.proposal.proposal_id]
                             ).total_seconds(),
             margin_requirement=0.0)
+
+    def _load_news(self, symbols: list[str], now: datetime,
+                   result: "PipelineResult") -> tuple[list[NewsSignal], bool]:
+        """One batched fetch for the session's candidates. (signals, fetched):
+        `fetched=False` (no source, or it failed) is reported to the model as
+        "news not available" — never as "no news". A failure does not stop the
+        session; news is advisory input, not a gate."""
+        if self.news_source is None or not symbols:
+            return [], False
+        try:
+            items = self.news_source.fetch(symbols, since=now - self.news_lookback, until=now)
+        except NewsUnavailable as e:
+            result.data_warnings.append(f"news unavailable — Decision runs without it ({e})")
+            return [], False
+        # one article at a time: the engine clusters by (tickers, day), which would
+        # merge distinct stories and let one directive-like item quarantine every
+        # legitimate story for the same symbol. Dedup state still carries across.
+        signals = [sig for item in items for sig in self.news_engine.process([item])]
+        quarantined = sum(1 for s in signals if s.injection_flagged)
+        if quarantined:
+            result.data_warnings.append(
+                f"{quarantined} news item(s) quarantined as directive-like text (§19)")
+        return signals, True
+
+    @staticmethod
+    def _untrusted(signal: NewsSignal) -> UntrustedText:
+        when = signal.published_at.isoformat() if signal.published_at else "unknown time"
+        body = f"[{signal.tier.name}, {when}] {signal.headline}"
+        if signal.summary:
+            body += f" — {signal.summary[:500]}"
+        return UntrustedText(source=signal.tier.name, url=signal.urls[0] if signal.urls else "",
+                             text=body)
 
     def _correlation_to_book(self, scan, now: datetime) -> float:
         """Max |corr| of the candidate's daily returns against every held name

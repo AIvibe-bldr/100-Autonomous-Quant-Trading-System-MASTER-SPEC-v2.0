@@ -70,6 +70,7 @@ def main() -> None:
                              "to a real broker.")
     args = parser.parse_args()
     provider = None
+    news_source = None
     if args.real_data:
         from services.market_data.alpaca_provider import AlpacaMarketDataProvider
         from services.market_data.service import MarketDataUnavailable
@@ -78,6 +79,12 @@ def main() -> None:
         except MarketDataUnavailable as e:
             sys.exit(f"--real-data: {e} (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)")
         args.days = 1      # real data has no replay; one live session
+        from services.news.alpaca_news import AlpacaNewsSource
+        from services.news.source import NewsUnavailable
+        try:
+            news_source = AlpacaNewsSource.from_env()      # same Alpaca credentials
+        except NewsUnavailable:
+            news_source = None                              # Decision is told "news not available"
 
     universe = UniverseManager()
     for s in SYMBOLS:
@@ -96,7 +103,7 @@ def main() -> None:
             CostEntry(at=at, category=CostCategory.AI, amount=usd, note=agent)))
         decision, skeptic, auditor = build_llm_stack(config=cfg, usage=usage)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
-                                  kill_switch=KillSwitch.from_env(),
+                                  kill_switch=KillSwitch.from_env(), news_source=news_source,
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor, provider=provider)
         # decision.name reflects whichever provider build_llm_stack actually
@@ -108,7 +115,7 @@ def main() -> None:
               f"  Audit AI    : {cfg.audit.agent_id}  (separate agent, same model)")
     else:
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash, provider=provider,
-                                  kill_switch=KillSwitch.from_env())
+                                  kill_switch=KillSwitch.from_env(), news_source=news_source)
         print("=== No Anthropic credentials found — using deterministic Mock "
               "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")
@@ -122,6 +129,8 @@ def main() -> None:
               f"risk_passed {result.risk_passed} → filled {result.orders_filled}")
         for f in result.fills:
             print(f"  FILL {f.side.value} {f.qty:g} {f.symbol} @ {f.price:.2f}")
+        for w in result.data_warnings:
+            print(f"  DATA WARNING: {w}")
         if not result.traded:
             print("  NO TRADE — top reasons:")
             for r in result.no_trade_reasons[:5]:

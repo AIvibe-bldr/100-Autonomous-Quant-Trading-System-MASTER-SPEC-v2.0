@@ -171,7 +171,7 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 
 | 仕様§ | モジュール | 影響 |
 |---|---|---|
-| 17-19 | `services/news` | Decision AI に**ニュースが渡らない**（`DecisionContext.news` は常に空）。価格系特徴量のみで判断している |
+| 17-19 | `services/news` | ~~Decision AI にニュースが渡らない~~ → 2026-11-07 から接続（下記「ニュース接続」）。実行は `--real-data` のデモのみ |
 | 20 | `services/institutional` | 同上（機関投資家フロー未使用） |
 | 16 | `services/market_data/event_calendar.py` | 決算等のイベント回避が働かない（Decision も「イベント不明」と指摘） |
 | 15 | `services/market_data/corporate_actions.py` | 分割・配当調整が未反映 |
@@ -205,3 +205,14 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 2. ~~C の `correlation_to_book` の計算~~ 完了（`capital_cells` の相関機構は設計が別系統のため再利用せず、純関数を新設）。
 3. B のうち Decision の質に直結する news / event_calendar / corporate_actions の接続（LLM入力が変わるため、実行前に §23 報告）。
 4. D（LIVE準備）。判断事項は F5 の方式と Paper→Live 基準。
+
+### ニュース接続（2026-11-07）
+
+- 取得元: `services/news/alpaca_news.py`（Alpaca ニュース API、市場データと同じ `APCA_*` キー。データのみ）。HTTP は注入可能でテストはオフライン。
+- 流れ: 取得（セッションごとに1回、全候補をまとめて）→ `NewsEngine`（記事ごとに処理。重複排除・信頼度・プロンプトインジェクション検出）→ `services/news/selection.py`（銘柄ごとに選別）→ `DecisionContext.news`（`UntrustedText`）→ プロンプト。
+- 選別: 注入疑いは隔離（件数を `PipelineResult.data_warnings` に出力）／7銘柄以上にタグ付けされた記事は除外／タグ数が少ない記事ほど優先／最大3件・本文500文字。
+- 先読み防止: 決定時刻より後に公開された記事は渡さない（取得元とエンジン入力の両方）。
+- 出典の格付け: `benzinga` のみ MAJOR_MEDIA。未分類の出典は SNS（最低位）。
+- 失敗時: セッションは止めず、プロンプトに「News: not available」と明示（「ニュースなし」とは別の文言）。`data_warnings` に記録。
+- 追加した防御: 記事本文に `</untrusted_external_data>` 等があっても枠を破れないよう `< > "` を無害化。
+- 既知の限界: `NewsEngine` のクラスタリング（銘柄の組＋日付）は粗く、パイプラインでは記事ごとに処理して回避している。方向性（direction）・影響度（impact）はキーワードによる粗い推定で、Decision AI には渡していない（見出し・要約・出典・時刻のみ）。Alpaca ニュースには集約サイトの再掲が混ざり、出典の信頼度は粗い。ニュースは助言的入力であり、売買の可否は引き続き Risk 側が決める。

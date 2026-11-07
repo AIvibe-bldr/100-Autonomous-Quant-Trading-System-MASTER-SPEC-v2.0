@@ -41,6 +41,9 @@ class DecisionContext:
     # the quote that already passed the pipeline's integrity gate; None means
     # "not provided" and is rendered as such — never as a fabricated price.
     quote: Optional[Quote] = None
+    # True when a news fetch succeeded (an empty `news` then means "none found");
+    # False means news was not provided / unavailable — a different statement.
+    news_fetched: bool = False
     news: list[UntrustedText] = field(default_factory=list)
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
