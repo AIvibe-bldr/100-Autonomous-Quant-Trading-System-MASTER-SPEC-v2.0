@@ -10,6 +10,8 @@ from __future__ import annotations
 import abc
 from datetime import datetime
 
+from packages.common.environment import Environment
+
 from packages.schemas.core import (
     BrokerAck,
     BrokerCashBalance,
@@ -33,6 +35,13 @@ class BrokerDisconnectedError(RuntimeError):
 
 
 class BrokerAdapter(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def environment(self) -> Environment:
+        """The environment this adapter's endpoint actually is (§73). An adapter reports
+        what it is connected to — never what the caller wishes — so the Execution Engine
+        can refuse a LIVE endpoint inside a PAPER graph and vice versa."""
+
     @abc.abstractmethod
     def submit_order(self, order: BrokerOrderRequest) -> BrokerAck: ...
 

@@ -473,7 +473,7 @@ class TradingPipeline:
 
         # 0a. Operator kill switch (F5): exits above already ran; stop before any
         #     LLM spend. Mid-session engagement is caught again before each entry.
-        blocked = self.execution.entries_blocked_by_kill_switch()
+        blocked = self.execution.entries_blocked()
         if blocked:
             result.no_trade_reasons.append(blocked)
             return result
@@ -754,7 +754,7 @@ class TradingPipeline:
                 continue
             result.audit_passed += 1
 
-            blocked = self.execution.entries_blocked_by_kill_switch()
+            blocked = self.execution.entries_blocked()
             if blocked:
                 result.no_trade_reasons.append(f"{symbol}: {blocked}")
                 continue

@@ -21,6 +21,7 @@ from packages.broker_adapters.base import (
     DuplicateClientOrderIdError,
 )
 from packages.common.clock import Clock, ensure_utc
+from packages.common.environment import Environment
 from packages.common.quote_unavailable import QuoteUnavailableError
 from packages.schemas.core import (
     Action,
@@ -67,6 +68,10 @@ class PaperBroker(BrokerAdapter):
         self._positions: dict[str, BrokerPosition] = {}
         self._all_fills: list[BrokerFill] = []
         self.fault: Fault = Fault.NONE
+
+    @property
+    def environment(self) -> Environment:
+        return Environment.PAPER          # a simulation is never anything else
 
     # -- fault helpers ------------------------------------------------------
     def _check_disconnect(self) -> None:

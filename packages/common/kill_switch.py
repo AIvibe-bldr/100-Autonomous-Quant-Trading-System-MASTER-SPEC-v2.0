@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from packages.common.flag_file import write_with_audit
+
 DEFAULT_PATH = "var/kill_switch.json"
 ENV_VAR = "QUANT_KILL_SWITCH_FILE"
 
@@ -79,14 +81,7 @@ class KillSwitch:
             raise ValueError("kill switch changes need a named operator and a reason")
         entry = {"action": action, "engaged": engaged, "operator": operator,
                  "reason": reason, "at": at.isoformat()}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.log_path.open("a") as log:           # audit first: never lose the record
-            log.write(json.dumps(entry) + "\n")
-            log.flush()
-            os.fsync(log.fileno())
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(entry))
-        os.replace(tmp, self.path)
+        write_with_audit(self.path, entry)
 
 
 def describe(status: Optional[KillSwitchStatus]) -> str:

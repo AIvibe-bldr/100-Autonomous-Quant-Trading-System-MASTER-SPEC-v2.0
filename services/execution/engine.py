@@ -23,7 +23,8 @@ from packages.broker_adapters.base import (
 )
 from packages.common.clock import Clock
 from packages.common.durable_store import DurableOrderStore
-from packages.common.environment import Environment
+from packages.common.environment import Environment, require_same_environment
+from packages.common.live_gate import LiveGate
 from packages.common.kill_switch import KillSwitch
 from packages.schemas.audit import ApprovedOrderSnapshot
 from packages.schemas.core import (
@@ -49,6 +50,10 @@ class UnauthorizedOrderError(RuntimeError):
 
 class KillSwitchEngagedError(RuntimeError):
     """An operator kill switch is engaged: new entries are not sent (F5)."""
+
+
+class LiveGateClosedError(RuntimeError):
+    """LIVE entry attempted without a valid, unexpired human approval (MASTER SPEC §105-106)."""
 
 
 class OrderTamperError(RuntimeError):
@@ -79,8 +84,14 @@ class ExecutionEngine:
     _slippage_checked: set[str] = field(default_factory=set)
     # F5: operator kill switch (flag file). None = not configured (tests).
     kill_switch: Optional[KillSwitch] = None
+    # §105-106: human approval required for LIVE entries; mandatory when environment is LIVE
+    live_gate: Optional[LiveGate] = None
 
     def __post_init__(self) -> None:
+        # §73: the broker's own endpoint must be the environment this engine runs in
+        require_same_environment(self.environment, self.broker.environment)
+        if self.environment.is_live and self.live_gate is None:
+            raise LiveGateClosedError("a LIVE execution engine cannot be built without a LiveGate")
         if self.circuit_breaker is None:
             cfg = self.risk_controller.config
             self.circuit_breaker = RejectionCircuitBreaker(
@@ -103,6 +114,29 @@ class ExecutionEngine:
         if self.risk_controller.state is not RiskState.HALT_NEW_ENTRIES:
             self.risk_controller.set_state(RiskState.HALT_NEW_ENTRIES, reason=reason)
         return reason
+
+    def entries_blocked_by_live_gate(self) -> Optional[str]:
+        """In LIVE: the reason entries are not approved right now, else None. Moves the
+        controller to HALT_NEW_ENTRIES so the closed gate is visible as a risk state.
+        Never blocks exits. Outside LIVE the gate does not apply."""
+        if not self.environment.is_live:
+            return None
+        status = self.live_gate.status(self.clock.now())
+        if not status.is_open:
+            reason = f"LIVE gate closed: {status.detail}"
+        elif self.risk_controller.config.exposure_cap_stage > status.max_exposure_stage:
+            reason = (f"LIVE gate: configured exposure stage "
+                      f"{self.risk_controller.config.exposure_cap_stage} exceeds the approved "
+                      f"{status.max_exposure_stage}")
+        else:
+            return None
+        if self.risk_controller.state is not RiskState.HALT_NEW_ENTRIES:
+            self.risk_controller.set_state(RiskState.HALT_NEW_ENTRIES, reason=reason)
+        return reason
+
+    def entries_blocked(self) -> Optional[str]:
+        """First operator-level reason new entries must not go out (kill switch, LIVE gate)."""
+        return self.entries_blocked_by_kill_switch() or self.entries_blocked_by_live_gate()
 
     def submit(self, order: RiskApprovedOrder,
                snapshot: Optional[ApprovedOrderSnapshot] = None,
@@ -127,6 +161,9 @@ class ExecutionEngine:
             blocked = self.entries_blocked_by_kill_switch()
             if blocked:
                 raise KillSwitchEngagedError(f"{intent.client_order_id}: {blocked}")
+            gate_blocked = self.entries_blocked_by_live_gate()
+            if gate_blocked:
+                raise LiveGateClosedError(f"{intent.client_order_id}: {gate_blocked}")
         # F3: the in-memory dict alone doesn't survive a restart — when a
         # durable store is configured, it is the source of truth for
         # idempotency across a crash, not just within this process. Checked

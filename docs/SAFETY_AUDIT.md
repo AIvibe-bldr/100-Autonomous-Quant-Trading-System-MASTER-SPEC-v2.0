@@ -23,6 +23,10 @@ risk in §1 of the instruction ("誤ってProduction Brokerへ注文") is
 therefore **structurally impossible in the current codebase**, not because
 of a `LIVE_TRADING=false` flag, but because there is nothing to flip it to.
 
+*(Update 2026-11-07: still true. In addition, a LIVE gate now exists in code — `packages/common/live_gate.py`,
+see `docs/paper_live_gate.md` — so that once a real adapter exists, LIVE entries need a named, expiring human
+approval, and a broker's own environment must match the engine's.)*
+
 This does not make the audit moot — it changes what "P0" means. The real
 P0 risk here is **that this fact stops being true without anyone deciding
 it should**: the day someone adds a real broker adapter, every gap below

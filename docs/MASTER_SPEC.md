@@ -163,7 +163,7 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 | 72-74 | `packages/common/security.py` | 専用ファイルなし。HMAC署名＝`services/risk/master_controller.py`、未信頼テキスト＝`services/decision/models.py`（`UntrustedText`） |
 | 98-99 | `packages/common/versioning.py` | 専用モジュールなし。version は各スキーマ／ログの列として保持（`packages/common/experiments.py` 等） |
 | 103 | `docs/phases.md` | 未作成 |
-| 104-106 | `docs/paper_live_gate.md` | 未作成（Paper→Live 移行基準は未定義） |
+| 104-106 | `docs/paper_live_gate.md` | **案（未承認）**。LIVEゲート／環境紐付けはコード済み。移行基準の数値は運用者の判断待ち |
 
 ### B. 実装済みだがライブのパイプラインに配線されていないもの
 
@@ -195,7 +195,7 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 
 ### D. 実運用（LIVE）に向けて未着手
 
-- 実ブローカーアダプタ（現状 `PaperBroker` のみ）、LIVE ゲート／Paper→Live 基準（`docs/paper_live_gate.md` 未作成）
+- 実ブローカーアダプタ（現状 `PaperBroker` のみ。接続前に解決すべき課題 T1〜T8 は `docs/paper_live_gate.md` §2）。LIVEゲートは実装済み（2026-11-07）。Paper→Live 基準は案（`docs/paper_live_gate.md`、運用者の承認待ち）
 - ~~緊急停止（F5）~~ 完了（ファイル方式、`scripts/kill_switch.py`）。異常スリッページ・ハートビート異常のアラート（F6/F10 の残り）は未着手
 - 複数日のペーパー成績の記録・モデル比較（永続化は注文／監査ログのみ）
 
