@@ -448,6 +448,13 @@ class TradingPipeline:
         #    since the last session (§33-34, §43)
         result.stops_triggered, _ = self.manage_open_positions(now)
 
+        # 0a. Operator kill switch (F5): exits above already ran; stop before any
+        #     LLM spend. Mid-session engagement is caught again before each entry.
+        blocked = self.execution.entries_blocked_by_kill_switch()
+        if blocked:
+            result.no_trade_reasons.append(blocked)
+            return result
+
         # 0b. Reconcile ledger vs broker every session (§48): a mismatch halts new
         #     entries (the engine sets HALT_NEW_ENTRIES), so stop before spending
         #     LLM calls on decisions that cannot become orders.
@@ -697,6 +704,11 @@ class TradingPipeline:
                                       had_stop_plan=True, skeptic_consulted=True)
                 continue
             result.audit_passed += 1
+
+            blocked = self.execution.entries_blocked_by_kill_switch()
+            if blocked:
+                result.no_trade_reasons.append(f"{symbol}: {blocked}")
+                continue
 
             # 6b. deterministic Master Risk Controller — the FINAL barrier (A3-4)
             view = self._risk_view(sized, prices, now)

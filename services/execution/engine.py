@@ -23,8 +23,10 @@ from packages.broker_adapters.base import (
 from packages.common.clock import Clock
 from packages.common.durable_store import DurableOrderStore
 from packages.common.environment import Environment
+from packages.common.kill_switch import KillSwitch
 from packages.schemas.audit import ApprovedOrderSnapshot
 from packages.schemas.core import (
+    Action,
     BrokerFill,
     BrokerOrderRequest,
     OrderState,
@@ -37,6 +39,10 @@ from services.risk.master_controller import MasterRiskController, RiskState
 
 class UnauthorizedOrderError(RuntimeError):
     """Order lacked a valid risk approval — the pipeline was bypassed (§7)."""
+
+
+class KillSwitchEngagedError(RuntimeError):
+    """An operator kill switch is engaged: new entries are not sent (F5)."""
 
 
 class OrderTamperError(RuntimeError):
@@ -61,12 +67,28 @@ class ExecutionEngine:
     _snapshots: dict[str, ApprovedOrderSnapshot] = field(default_factory=dict)
     # F6: rate trigger for broker rejections; built from RiskConfig unless injected
     circuit_breaker: Optional[RejectionCircuitBreaker] = None
+    # F5: operator kill switch (flag file). None = not configured (tests).
+    kill_switch: Optional[KillSwitch] = None
 
     def __post_init__(self) -> None:
         if self.circuit_breaker is None:
             cfg = self.risk_controller.config
             self.circuit_breaker = RejectionCircuitBreaker(
                 cfg.circuit_breaker_max_rejections, cfg.circuit_breaker_window_sec, self.clock)
+
+    def entries_blocked_by_kill_switch(self) -> Optional[str]:
+        """The reason when the operator kill switch is engaged, else None. When
+        engaged it also moves the controller to HALT_NEW_ENTRIES, which (unlike
+        the flag) stays until a human restarts the runner — no auto-resume."""
+        if self.kill_switch is None:
+            return None
+        status = self.kill_switch.status()
+        if not status.engaged:
+            return None
+        reason = f"kill switch engaged by {status.operator}: {status.reason}"
+        if self.risk_controller.state is not RiskState.HALT_NEW_ENTRIES:
+            self.risk_controller.set_state(RiskState.HALT_NEW_ENTRIES, reason=reason)
+        return reason
 
     def submit(self, order: RiskApprovedOrder,
                snapshot: Optional[ApprovedOrderSnapshot] = None) -> OrderState:
@@ -79,6 +101,12 @@ class ExecutionEngine:
         if intent.environment is not self.environment:
             raise UnauthorizedOrderError(
                 f"environment mismatch: order={intent.environment} engine={self.environment}")
+        # F5: last line of defence — an ENTRY never reaches the broker while the
+        # kill switch is engaged. Protective stops and exits (SELL) are unaffected.
+        if intent.side is Action.BUY:
+            blocked = self.entries_blocked_by_kill_switch()
+            if blocked:
+                raise KillSwitchEngagedError(f"{intent.client_order_id}: {blocked}")
         # F3: the in-memory dict alone doesn't survive a restart — when a
         # durable store is configured, it is the source of truth for
         # idempotency across a crash, not just within this process. Checked

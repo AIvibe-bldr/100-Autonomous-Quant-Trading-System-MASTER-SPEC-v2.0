@@ -36,6 +36,7 @@ from services.cost_manager.engine import CostCategory, CostEntry
 from packages.common.llm_client import DEFAULT_MODEL_CONFIG, credentials_available
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.reconciliation.engine import ReconciliationEngine
+from packages.common.kill_switch import KillSwitch
 from tests.conftest import SYMBOLS, build_pipeline
 
 
@@ -95,6 +96,7 @@ def main() -> None:
             CostEntry(at=at, category=CostCategory.AI, amount=usd, note=agent)))
         decision, skeptic, auditor = build_llm_stack(config=cfg, usage=usage)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
+                                  kill_switch=KillSwitch.from_env(),
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor, provider=provider)
         # decision.name reflects whichever provider build_llm_stack actually
@@ -105,7 +107,8 @@ def main() -> None:
               f"  Skeptic AI  : {cfg.skeptic.agent_id}\n"
               f"  Audit AI    : {cfg.audit.agent_id}  (separate agent, same model)")
     else:
-        pipeline = build_pipeline(clock, universe, initial_cash=args.cash, provider=provider)
+        pipeline = build_pipeline(clock, universe, initial_cash=args.cash, provider=provider,
+                                  kill_switch=KillSwitch.from_env())
         print("=== No Anthropic credentials found — using deterministic Mock "
               "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")

@@ -65,7 +65,8 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
                    decision_model=None, skeptic_model=None,
                    auditor: IndependentAuditor | None = None,
                    cost_engine: OperatingCostEngine | None = None,
-                   wall_clock=None, audit_store=None, provider=None) -> TradingPipeline:
+                   wall_clock=None, audit_store=None, provider=None,
+                   kill_switch=None) -> TradingPipeline:
     """decision_model / skeptic_model / auditor default to the deterministic
     Mocks (keeps tests network-free and reproducible); pass real Claude
     adapters (services.decision.claude_adapters.build_llm_stack) to run the
@@ -80,7 +81,7 @@ def build_pipeline(clock: FrozenClock, universe: UniverseManager,
     risk = MasterRiskController(config=cfg, calendar=calendar, clock=clock)
     sm = OrderStateMachine(clock=clock)
     execution = ExecutionEngine(broker=broker, risk_controller=risk, state_machine=sm,
-                                clock=clock, environment=env)
+                                clock=clock, environment=env, kill_switch=kill_switch)
     return TradingPipeline(
         environment=env, clock=clock, market_data=md, universe=universe,
         scanner=QuantScanner(md, min_dollar_volume=1_000_000),

@@ -410,7 +410,27 @@ that already call `reconcile()` post-session are unaffected.
 
 ### P1 — needed before Live, not urgent for continued Paper development
 
-#### F5. No operator-facing Kill Switch — DEFERRED, analysis recorded
+#### F5. No operator-facing Kill Switch — RESOLVED (file-based; 2026-11-07)
+
+**Resolution (2026-11-07).** Implemented as the audit's path 2 with the IPC it said was missing:
+a flag **file** (`QUANT_KILL_SWITCH_FILE`, default `var/kill_switch.json`) read by the runner, so no
+write endpoint is added and `apps/api` stays read-only (it only gains `GET /kill-switch`).
+
+- `packages/common/kill_switch.py`: atomic write, append-only audit log (`<flag>.log`, who/when/why),
+  operator and reason mandatory, **unreadable/corrupt flag = engaged** (fail closed).
+- `scripts/kill_switch.py status|engage|clear` (CLI). There is no auto-resume: `clear` removes the
+  flag, and a runner that already halted stays in `HALT_NEW_ENTRIES` until it is restarted.
+- Enforcement: `ExecutionEngine.entries_blocked_by_kill_switch()` — checked at the start of each
+  `run_session` (after exit management, before reconciliation and any LLM call), before each entry's
+  risk review, and inside `ExecutionEngine.submit` for BUY orders (last line of defence). Protective
+  stops and exits (SELL) are never blocked (MASTER SPEC §43). The state change goes through
+  `set_state`, so the F10 alert fires.
+- **Limits:** it halts new entries only (no forced liquidation — `SAFE_EXIT` is not exposed); it acts at
+  the next check, not inside an in-flight broker call; the flag file is only as protected as the
+  filesystem permissions of the host. If a continuously-running authenticated runner is built later,
+  revisit an authenticated endpoint under §23/§29.
+
+**Original analysis (deferred before this resolution):**
 
 **Deferred, not fixed.** Investigated during the P1 pass after F1-F4/F7/F9,
 and deliberately not implemented for a structural reason found while

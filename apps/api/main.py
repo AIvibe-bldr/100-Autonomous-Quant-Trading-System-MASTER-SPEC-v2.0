@@ -73,6 +73,17 @@ def create_app(pipeline: TradingPipeline,
         """Self-contained dashboard UI (§86-97). Read-only like every route."""
         return DASHBOARD_HTML.read_text()
 
+    @app.get("/kill-switch")
+    def kill_switch_status() -> dict[str, Any]:
+        """F5 (read-only): whether the operator kill switch is engaged. It is
+        engaged/cleared with scripts/kill_switch.py — never through this API."""
+        ks = pipeline.execution.kill_switch
+        if ks is None:
+            return {"configured": False}
+        st = ks.status()
+        return {"configured": True, "engaged": st.engaged, "operator": st.operator,
+                "reason": st.reason, "at": st.at}
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         """§97 + §73: environment badge and MASTER STOP state are always visible."""
