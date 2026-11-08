@@ -29,17 +29,14 @@ from services.risk.master_controller import MasterRiskController
 # a Tuesday with US market open (14:30 ET-open in UTC is 13:30 EDT... use 15:00 UTC = 11:00 ET)
 SESSION_TIME = datetime(2026, 8, 11, 15, 0, tzinfo=timezone.utc)
 
-SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMD", "AVGO", "TSLA", "AMZN", "GOOG", "META", "NFLX",
-           "PLTR", "CRWD", "PANW", "SNOW", "DDOG", "MRNA", "PFE", "XOM", "CVX", "JPM"]
+from services.composition import DEFAULT_SYMBOLS as SYMBOLS  # noqa: E402  (tests import these names)
+from services.composition import DEFAULT_THEMES as THEMES  # noqa: E402,F401
+from services.composition import build_paper_pipeline  # noqa: E402
 
-THEMES = {
-    "NVDA": ["AI", "Semiconductor"], "AMD": ["AI", "Semiconductor"],
-    "AVGO": ["AI", "Semiconductor"], "AAPL": ["Consumer"], "MSFT": ["AI", "SaaS"],
-    "TSLA": ["EV"], "AMZN": ["Consumer"], "GOOG": ["AI"], "META": ["AI"],
-    "NFLX": ["Consumer"], "PLTR": ["AI"], "CRWD": ["SaaS"], "PANW": ["SaaS"],
-    "SNOW": ["SaaS"], "DDOG": ["SaaS"], "MRNA": ["Biotech"], "PFE": ["Healthcare"],
-    "XOM": ["Energy"], "CVX": ["Energy"], "JPM": ["Finance"],
-}
+
+def build_pipeline(clock: FrozenClock, universe: UniverseManager, **kwargs) -> TradingPipeline:
+    """Test entry point; the wiring itself lives in services/composition.py."""
+    return build_paper_pipeline(clock, universe, **kwargs)
 
 
 @pytest.fixture
@@ -57,50 +54,6 @@ def universe() -> UniverseManager:
     um.add(UniverseSymbol(symbol="DEADCO", listed_from=date(2015, 1, 1),
                           delisted_at=date(2024, 1, 1)))
     return um
-
-
-def build_pipeline(clock: FrozenClock, universe: UniverseManager,
-                   initial_cash: float = 1000.0,
-                   config: RiskConfig | None = None,
-                   decision_model=None, skeptic_model=None,
-                   auditor: IndependentAuditor | None = None,
-                   cost_engine: OperatingCostEngine | None = None,
-                   wall_clock=None, audit_store=None, provider=None,
-                   kill_switch=None, news_source=None,
-                   event_source=None) -> TradingPipeline:
-    """decision_model / skeptic_model / auditor default to the deterministic
-    Mocks (keeps tests network-free and reproducible); pass real Claude
-    adapters (services.decision.claude_adapters.build_llm_stack) to run the
-    pipeline against the actual API — see scripts/run_llm_paper_demo.py."""
-    env = Environment.PAPER
-    cfg = config or RiskConfig()
-    md = MarketDataService(provider or MockProvider())
-    ledger = Ledger(initial_cash=initial_cash)
-    broker = PaperBroker(quote_fn=lambda s: md.quote(s, clock.now()), clock=clock,
-                         initial_cash=initial_cash)
-    calendar = TradingCalendar()
-    risk = MasterRiskController(config=cfg, calendar=calendar, clock=clock)
-    sm = OrderStateMachine(clock=clock)
-    execution = ExecutionEngine(broker=broker, risk_controller=risk, state_machine=sm,
-                                clock=clock, environment=env, kill_switch=kill_switch)
-    return TradingPipeline(
-        environment=env, clock=clock, market_data=md, universe=universe,
-        scanner=QuantScanner(md, min_dollar_volume=1_000_000),
-        integrity=DataIntegrityEngine(),
-        decision_model=decision_model or MockDecisionModel(),
-        skeptic=skeptic_model or MockSkepticModel(),
-        calibration=CalibrationTracker(),
-        loss_control=LossControlEngine(),
-        sizing=PositionSizingEngine(config=cfg),
-        allocation=CapitalAllocationEngine(config=cfg),
-        risk_controller=risk, execution=execution, ledger=ledger,
-        provenance=ProvenanceStore(env), wall_clock=wall_clock or Clock(),
-        audit_store=audit_store,
-        # V1 paper mode: audit every order to collect data (A3-6)
-        auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
-                                              audit_all=True),
-        cost_engine=cost_engine, symbol_themes=THEMES, news_source=news_source,
-        event_source=event_source)
 
 
 @pytest.fixture

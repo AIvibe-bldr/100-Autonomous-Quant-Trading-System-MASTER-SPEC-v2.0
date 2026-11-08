@@ -673,9 +673,9 @@ transition into `HALT_NEW_ENTRIES`/`SAFE_EXIT`/`FULL_BROKER_DISCONNECT` (so the 
 covered). **Heartbeat (2026-11-07):** `services/supervisor/heartbeat_alerts.py` (`HeartbeatAlerter`) sends one
 CRITICAL when a service ENTERS ERROR (missing, stale or self-reported), stays silent while it remains
 there, and a WARNING on recovery; an empty registry is not alerted. `TradingPipeline.heartbeat_alerter`
-(optional) checks at each session start. **Not done:** nothing produces heartbeats yet (only the API
-reads a registry), so in practice the alerter has nothing to watch until a runner reports them; and
-a real destination (Slack/e-mail) is a deployment-time choice.
+(optional) checks at each session start. **Update 2026-11-08:** the session runner (`services/supervisor/runner.py`) now produces the heartbeats and drives
+the alerter. **Still not done:** a real destination (Slack/e-mail), and an external watcher for a dead runner
+(it cannot alert about itself).
 
 **Scope.** New small interface in `services/supervisor/`.
 

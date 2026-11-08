@@ -73,43 +73,17 @@ def main() -> None:
     news_source = None
     event_source = None
     if args.real_data:
-        from services.market_data.alpaca_provider import AlpacaMarketDataProvider
+        from services.composition import build_real_data_sources
         from services.market_data.service import MarketDataUnavailable
         try:
-            provider = AlpacaMarketDataProvider.from_env()
+            sources = build_real_data_sources()
         except MarketDataUnavailable as e:
             sys.exit(f"--real-data: {e} (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)")
+        provider, news_source, event_source = (sources.provider, sources.news_source,
+                                               sources.event_source)
+        for note in sources.notices:
+            print(f"({note})")
         args.days = 1      # real data has no replay; one live session
-        from services.news.alpaca_news import AlpacaNewsSource
-        from services.news.source import NewsUnavailable
-        from services.market_data.alpaca_events import AlpacaCorporateActionsSource
-        from services.market_data.event_source import EventsUnavailable
-        try:
-            event_source = AlpacaCorporateActionsSource.from_env()
-        except EventsUnavailable:
-            event_source = None
-        try:
-            news_source = AlpacaNewsSource.from_env()      # same Alpaca credentials
-        except NewsUnavailable:
-            news_source = None                              # Decision is told "news not available"
-        # SEC EDGAR (8-K filings as tier-1 news + earnings-date estimates) needs an
-        # operator-supplied contact in QUANT_SEC_USER_AGENT; without it, skipped.
-        from services.market_data.edgar_client import EdgarClient, EdgarUnavailable
-        try:
-            edgar = EdgarClient.from_env()
-        except EdgarUnavailable as e:
-            print(f"(EDGAR disabled: {e})")
-        else:
-            from services.market_data.edgar_earnings import EdgarEarningsEstimator
-            from services.market_data.event_composite import CompositeEventSource
-            from services.news.composite import CompositeNewsSource
-            from services.news.edgar_insider import EdgarInsiderNewsSource
-            from services.news.edgar_news import EdgarFilingsNewsSource
-            news_source = CompositeNewsSource(
-                [x for x in (news_source, EdgarFilingsNewsSource(edgar),
-                             EdgarInsiderNewsSource(edgar)) if x is not None])
-            event_source = CompositeEventSource(
-                [x for x in (event_source, EdgarEarningsEstimator(edgar)) if x is not None])
 
     universe = UniverseManager()
     for s in SYMBOLS:
