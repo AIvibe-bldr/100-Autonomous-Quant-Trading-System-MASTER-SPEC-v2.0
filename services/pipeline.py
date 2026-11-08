@@ -516,7 +516,12 @@ class TradingPipeline:
         equity = self.ledger.snapshot(self.mark_prices({}, as_of)).equity
         self._emit("on_session_end", SessionEndEvent(as_of=as_of, result=result,
                                                      price_on=self._close_on_or_before,
-                                                     equity=equity), result)
+                                                     equity=equity,
+                                                     ledger_cash=self.ledger.cash,
+                                                     ledger_positions={
+                                                         sym: lot.qty
+                                                         for sym, lot in self.ledger.positions.items()}),
+                   result)
         return result
 
     def _emit(self, hook: str, event, result: PipelineResult) -> None:
@@ -958,7 +963,8 @@ class TradingPipeline:
                     self._emit("on_fill", FillEvent(
                         symbol=f.symbol, side=f.side, qty=f.qty, price=f.price, fees=f.fees,
                         ts=f.ts, client_order_id=f.client_order_id,
-                        reference_price=sized.stop_plan.entry_price), result)
+                        reference_price=sized.stop_plan.entry_price,
+                        source=sized.proposal.source.value), result)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
                 self._persist_audit_record(log_rec, now)

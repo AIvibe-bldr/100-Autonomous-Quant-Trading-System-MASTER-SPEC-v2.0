@@ -46,6 +46,7 @@ class FillEvent:
     ts: datetime
     client_order_id: str
     reference_price: Optional[float]
+    source: Optional[str] = None          # who originated an entry: "AI" or "HUMAN" (None = not known here)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,9 @@ class SessionEndEvent:
     result: "PipelineResult"
     price_on: PriceOn
     equity: float                         # marked at session time, after the session's trades
+    # the books as plain numbers, for observers that audit them (e.g. the capital-cell mirror)
+    ledger_cash: float = 0.0
+    ledger_positions: Optional[dict[str, float]] = None
 
 
 class SessionObserver:

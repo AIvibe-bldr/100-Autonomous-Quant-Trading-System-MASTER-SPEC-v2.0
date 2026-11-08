@@ -52,11 +52,14 @@ def test_a_week_with_every_observer_records_valid_summaries_and_changes_no_trade
         assert a.data_warnings == 0
     detail = json.loads(got[-1].detail_json)
     assert set(detail["observers"]) == {"forecast", "attribution", "exit_review", "daily_review",
-                                        "shadow", "human_vs_ai", "pit"}
+                                        "shadow", "human_vs_ai", "capital_cells", "pit"}
     assert detail["observers"]["forecast"]["recorded"] > 0
     assert detail["observers"]["shadow"]["sessions"] >= 4
     assert detail["observers"]["daily_review"]["grades"]["overall"] in "ABCDF"
     assert detail["observers"]["pit"]["decisions_recorded"] > 0
+    cells = detail["observers"]["capital_cells"]
+    assert cells["errors"] == [] and cells["reconciliation"]["sessions_checked"] == 6
+    assert cells["reconciliation"]["sessions_inconsistent"] == 0                 # the cells add up to the books
     assert "disagreement_multipliers" in detail
 
 
