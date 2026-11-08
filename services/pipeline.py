@@ -63,6 +63,14 @@ from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
+from services.decision.disagreement import (
+    ModelDisagreementEngine,
+    decision_lean,
+    news_lean,
+    quant_lean,
+    regime_lean,
+    skeptic_lean,
+)
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.sources import (
     FlowUnavailable,
@@ -118,6 +126,8 @@ class PipelineResult:
     stop_planned: int = 0
     protective_stops_placed: int = 0
     stops_triggered: int = 0
+    # §30: symbol -> size multiplier applied for model disagreement (1.0 = unanimous)
+    disagreement_multipliers: dict[str, float] = field(default_factory=dict)
     sized: int = 0
     allocated: int = 0
     audit_passed: int = 0
@@ -200,6 +210,7 @@ class TradingPipeline:
     # ownership filings need a source (None = not connected, stated to the model as unavailable).
     flow_filings_source: Optional[OwnershipFilingsSource] = None
     flow_engine: InstitutionalFlowEngine = field(default_factory=InstitutionalFlowEngine)
+    disagreement: ModelDisagreementEngine = field(default_factory=ModelDisagreementEngine)
     # Read-only listeners (services/pdca/observer.py): they record and grade, never decide.
     observers: list[SessionObserver] = field(default_factory=list)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
@@ -717,6 +728,15 @@ class TradingPipeline:
                 adv_shares=sum(b.volume for b in scan.bars[-20:]) / 20,
                 throttle_factor=throttle_factor(level, self.risk_controller.config))
             calibrated = self.calibration.calibrate(decision.confidence)
+            # §30: when the sources disagree, confidence — and with it the size — shrinks.
+            # The multiplier is in [0.5, 1.0]: this can only make a position smaller.
+            reading = self._measure_disagreement(scan, decision, critique, chosen)
+            if reading is not None:
+                calibrated *= reading.risk_multiplier
+                rec.disagreement = {"views": reading.views,
+                                    "disagreement": round(reading.disagreement, 4),
+                                    "size_multiplier": round(reading.risk_multiplier, 4)}
+                result.disagreement_multipliers[scan.symbol] = round(reading.risk_multiplier, 4)
             try:
                 sized = self.sizing.size(proposal, stop, quote, pctx, calibrated)
             except SizingRejected as e:
@@ -993,6 +1013,23 @@ class TradingPipeline:
         for ev in events:
             calendar.add(ev)
         return calendar, True
+
+    def _measure_disagreement(self, scan, decision, critique, chosen_news):
+        """How much the available sources disagree about this BUY (None when fewer than two
+        sources have a view). Sources: quant score, Decision, Skeptic, tradeable news, institutional
+        flow, market regime."""
+        views = {"quant": quant_lean(scan.score), "decision": decision_lean(decision.confidence),
+                 "skeptic": skeptic_lean(critique.severity)}
+        news = news_lean([s.direction for s in chosen_news if s.tradeable])
+        if news is not None:
+            views["news"] = news
+        sig = self.flow_engine.signal(scan.symbol)
+        if sig is not None and sig.score != 0.0:
+            views["institutional"] = sig.score
+        regime = regime_lean(self._session_regime)
+        if regime is not None:
+            views["regime"] = regime
+        return self.disagreement.measure(scan.symbol, views) if len(views) >= 2 else None
 
     def _load_flow_filings(self, symbols: list[str], now: datetime,
                            result: "PipelineResult") -> tuple[dict[str, list[str]], bool]:

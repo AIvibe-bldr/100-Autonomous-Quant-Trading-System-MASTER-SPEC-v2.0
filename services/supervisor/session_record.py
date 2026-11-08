@@ -37,6 +37,7 @@ class SessionRecorder:
             "data_warnings": result.data_warnings[:_MAX_DETAIL_ITEMS],
             "fills": [{"symbol": f.symbol, "side": f.side.value, "qty": f.qty, "price": f.price}
                       for f in result.fills[:_MAX_DETAIL_ITEMS]],
+            "disagreement_multipliers": result.disagreement_multipliers,
             # cumulative state of the pipeline's observers (forecast calibration, ...)
             "observers": {o.name: o.summary() for o in p.observers},
         }

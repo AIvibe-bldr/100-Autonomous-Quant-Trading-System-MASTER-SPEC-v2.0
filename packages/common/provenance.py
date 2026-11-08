@@ -33,6 +33,7 @@ class ProvenanceRecord:
     risk_decision: Optional[dict[str, Any]] = None
     stop_plan: Optional[dict[str, Any]] = None
     position_size: Optional[dict[str, Any]] = None
+    disagreement: Optional[dict[str, Any]] = None     # §30: views, spread, size multiplier
     order_ref: Optional[str] = None
     fill_refs: list[str] = field(default_factory=list)
     result: Optional[dict[str, Any]] = None
