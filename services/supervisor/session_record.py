@@ -37,6 +37,8 @@ class SessionRecorder:
             "data_warnings": result.data_warnings[:_MAX_DETAIL_ITEMS],
             "fills": [{"symbol": f.symbol, "side": f.side.value, "qty": f.qty, "price": f.price}
                       for f in result.fills[:_MAX_DETAIL_ITEMS]],
+            # cumulative state of the pipeline's observers (forecast calibration, ...)
+            "observers": {o.name: o.summary() for o in p.observers},
         }
         rec = SessionRecord(
             session_date=ensure_utc(at).astimezone(ET).date().isoformat(), model_tag=self._tag,
@@ -49,6 +51,6 @@ class SessionRecorder:
             orders_filled=result.orders_filled, stops_triggered=result.stops_triggered,
             open_positions=sum(1 for lot in p.ledger.positions.values() if lot.qty > 0),
             data_warnings=len(result.data_warnings), risk_state=p.risk_controller.state.value,
-            llm_cost_usd=llm_cost_usd, detail_json=json.dumps(detail))
+            llm_cost_usd=llm_cost_usd, detail_json=json.dumps(detail, default=str))
         self._store.record(rec)
         return rec

@@ -51,7 +51,7 @@ def build_paper_pipeline(clock: Clock, universe: UniverseManager,
                    cost_engine: OperatingCostEngine | None = None,
                    wall_clock=None, audit_store=None, provider=None,
                    kill_switch=None, news_source=None,
-                   event_source=None, order_store=None) -> TradingPipeline:
+                   event_source=None, order_store=None, observers=None) -> TradingPipeline:
     """decision_model / skeptic_model / auditor default to the deterministic
     Mocks (keeps tests network-free and reproducible); pass real Claude
     adapters (services.decision.claude_adapters.build_llm_stack) to run the
@@ -85,7 +85,7 @@ def build_paper_pipeline(clock: Clock, universe: UniverseManager,
         auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
                                               audit_all=True),
         cost_engine=cost_engine, symbol_themes=DEFAULT_THEMES, news_source=news_source,
-        event_source=event_source)
+        event_source=event_source, observers=list(observers or []))
 
 
 @dataclass

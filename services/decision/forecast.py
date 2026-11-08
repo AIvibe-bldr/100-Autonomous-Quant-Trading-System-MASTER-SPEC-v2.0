@@ -53,13 +53,16 @@ class ForecastTracker:
         self.forecasts.append(forecast)
 
     def resolve_due(self, now: datetime, price_fn) -> int:
-        """Grade all matured forecasts: which scenario band did price land in?"""
+        """Grade all matured forecasts: which scenario band did price land in?
+        `price_fn` may return None when the price cannot be had; that forecast stays pending."""
         now = ensure_utc(now)
         resolved = 0
         for f in self.forecasts:
             if f.resolved or f.due_at > now:
                 continue
             actual = price_fn(f.symbol, f.due_at)
+            if actual is None:           # price not obtainable now: stays pending, graded later
+                continue
             f.actual_price = actual
             # nearest scenario target wins the band
             cases = {"bear": f.bear, "base": f.base, "bull": f.bull}

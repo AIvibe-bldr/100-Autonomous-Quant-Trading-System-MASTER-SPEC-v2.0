@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
@@ -62,6 +63,7 @@ from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
+from services.pdca.observer import DecisionEvent, SessionEndEvent, SessionObserver
 from services.pdca.post_trade import PostTradeTracker
 from services.pdca.decision_quality import (
     DecisionKind,
@@ -94,6 +96,9 @@ from services.risk.master_controller import (
     throttle_factor,
     throttle_level,
 )
+
+
+log = logging.getLogger("quant.pipeline")
 
 
 @dataclass
@@ -185,6 +190,8 @@ class TradingPipeline:
     event_display_days: int = 14         # how far ahead Decision is shown events
     # F10: when set, checked at every session start (None = no heartbeat producers wired)
     heartbeat_alerter: Optional[HeartbeatAlerter] = None
+    # Read-only listeners (services/pdca/observer.py): they record and grade, never decide.
+    observers: list[SessionObserver] = field(default_factory=list)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
     # order that reaches execution.submit() is durably persisted (default
     # None — fully additive, no behavior change for the many tests that
@@ -455,6 +462,32 @@ class TradingPipeline:
         return triggered, len(fills)
 
     def run_session(self, as_of: datetime) -> PipelineResult:
+        result = self._run_session(as_of)
+        self._emit("on_session_end", SessionEndEvent(as_of=as_of, result=result,
+                                                     price_on=self._close_on_or_before), result)
+        return result
+
+    def _emit(self, hook: str, event, result: PipelineResult) -> None:
+        """Hand a fact to every observer. One that raises is reported, never allowed to
+        interrupt trading or hide the others."""
+        for obs in self.observers:
+            try:
+                getattr(obs, hook)(event)
+            except Exception as e:  # noqa: BLE001 — observers are best-effort by design
+                log.warning("observer %s failed in %s: %s", obs.name, hook, e)
+                result.data_warnings.append(f"observer {obs.name} failed: {type(e).__name__}")
+
+    def _close_on_or_before(self, symbol: str, at: datetime) -> Optional[float]:
+        """Last daily close at/before `at`, or None when it cannot be had (used to grade
+        forecasts/exits after the fact; never to open risk)."""
+        try:
+            bars = self.market_data.bars(symbol, at, days=5, received_at=at)
+        except MarketDataUnavailable:
+            return None
+        usable = [b.bar for b in bars if b.bar.ts.date() <= at.date()]
+        return usable[-1].close if usable else None
+
+    def _run_session(self, as_of: datetime) -> PipelineResult:
         result = PipelineResult()
         now = as_of
         # Per-session working state. Theses are only ever read back within the
@@ -580,6 +613,10 @@ class TradingPipeline:
                 rec.result = {"rejected": "decision AI unavailable", "error": str(e)[:200]}
                 continue
             rec.output = decision.model_dump(mode="json")
+            self._emit("on_decision", DecisionEvent(
+                decision_id=rec.decision_id, symbol=scan.symbol, as_of=now, decision=decision,
+                price=quotes[scan.symbol].mid if scan.symbol in quotes else None, context=ctx),
+                result)
             # §2: a SELL is only ever a reduction of an EXISTING long. A SELL
             # on an unheld symbol is a Decision AI error, not a trade — it is
             # rejected here and recorded, before any order can be built.
