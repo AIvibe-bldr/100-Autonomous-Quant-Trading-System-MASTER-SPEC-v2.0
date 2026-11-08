@@ -29,6 +29,16 @@ ENV_VAR = "QUANT_SEC_USER_AGENT"
 _MIN_INTERVAL_SEC = 0.15          # ~6.6 req/s, under SEC's 10/s
 _UA_SHAPE = re.compile(r"^\S+(\s+\S+)*\s+\S+@\S+\.\S+$")      # a name, then an email
 
+# Successor-issuer reorganisations: a company that becomes a holding company is registered
+# under a NEW CIK, so its history before the change sits under the old one and SEC offers no
+# machine-readable link (formerNames is empty, the EIN differs). Links are therefore explicit,
+# reviewed DATA — never inferred — and each entry names its evidence.
+#   XOM: ExxonMobil Holdings Corp (CIK 2115436) succeeded Exxon Mobil Corp (CIK 34088);
+#        Form 8-K12B filed 2026-07-01, accession 0001193125-26-291990.
+KNOWN_PREDECESSORS: dict[str, tuple[int, ...]] = {"XOM": (34088,)}
+# forms a successor issuer files when it takes over a predecessor's registration
+SUCCESSOR_FORMS = ("8-K12B", "8-K12G3")
+
 HttpGet = Callable[[str, dict[str, str]], Any]
 HttpGetText = Callable[[str, dict[str, str]], str]
 _MAX_DOCUMENT_BYTES = 262_144       # a Form 4 is a few KB; refuse anything absurd
@@ -89,6 +99,7 @@ def _urllib_get_text(url: str, headers: dict[str, str]) -> str:
 class EdgarClient:
     def __init__(self, user_agent: str, *, http_get: Optional[HttpGet] = None,
                  http_get_text: Optional[HttpGetText] = None,
+                 predecessors: Optional[dict[str, tuple[int, ...]]] = None,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         if not user_agent or not _UA_SHAPE.match(user_agent.strip()):
             raise EdgarUnavailable(
@@ -96,6 +107,8 @@ class EdgarClient:
         self._headers = {"User-Agent": user_agent.strip(), "Accept-Encoding": "identity"}
         self._get = http_get or _urllib_get
         self._get_text = http_get_text or _urllib_get_text
+        self._predecessors = KNOWN_PREDECESSORS if predecessors is None else predecessors
+        self._by_cik: dict[int, list[Filing]] = {}
         self._documents: dict[str, str] = {}
         self._sleep = sleep
         self._last = 0.0
@@ -120,28 +133,53 @@ class EdgarClient:
         return self._cik.get(ticker.upper())
 
     def recent_filings(self, ticker: str) -> list[Filing]:
-        """The company's recent filings, newest first as SEC lists them. An
-        unknown ticker has none ([]); a failure raises (never reads as 'none')."""
+        """The company's recent filings, newest first. Includes the filings of any reviewed
+        predecessor registrant (see KNOWN_PREDECESSORS), de-duplicated by accession number
+        (joint filings appear under both CIKs). An unknown ticker has none ([]); a failure
+        raises (never reads as 'none')."""
         key = ticker.upper()
         if key in self._filings:
             return self._filings[key]
         cik = self._cik_for(key)
-        out: list[Filing] = []
+        merged: dict[str, Filing] = {}
         if cik is not None:
-            recent = self._fetch(SUBMISSIONS_URL.format(cik=cik))["filings"]["recent"]
-            for i, acc in enumerate(recent["accessionNumber"]):
-                try:
-                    out.append(Filing(
-                        cik=cik, accession=acc, form=recent["form"][i],
-                        filing_date=date.fromisoformat(recent["filingDate"][i]),
-                        accepted_at=datetime.fromisoformat(
-                            recent["acceptanceDateTime"][i].replace("Z", "+00:00")
-                        ).astimezone(timezone.utc),
-                        items=tuple(x.strip() for x in str(recent["items"][i]).split(",") if x.strip()),
-                        primary_document=recent["primaryDocument"][i]))
-                except (KeyError, IndexError, ValueError, TypeError):
-                    continue                                   # one bad row must not hide the rest
+            for c in (cik, *self._predecessors.get(key, ())):
+                for f in self._filings_of(c):
+                    merged.setdefault(f.accession, f)          # the ticker's own CIK wins a tie
+        out = sorted(merged.values(), key=lambda f: f.accepted_at, reverse=True)
         self._filings[key] = out
+        return out
+
+    def unlinked_reorganisation(self, ticker: str) -> Optional[Filing]:
+        """A successor-issuer filing (8-K12B/8-K12G3) for a ticker that has NO reviewed
+        predecessor link: its earlier history is probably under another CIK that we are not
+        using. Returned so the caller can warn instead of silently under-using history."""
+        key = ticker.upper()
+        if key in self._predecessors:
+            return None
+        cik = self._cik_for(key)
+        if cik is None:
+            return None
+        return next((f for f in self._filings_of(cik) if f.form in SUCCESSOR_FORMS), None)
+
+    def _filings_of(self, cik: int) -> list[Filing]:
+        if cik in self._by_cik:
+            return self._by_cik[cik]
+        out: list[Filing] = []
+        recent = self._fetch(SUBMISSIONS_URL.format(cik=cik))["filings"]["recent"]
+        for i, acc in enumerate(recent["accessionNumber"]):
+            try:
+                out.append(Filing(
+                    cik=cik, accession=acc, form=recent["form"][i],
+                    filing_date=date.fromisoformat(recent["filingDate"][i]),
+                    accepted_at=datetime.fromisoformat(
+                        recent["acceptanceDateTime"][i].replace("Z", "+00:00")
+                    ).astimezone(timezone.utc),
+                    items=tuple(x.strip() for x in str(recent["items"][i]).split(",") if x.strip()),
+                    primary_document=recent["primaryDocument"][i]))
+            except (KeyError, IndexError, ValueError, TypeError):
+                continue                                       # one bad row must not hide the rest
+        self._by_cik[cik] = out
         return out
 
     def document_text(self, filing: Filing) -> str:

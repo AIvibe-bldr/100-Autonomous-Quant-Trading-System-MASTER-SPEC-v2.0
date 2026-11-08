@@ -8,11 +8,14 @@ adding ~91 days to the latest). The result is explicitly an ESTIMATE
 window instead of pretending to precision."""
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 
 from services.market_data.edgar_client import EdgarClient, EdgarUnavailable
 from services.market_data.event_calendar import EventType, RiskEvent
 from services.market_data.event_source import EventsUnavailable
+
+log = logging.getLogger("quant.edgar")
 
 UNCERTAINTY_DAYS = 7
 _YEAR = timedelta(days=364)           # keeps the weekday; the uncertainty covers the drift
@@ -38,6 +41,11 @@ class EdgarEarningsEstimator:
                                if f.form == "8-K" and "2.02" in f.items
                                and start - _LOOKBACK <= f.filing_date < start})
                 if past and past[0] > start - _MIN_YEAR_HISTORY:
+                    notice = self._client.unlinked_reorganisation(sym)
+                    if notice is not None:
+                        log.warning("%s: %s filed %s but no predecessor CIK is linked "
+                                    "(KNOWN_PREDECESSORS) — earnings history is incomplete",
+                                    sym, notice.form, notice.filing_date)
                     events.extend(self._quarterly(sym, past[-1], start, end))
                     continue
                 for d in past:
