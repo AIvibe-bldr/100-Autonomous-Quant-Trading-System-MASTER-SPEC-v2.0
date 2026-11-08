@@ -46,6 +46,7 @@ from services.composition import (
 )
 from services.market_data.service import MarketDataUnavailable
 from services.market_data.universe import UniverseManager, UniverseSymbol
+from services.decision.intent_inbox import IntentInbox
 from services.supervisor.heartbeat import HeartbeatRegistry
 from services.supervisor.incident_log import IncidentLog
 from services.supervisor.recovery import RecoveryManager
@@ -116,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = build_paper_pipeline(
         clock, universe, initial_cash=args.cash, provider=provider, news_source=news,
         event_source=events, flow_filings_source=flow_filings, kill_switch=kill_switch,
-        order_store=order_store,
+        order_store=order_store, human_inbox=IntentInbox.from_env(),
         audit_store=DurableAuditStore(str(state / "audit.db"), Environment.PAPER))
     attach_learning_observers(pipeline, args.cash,
                               pit_store=DurablePitStore(str(state / "pit.db"), Environment.PAPER))
@@ -136,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     runner = SessionRunner(pipeline, cal, clock, HeartbeatRegistry(clock), sink, cfg,
                            sleep=stop.wait, after_session=after_session,
                            recovery=RecoveryManager(clock, start_seq=incidents.next_seq()),
-                           incident_log=incidents)
+                           incident_log=incidents,
+                           market_open_hook=pipeline.analyze_human_intents)
 
     last_year = getattr(cal.provider, "last_year", None)       # not every provider knows its range
     if last_year is not None and clock.now().year >= last_year and clock.now().month >= 10:

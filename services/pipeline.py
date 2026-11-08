@@ -36,6 +36,7 @@ from packages.schemas.core import (
     RiskApprovedOrder,
     RiskRejection,
     SizedProposal,
+    SkepticOutput,
     StopPlan,
     TimeInForce,
     TradeProposal,
@@ -71,13 +72,21 @@ from services.decision.disagreement import (
     regime_lean,
     skeptic_lean,
 )
+from services.decision.human_intent import HumanIntent, HumanIntentAnalyzer, IntentAction
+from services.decision.intent_inbox import IntentInbox, IntentInboxUnreadable, IntentRecord
 from services.institutional.engine import InstitutionalFlowEngine
 from services.institutional.sources import (
     FlowUnavailable,
     OwnershipFilingsSource,
     describe_flow,
 )
-from services.pdca.observer import DecisionEvent, FillEvent, SessionEndEvent, SessionObserver
+from services.pdca.observer import (
+    DecisionEvent,
+    FillEvent,
+    OverrideEvent,
+    SessionEndEvent,
+    SessionObserver,
+)
 from services.pdca.post_trade import PostTradeTracker
 from services.pdca.decision_quality import (
     DecisionKind,
@@ -126,6 +135,8 @@ class PipelineResult:
     stop_planned: int = 0
     protective_stops_placed: int = 0
     stops_triggered: int = 0
+    # §76-79: how each human intent offered this session ended (intent id -> outcome)
+    human_intents: dict[str, str] = field(default_factory=dict)
     # §30: symbol -> size multiplier applied for model disagreement (1.0 = unanimous)
     disagreement_multipliers: dict[str, float] = field(default_factory=dict)
     sized: int = 0
@@ -211,6 +222,10 @@ class TradingPipeline:
     flow_filings_source: Optional[OwnershipFilingsSource] = None
     flow_engine: InstitutionalFlowEngine = field(default_factory=InstitutionalFlowEngine)
     disagreement: ModelDisagreementEngine = field(default_factory=ModelDisagreementEngine)
+    # Human intent (§76-79): None = no inbox connected. A confirmed WANT_BUY becomes a candidate that
+    # takes the SAME gates as an AI candidate (Audit AI, Master Risk Controller, ...) — INV-8.
+    human_inbox: Optional[IntentInbox] = None
+    human_analyzer: HumanIntentAnalyzer = field(default_factory=HumanIntentAnalyzer)
     # Read-only listeners (services/pdca/observer.py): they record and grade, never decide.
     observers: list[SessionObserver] = field(default_factory=list)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
@@ -223,6 +238,9 @@ class TradingPipeline:
     regime_engine: RegimeEngine = field(default_factory=RegimeEngine)
     # short label (e.g. "BULL") stamped on decision snapshots for this session
     _session_regime: str = field(default="UNKNOWN", repr=False)
+    # human intents offered to the session in progress: symbol -> record (reset each session)
+    _session_human: dict = field(default_factory=dict, repr=False)
+    _human_ai_view: dict = field(default_factory=dict, repr=False)   # symbol -> AI stance (str) or None
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -492,7 +510,9 @@ class TradingPipeline:
         return triggered, len(fills)
 
     def run_session(self, as_of: datetime) -> PipelineResult:
+        self._session_human = {}
         result = self._run_session(as_of)
+        self._finish_human_intents(as_of, result)
         equity = self.ledger.snapshot(self.mark_prices({}, as_of)).equity
         self._emit("on_session_end", SessionEndEvent(as_of=as_of, result=result,
                                                      price_on=self._close_on_or_before,
@@ -561,6 +581,7 @@ class TradingPipeline:
         scans = self.scanner.scan(symbols, now)
         result.scanned = self.scanner.last_funnel.scanned
         result.candidates = self.scanner.last_funnel.passed_advanced
+        scans = self._with_human_scans(scans, now, result)
         if not scans:
             result.no_trade_reasons.append("scanner produced no candidates")
             return result
@@ -638,25 +659,43 @@ class TradingPipeline:
                 rec.input_features["news_urls"] = [u for s in chosen for u in s.urls[:1]]
                 rec.data_timestamps["latest_news"] = max(
                     s.published_at for s in chosen if s.published_at).isoformat()
-            try:
-                decision = validate_decision(self.decision_model.decide(ctx))
-            except MalformedDecisionError as e:
-                result.no_trade_reasons.append(f"{scan.symbol}: malformed decision rejected (§28)")
-                rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
-                continue
-            except LLMCallError as e:
-                # A provider outage / exhausted credit / refusal on ONE candidate
-                # must not abort the whole session (and with it exit management
-                # for open positions). No decision == no trade for this symbol.
-                result.no_trade_reasons.append(
-                    f"{scan.symbol}: Decision AI unavailable — no trade ({type(e).__name__})")
-                rec.result = {"rejected": "decision AI unavailable", "error": str(e)[:200]}
-                continue
+            human = self._session_human.get(scan.symbol)
+            if human is not None:
+                # §76-78: the human decides; the AI's view is only recorded beside it (§79).
+                # Everything after this point is the same pipeline an AI candidate takes.
+                ai_action = self._ai_view(ctx)
+                rec.model, rec.model_version = "human-intent", human.intent_id
+                human_proposal = self.human_analyzer.to_proposal(
+                    HumanIntent(symbol=scan.symbol, action=IntentAction.WANT_BUY,
+                                stated_reason=human.stated_reason, at=now),
+                    self.human_analyzer.analyze(
+                        HumanIntent(symbol=scan.symbol, action=IntentAction.WANT_BUY,
+                                    stated_reason=human.stated_reason, at=now),
+                        scan, regime_text, [n.text[:160] for n in ctx.news],
+                        self._position_notional({}, now).get(scan.symbol, 0.0)), now)
+                decision = human_proposal.decision
+                self._human_ai_view[scan.symbol] = ai_action
+            else:
+                try:
+                    decision = validate_decision(self.decision_model.decide(ctx))
+                except MalformedDecisionError as e:
+                    result.no_trade_reasons.append(f"{scan.symbol}: malformed decision rejected (§28)")
+                    rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
+                    continue
+                except LLMCallError as e:
+                    # A provider outage / exhausted credit / refusal on ONE candidate
+                    # must not abort the whole session (and with it exit management
+                    # for open positions). No decision == no trade for this symbol.
+                    result.no_trade_reasons.append(
+                        f"{scan.symbol}: Decision AI unavailable — no trade ({type(e).__name__})")
+                    rec.result = {"rejected": "decision AI unavailable", "error": str(e)[:200]}
+                    continue
             rec.output = decision.model_dump(mode="json")
-            self._emit("on_decision", DecisionEvent(
-                decision_id=rec.decision_id, symbol=scan.symbol, as_of=now, decision=decision,
-                price=quotes[scan.symbol].mid if scan.symbol in quotes else None, context=ctx),
-                result)
+            if human is None:                 # the learning loops grade the AI, not the human's template
+                self._emit("on_decision", DecisionEvent(
+                    decision_id=rec.decision_id, symbol=scan.symbol, as_of=now, decision=decision,
+                    price=quotes[scan.symbol].mid if scan.symbol in quotes else None, context=ctx),
+                    result)
             # §2: a SELL is only ever a reduction of an EXISTING long. A SELL
             # on an unheld symbol is a Decision AI error, not a trade — it is
             # rejected here and recorded, before any order can be built.
@@ -679,21 +718,30 @@ class TradingPipeline:
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.NO_TRADE,
                                       now, scan.last_close, decision=decision)
                 continue
-            result.decision_candidates += 1
+            if human is None:
+                result.decision_candidates += 1
 
-            critique = self.skeptic.critique(decision, ctx)
-            rec.skeptic_output = critique.model_dump(mode="json")
-            if critique.recommends_veto:
-                result.skeptic_vetoes += 1
-                result.no_trade_reasons.append(
-                    f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
-                self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
-                                      now, scan.last_close, decision=decision,
-                                      skeptic_consulted=True)
-                continue
+                critique = self.skeptic.critique(decision, ctx)
+                rec.skeptic_output = critique.model_dump(mode="json")
+                if critique.recommends_veto:
+                    result.skeptic_vetoes += 1
+                    result.no_trade_reasons.append(
+                        f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
+                    self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
+                                          now, scan.last_close, decision=decision,
+                                          skeptic_consulted=True)
+                    continue
+            else:
+                critique = SkepticOutput(
+                    proposal_symbol=scan.symbol, severity=0.0, recommends_veto=False,
+                    model_family="human-intent",
+                    objections=["human intent: the Skeptic AI is not consulted (§78); the Audit AI and "
+                                "the Master Risk Controller still decide"])
+                rec.skeptic_output = critique.model_dump(mode="json")
 
             proposal = TradeProposal(symbol=scan.symbol, side=Action.BUY,
-                                     source=ProposalSource.AI, decision=decision,
+                                     source=ProposalSource.HUMAN if human else ProposalSource.AI,
+                                     decision=decision,
                                      skeptic=critique, created_at=now)
             # F2: real time, not simulated `now` — this is the signal's actual
             # birth for staleness purposes (LLM latency, retries, a stuck
@@ -780,7 +828,14 @@ class TradingPipeline:
         result.allocated = len(alloc.accepted)
 
         # 6. Audit AI → Master Risk Controller → Snapshot → Execution (A3-A4, §42, §44)
-        for sized in alloc.accepted[: self.max_new_positions]:
+        # A human's confirmed choice goes first (stable sort keeps the allocator's order otherwise);
+        # whatever the per-session order limit cuts off is recorded with that reason, never dropped silently.
+        ordered = sorted(alloc.accepted, key=lambda sp: sp.proposal.source is not ProposalSource.HUMAN)
+        for cut in ordered[self.max_new_positions:]:
+            result.no_trade_reasons.append(
+                f"{cut.proposal.symbol}: allocated but not ordered — per-session limit of "
+                f"{self.max_new_positions} new positions reached")
+        for sized in ordered[: self.max_new_positions]:
             self._order_seq += 1
             symbol = sized.proposal.symbol
             intent = OrderIntent(
@@ -1028,6 +1083,103 @@ class TradingPipeline:
         for ev in events:
             calendar.add(ev)
         return calendar, True
+
+    # -- human intent (§76-79) -----------------------------------------------------------
+    def analyze_human_intents(self, now: datetime) -> int:
+        """Attach the §77 analysis to every newly submitted intent so the human has something to read
+        before confirming. Read-only toward the market and the books: no order can come out of this.
+        Returns how many were analysed. An unreadable inbox analyses nothing."""
+        if self.human_inbox is None:
+            return 0
+        try:
+            self.human_inbox.expire_stale(now)
+            pending = self.human_inbox.pending_analysis()
+        except IntentInboxUnreadable as e:
+            log.warning("human intent inbox unreadable: %s", e)
+            return 0
+        done = 0
+        for rec in pending:
+            scans = self.scanner.scan([rec.symbol], now)
+            if not scans:
+                self.human_inbox.reject(
+                    rec.intent_id, "not tradeable here: the scanner's price / liquidity / momentum / "
+                    "volatility filters did not pass (no data, or the same limits the AI is held to)", now)
+                continue
+            intent = HumanIntent(symbol=rec.symbol, action=IntentAction.WANT_BUY,
+                                 stated_reason=rec.stated_reason, at=now)
+            regime = self._read_regime(self.universe.symbols_as_of(now.date()), now)
+            scratch = PipelineResult()
+            signals, fetched = self._load_news([rec.symbol], now, scratch)
+            headlines = [s.headline for s in select_for_symbol(signals, rec.symbol)] if fetched else []
+            analysis = self.human_analyzer.analyze(
+                intent, scans[0], regime, headlines, self._position_notional({}, now).get(rec.symbol, 0.0))
+            body = dataclasses.asdict(analysis)
+            body["forecast"] = {k: v.model_dump(mode="json") for k, v in analysis.forecast.items()}
+            self.human_inbox.record_analysis(rec.intent_id, json.loads(json.dumps(body, default=str)), now)
+            done += 1
+        return done
+
+    def _with_human_scans(self, scans: list, now: datetime, result: "PipelineResult") -> list:
+        """Offer the session's CONFIRMED human intents as candidates (first in line). They are scanned
+        by the same scanner, so an untradeable name is refused here with a recorded reason; from here
+        on they go through the same gates as an AI candidate."""
+        self._human_ai_view = {}
+        if self.human_inbox is None:
+            return scans
+        try:
+            self.human_inbox.expire_stale(now)
+            confirmed = self.human_inbox.confirmed()
+        except IntentInboxUnreadable as e:
+            result.data_warnings.append(f"human intent inbox unreadable — no human intent acted on ({e})")
+            return scans
+        front = []
+        for rec in confirmed:
+            found = self.scanner.scan([rec.symbol], now)
+            if not found:
+                self.human_inbox.reject(rec.intent_id, "refused at execution: the scanner's filters did not "
+                                        "pass (price / liquidity / momentum / volatility / data)", now)
+                result.human_intents[rec.intent_id] = "REJECTED: scanner filters"
+                result.no_trade_reasons.append(f"{rec.symbol}: human intent refused — scanner filters did not pass")
+                continue
+            self._session_human[rec.symbol] = rec
+            front.append(found[0])
+        symbols = {x.symbol for x in front}
+        return front + [x for x in scans if x.symbol not in symbols]
+
+    def _ai_view(self, ctx) -> Optional[str]:
+        """What the Decision AI says about a symbol a human wants (for §79 only; never decisive).
+        None when it cannot be asked."""
+        try:
+            return validate_decision(self.decision_model.decide(ctx)).action.value
+        except (MalformedDecisionError, LLMCallError):
+            return None
+
+    def _finish_human_intents(self, now: datetime, result: "PipelineResult") -> None:
+        """Close every intent this session offered: ordered, or why not. Early exits that never reached
+        the intent (kill switch, reconciliation) leave it CONFIRMED for the next session."""
+        for symbol, rec in self._session_human.items():
+            try:
+                prov = self.provenance.get(f"{symbol}-{now.date()}")
+            except KeyError:
+                prov = None
+            if prov is not None and prov.order_ref:
+                outcome = f"ORDER_PLACED {prov.order_ref}"
+            else:
+                why = [r for r in result.no_trade_reasons if r.startswith(f"{symbol}:")]
+                outcome = "NOT_TRADED: " + ("; ".join(why[:3]) or "did not reach an order")
+            result.human_intents[rec.intent_id] = outcome
+            try:
+                self.human_inbox.consume(rec.intent_id, outcome, now)
+            except OSError as e:
+                result.data_warnings.append(f"could not record the outcome of {rec.intent_id}: {e}")
+            quote_px = None
+            try:
+                quote_px = self.market_data.quote(symbol, now).mid
+            except MarketDataUnavailable:
+                pass
+            self._emit("on_human_override", OverrideEvent(
+                symbol=symbol, as_of=now, ai_action=self._human_ai_view.get(symbol),
+                human_action="BUY", entry_price=quote_px, traded=bool(prov and prov.order_ref)), result)
 
     def _measure_disagreement(self, scan, decision, critique, chosen_news):
         """How much the available sources disagree about this BUY (None when fewer than two

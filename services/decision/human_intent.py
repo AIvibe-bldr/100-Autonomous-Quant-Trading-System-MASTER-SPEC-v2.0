@@ -52,6 +52,13 @@ class ManualAnalysis:
     existing_exposure_notional: float
     forecast: dict[str, ScenarioCase]      # bear / base / bull (§77)
     horizons: tuple[str, ...] = ("1d", "1w", "1m", "3m", "6m")
+    # things the reader must know to read this analysis correctly
+    notes: tuple[str, ...] = (
+        "forecast: a FIXED generic band (-8% / +2% / +12% with 25/50/25), NOT a model forecast of this "
+        "stock — it only sizes the stop and risk; judge the trade on the facts above",
+        "the Decision AI's own view is not part of this analysis (it is consulted at execution and "
+        "recorded beside your decision for later comparison)",
+    )
 
 
 class HumanIntentAnalyzer:

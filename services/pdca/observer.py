@@ -49,6 +49,18 @@ class FillEvent:
 
 
 @dataclass(frozen=True)
+class OverrideEvent:
+    """A human chose to buy a symbol (§79). `ai_action` is what the Decision AI said about the same
+    symbol this session (None if it could not be asked); `traded` is whether an order resulted."""
+    symbol: str
+    as_of: datetime
+    ai_action: Optional[str]
+    human_action: str
+    entry_price: Optional[float]
+    traded: bool
+
+
+@dataclass(frozen=True)
 class SessionEndEvent:
     as_of: datetime
     result: "PipelineResult"
@@ -65,6 +77,9 @@ class SessionObserver:
         return None
 
     def on_fill(self, event: FillEvent) -> None:
+        return None
+
+    def on_human_override(self, event: OverrideEvent) -> None:
         return None
 
     def on_session_end(self, event: SessionEndEvent) -> None:

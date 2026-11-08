@@ -84,7 +84,8 @@ class SessionRunner:
                  sleep: Callable[[float], None] = _time.sleep,
                  after_session: Optional[Callable[[datetime, PipelineResult], None]] = None,
                  recovery: Optional[RecoveryManager] = None,
-                 incident_log: Optional[IncidentLog] = None) -> None:
+                 incident_log: Optional[IncidentLog] = None,
+                 market_open_hook: Optional[Callable[[datetime], object]] = None) -> None:
         self._pipeline = pipeline
         self._calendar = calendar
         self._clock = clock
@@ -96,6 +97,7 @@ class SessionRunner:
         self._after = after_session
         self._recovery = recovery
         self._incident_log = incident_log
+        self._market_open_hook = market_open_hook
         self.last_run: Optional[date] = None
         self.failed: Optional[str] = None
         self._pipeline_status = ServiceStatus.OK
@@ -109,12 +111,24 @@ class SessionRunner:
         if self._last_good is not None or self.failed:
             self._beat("pipeline", self._pipeline_status, now, self._last_good or now)
         self._alerter.check()
+        self._run_market_open_hook(now)
         try:
             due = session_due(self._calendar, now, self.last_run, self._cfg.session_time_et)
         except ValueError as e:                      # calendar has no data for this year
             self._fail(now, f"trading calendar unavailable: {e}")
             return None
         return self._run(now, due) if due else None
+
+    def _run_market_open_hook(self, now: datetime) -> None:
+        """Work that should happen while the market is open but is not a session (e.g. attaching the
+        analysis to a new human intent). Best effort: a failure is logged, never fatal."""
+        if self._market_open_hook is None:
+            return
+        try:
+            if self._calendar.status(now) is SessionStatus.OPEN:
+                self._market_open_hook(now)
+        except Exception as e:  # noqa: BLE001
+            log.warning("market-open hook failed: %s: %s", type(e).__name__, e)
 
     def _run(self, now: datetime, session_date: date) -> Optional[PipelineResult]:
         log.info("session start date=%s", session_date)
