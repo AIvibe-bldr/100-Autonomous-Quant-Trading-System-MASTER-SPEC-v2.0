@@ -143,7 +143,7 @@ def build_real_data_sources() -> RealDataSources:
 
 def attach_learning_observers(pipeline: TradingPipeline, initial_cash: float, pit_store=None) -> list:
     """Attach the read-only learning observers (forecast grading, P&L attribution, exit/counterfactual
-    review, daily review, and Point-in-Time recording when a store is given). Returns them."""
+    review, daily review, shadow portfolios + alpha shadow-running, and Point-in-Time recording when a store is given). Returns them."""
     from services.pdca.forecast_observer import ForecastObserver
     from services.pdca.performance_observers import (
         AttributionObserver,
@@ -151,9 +151,10 @@ def attach_learning_observers(pipeline: TradingPipeline, initial_cash: float, pi
         ExitReviewObserver,
     )
     from services.pdca.pit_observer import PitObserver
+    from services.pdca.shadow_observer import ShadowObserver
 
     observers = [ForecastObserver(), AttributionObserver(), ExitReviewObserver(pipeline.post_trade),
-                 DailyReviewObserver(initial_cash)]
+                 DailyReviewObserver(initial_cash), ShadowObserver(initial_cash)]
     if pit_store is not None:
         observers.append(PitObserver(pit_store))
     pipeline.observers.extend(observers)
