@@ -107,7 +107,7 @@ def test_a_blown_up_session_halts_entries_alerts_and_stops_the_runner():
 
 
 def test_missing_calendar_data_fails_closed_instead_of_guessing():
-    runner, pipeline, clock, _, sink = _setup(start=utc(2028, 3, 7, 15, 0))
+    runner, pipeline, clock, _, sink = _setup(start=utc(2030, 3, 7, 15, 0))
     reason = runner.run_forever(lambda: False)
     assert "calendar" in reason and pipeline.risk_controller.state is RiskState.HALT_NEW_ENTRIES
     assert any(s is AlertSeverity.CRITICAL for s, _ in sink.sent)

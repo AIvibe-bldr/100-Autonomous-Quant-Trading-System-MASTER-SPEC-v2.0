@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     runner = SessionRunner(pipeline, cal, clock, HeartbeatRegistry(clock), sink, cfg,
                            sleep=stop.wait, after_session=after_session)
 
+    last_year = getattr(cal.provider, "last_year", None)       # not every provider knows its range
+    if last_year is not None and clock.now().year >= last_year and clock.now().month >= 10:
+        logging.getLogger("quant.runner").warning(
+            "trading calendar data ends in %d: add the next year (NYSE announcement) before "
+            "1 January or the runner will stop closed", last_year)
     logging.getLogger("quant.runner").info(
         "runner up: PAPER, cash $%.2f, data=%s, kill switch %s, state %s",
         args.cash, "alpaca" if provider else "mock", describe(kill_switch.status()), state)
