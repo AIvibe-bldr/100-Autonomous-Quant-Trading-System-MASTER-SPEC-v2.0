@@ -41,10 +41,11 @@ class ResumeForbiddenError(RuntimeError):
 
 
 class RecoveryManager:
-    def __init__(self, clock: Clock) -> None:
+    def __init__(self, clock: Clock, start_seq: int = 0) -> None:
+        """`start_seq`: incident numbers already used in earlier processes (so ids stay unique)."""
         self._clock = clock
         self.incidents: list[Incident] = []
-        self._seq = 0
+        self._seq = start_seq
 
     def report_fault(self, service: str, description: str,
                      severity: FaultSeverity) -> Incident:

@@ -59,3 +59,10 @@ def universe() -> UniverseManager:
 @pytest.fixture
 def pipeline(clock: FrozenClock, universe: UniverseManager) -> TradingPipeline:
     return build_pipeline(clock, universe)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_operator_files(tmp_path, monkeypatch):
+    """Tests must never read (or be blocked by) the operator's real flag files in ./var."""
+    monkeypatch.setenv("QUANT_INCIDENT_LOG", str(tmp_path / "incidents.jsonl"))
+    monkeypatch.setenv("QUANT_KILL_SWITCH_FILE", str(tmp_path / "kill_switch.json"))

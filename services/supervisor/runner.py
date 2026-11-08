@@ -30,6 +30,8 @@ from services.pipeline import PipelineResult, TradingPipeline
 from services.risk.master_controller import RiskState
 from services.supervisor.heartbeat import Heartbeat, HeartbeatRegistry, ServiceStatus
 from services.supervisor.heartbeat_alerts import HeartbeatAlerter
+from services.supervisor.incident_log import IncidentLog
+from services.supervisor.recovery import FaultSeverity, RecoveryManager
 
 log = logging.getLogger("quant.runner")
 
@@ -80,7 +82,9 @@ class SessionRunner:
                  heartbeats: HeartbeatRegistry, sink: AlertSink,
                  config: RunnerConfig = RunnerConfig(),
                  sleep: Callable[[float], None] = _time.sleep,
-                 after_session: Optional[Callable[[datetime, PipelineResult], None]] = None) -> None:
+                 after_session: Optional[Callable[[datetime, PipelineResult], None]] = None,
+                 recovery: Optional[RecoveryManager] = None,
+                 incident_log: Optional[IncidentLog] = None) -> None:
         self._pipeline = pipeline
         self._calendar = calendar
         self._clock = clock
@@ -90,6 +94,8 @@ class SessionRunner:
         self._cfg = config
         self._sleep = sleep
         self._after = after_session
+        self._recovery = recovery
+        self._incident_log = incident_log
         self.last_run: Optional[date] = None
         self.failed: Optional[str] = None
         self._pipeline_status = ServiceStatus.OK
@@ -121,6 +127,8 @@ class SessionRunner:
         self._last_good = now
         self._pipeline_status = ServiceStatus.WARNING if result.data_warnings else ServiceStatus.OK
         self._beat("pipeline", self._pipeline_status, now, now)
+        if result.data_warnings:
+            self._minor_fault(now, "; ".join(result.data_warnings)[:300])
         log.info("session done date=%s scanned=%d candidates=%d filled=%d warnings=%d stops=%d",
                  session_date, result.scanned, result.candidates, result.orders_filled,
                  len(result.data_warnings), result.stops_triggered)
@@ -131,8 +139,24 @@ class SessionRunner:
                 self._fail(now, f"after-session step failed: {type(e).__name__}: {e}")
         return result
 
+    def _minor_fault(self, now: datetime, description: str) -> None:
+        """§69: a minor fault is recorded and may auto-resume (the session already carried on)."""
+        if self._recovery is None or self._incident_log is None:
+            return
+        inc = self._recovery.report_fault("data", description, FaultSeverity.MINOR)
+        self._incident_log.record_fault(inc, self._recovery.postmortem(inc))
+        self._recovery.resume(inc)
+        self._incident_log.record_resolution(inc.incident_id, "auto",
+                                             "minor fault; auto-resume allowed (§69)", now,
+                                             human_approved=False)
+
     def _fail(self, now: datetime, reason: str) -> None:
         self.failed = reason
+        if self._recovery is not None and self._incident_log is not None:
+            # §69: a major fault is NOT auto-resumed. It stays open in the durable log until a
+            # human resolves it, and a new runner refuses to start while it is open.
+            inc = self._recovery.report_fault("runner", reason, FaultSeverity.MAJOR)
+            self._incident_log.record_fault(inc, self._recovery.postmortem(inc))
         self._pipeline_status = ServiceStatus.ERROR
         self._beat("pipeline", ServiceStatus.ERROR, now, self._last_good or now)
         self._pipeline.risk_controller.set_state(RiskState.HALT_NEW_ENTRIES,

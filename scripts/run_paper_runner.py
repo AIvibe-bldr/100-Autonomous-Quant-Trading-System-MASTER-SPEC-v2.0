@@ -47,6 +47,8 @@ from services.composition import (
 from services.market_data.service import MarketDataUnavailable
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.supervisor.heartbeat import HeartbeatRegistry
+from services.supervisor.incident_log import IncidentLog
+from services.supervisor.recovery import RecoveryManager
 from services.supervisor.runner import RunnerConfig, SessionRunner, next_session_at
 from services.supervisor.session_record import SessionRecorder
 
@@ -75,6 +77,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {at.astimezone(ZoneInfo('America/New_York')):%a %Y-%m-%d %H:%M ET}"
                   f"  =  {at.astimezone(JST):%a %m-%d %H:%M JST}")
         return 0
+
+    incidents = IncidentLog.from_env()
+    open_major = incidents.open_major()
+    if open_major:                                           # §69: no auto-resume after a major fault
+        print("refusing to start: unresolved MAJOR incident(s): "
+              + ", ".join(i["incident_id"] for i in open_major)
+              + "\nReview them with scripts/incidents.py, then resolve with a named operator and reason.",
+              file=sys.stderr)
+        return 2
 
     state = Path(args.state_dir)
     state.mkdir(parents=True, exist_ok=True)
@@ -123,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
         broker.settle()                  # paper T+1 tick
 
     runner = SessionRunner(pipeline, cal, clock, HeartbeatRegistry(clock), sink, cfg,
-                           sleep=stop.wait, after_session=after_session)
+                           sleep=stop.wait, after_session=after_session,
+                           recovery=RecoveryManager(clock, start_seq=incidents.next_seq()),
+                           incident_log=incidents)
 
     last_year = getattr(cal.provider, "last_year", None)       # not every provider knows its range
     if last_year is not None and clock.now().year >= last_year and clock.now().month >= 10:
