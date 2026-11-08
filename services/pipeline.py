@@ -77,7 +77,7 @@ from services.institutional.sources import (
     OwnershipFilingsSource,
     describe_flow,
 )
-from services.pdca.observer import DecisionEvent, SessionEndEvent, SessionObserver
+from services.pdca.observer import DecisionEvent, FillEvent, SessionEndEvent, SessionObserver
 from services.pdca.post_trade import PostTradeTracker
 from services.pdca.decision_quality import (
     DecisionKind,
@@ -440,12 +440,21 @@ class TradingPipeline:
                                    prior_risk + qty * stop.stop_distance)
         return True
 
-    def manage_open_positions(self, now: datetime) -> tuple[int, int]:
+    def manage_open_positions(self, now: datetime,
+                              result: Optional["PipelineResult"] = None) -> tuple[int, int]:
         """Session-start exit management: let resting stops trigger, book the
         fills, and feed the learning loops.  Returns (stops_triggered, synced)."""
         fills = self.execution.sync_open_orders()
         triggered = 0
+        result = result if result is not None else PipelineResult()
         for f in fills:
+            stop_entry = self.open_stops.get(f.symbol)
+            self._emit("on_fill", FillEvent(
+                symbol=f.symbol, side=f.side, qty=f.qty, price=f.price, fees=f.fees, ts=f.ts,
+                client_order_id=f.client_order_id,
+                reference_price=(stop_entry[1].stop_price
+                                 if stop_entry is not None and f.side is Action.SELL else None)),
+                result)
             if f.side is not Action.SELL:
                 # a resting BUY (e.g. a limit entry) that fills later must still
                 # reach the ledger, or ledger and broker drift apart (§48)
@@ -484,8 +493,10 @@ class TradingPipeline:
 
     def run_session(self, as_of: datetime) -> PipelineResult:
         result = self._run_session(as_of)
+        equity = self.ledger.snapshot(self.mark_prices({}, as_of)).equity
         self._emit("on_session_end", SessionEndEvent(as_of=as_of, result=result,
-                                                     price_on=self._close_on_or_before), result)
+                                                     price_on=self._close_on_or_before,
+                                                     equity=equity), result)
         return result
 
     def _emit(self, hook: str, event, result: PipelineResult) -> None:
@@ -525,7 +536,7 @@ class TradingPipeline:
 
         # 0. Exit management first: resting protective stops may have triggered
         #    since the last session (§33-34, §43)
-        result.stops_triggered, _ = self.manage_open_positions(now)
+        result.stops_triggered, _ = self.manage_open_positions(now, result)
 
         # 0a. Operator kill switch (F5): exits above already ran; stop before any
         #     LLM spend. Mid-session engagement is caught again before each entry.
@@ -889,6 +900,10 @@ class TradingPipeline:
                     rec.fill_refs.append(f.broker_fill_id)
                     log_rec.fills.append(f.broker_fill_id)
                     result.fills.append(f)
+                    self._emit("on_fill", FillEvent(
+                        symbol=f.symbol, side=f.side, qty=f.qty, price=f.price, fees=f.fees,
+                        ts=f.ts, client_order_id=f.client_order_id,
+                        reference_price=sized.stop_plan.entry_price), result)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
                 self._persist_audit_record(log_rec, now)

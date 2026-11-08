@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from packages.schemas.core import DecisionOutput
+from packages.schemas.core import Action, DecisionOutput
 
 if TYPE_CHECKING:  # no runtime dependency on the pipeline module (it imports this one)
     from services.decision.models import DecisionContext
@@ -35,10 +35,25 @@ class DecisionEvent:
 
 
 @dataclass(frozen=True)
+class FillEvent:
+    """A fill the pipeline has just booked. `reference_price` is what the plan assumed: the
+    planned entry (ask) for a BUY, the stop trigger price for a protective SELL; None if unknown."""
+    symbol: str
+    side: Action
+    qty: float
+    price: float
+    fees: float
+    ts: datetime
+    client_order_id: str
+    reference_price: Optional[float]
+
+
+@dataclass(frozen=True)
 class SessionEndEvent:
     as_of: datetime
     result: "PipelineResult"
     price_on: PriceOn
+    equity: float                         # marked at session time, after the session's trades
 
 
 class SessionObserver:
@@ -47,6 +62,9 @@ class SessionObserver:
     name = "observer"
 
     def on_decision(self, event: DecisionEvent) -> None:
+        return None
+
+    def on_fill(self, event: FillEvent) -> None:
         return None
 
     def on_session_end(self, event: SessionEndEvent) -> None:

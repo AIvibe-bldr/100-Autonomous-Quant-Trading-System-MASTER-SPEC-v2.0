@@ -103,7 +103,7 @@ def test_exits_still_work_while_engaged(tmp_path):
     ks.engage(operator="alice", reason="stop", at=AT)
     calls = []
     real = p.manage_open_positions
-    p.manage_open_positions = lambda now: (calls.append(1), real(now))[1]
+    p.manage_open_positions = lambda now, result=None: (calls.append(1), real(now, result))[1]
     clock.advance(86400)
     p.run_session(clock.now())
     assert calls == [1]                                      # exit management still ran first

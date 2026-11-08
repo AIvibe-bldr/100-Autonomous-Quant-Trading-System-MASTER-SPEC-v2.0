@@ -139,3 +139,22 @@ def build_real_data_sources() -> RealDataSources:
     from services.institutional.sources import EdgarOwnershipFilingsSource
     out.flow_filings_source = EdgarOwnershipFilingsSource(edgar)
     return out
+
+
+def attach_learning_observers(pipeline: TradingPipeline, initial_cash: float, pit_store=None) -> list:
+    """Attach the read-only learning observers (forecast grading, P&L attribution, exit/counterfactual
+    review, daily review, and Point-in-Time recording when a store is given). Returns them."""
+    from services.pdca.forecast_observer import ForecastObserver
+    from services.pdca.performance_observers import (
+        AttributionObserver,
+        DailyReviewObserver,
+        ExitReviewObserver,
+    )
+    from services.pdca.pit_observer import PitObserver
+
+    observers = [ForecastObserver(), AttributionObserver(), ExitReviewObserver(pipeline.post_trade),
+                 DailyReviewObserver(initial_cash)]
+    if pit_store is not None:
+        observers.append(PitObserver(pit_store))
+    pipeline.observers.extend(observers)
+    return observers
