@@ -33,6 +33,7 @@ from packages.common.clock import Clock
 from packages.common.durable_store import (
     DurableAuditStore,
     DurableOrderStore,
+    DurablePitStore,
     DurableSessionStore,
 )
 from packages.common.environment import Environment
@@ -40,6 +41,8 @@ from packages.common.kill_switch import KillSwitch, describe
 from services.composition import DEFAULT_SYMBOLS, build_paper_pipeline, build_real_data_sources
 from services.market_data.service import MarketDataUnavailable
 from services.market_data.universe import UniverseManager, UniverseSymbol
+from services.pdca.forecast_observer import ForecastObserver
+from services.pdca.pit_observer import PitObserver
 from services.supervisor.heartbeat import HeartbeatRegistry
 from services.supervisor.runner import RunnerConfig, SessionRunner, next_session_at
 from services.supervisor.session_record import SessionRecorder
@@ -98,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = build_paper_pipeline(
         clock, universe, initial_cash=args.cash, provider=provider, news_source=news,
         event_source=events, kill_switch=kill_switch, order_store=order_store,
+        observers=[ForecastObserver(), PitObserver(DurablePitStore(str(state / "pit.db"), Environment.PAPER))],
         audit_store=DurableAuditStore(str(state / "audit.db"), Environment.PAPER))
     sink = LoggingAlertSink()
     pipeline.risk_controller.alert_sink = sink
