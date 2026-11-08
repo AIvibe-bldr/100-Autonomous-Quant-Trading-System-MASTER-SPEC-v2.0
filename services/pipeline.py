@@ -63,6 +63,12 @@ from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
+from services.institutional.engine import InstitutionalFlowEngine
+from services.institutional.sources import (
+    FlowUnavailable,
+    OwnershipFilingsSource,
+    describe_flow,
+)
 from services.pdca.observer import DecisionEvent, SessionEndEvent, SessionObserver
 from services.pdca.post_trade import PostTradeTracker
 from services.pdca.decision_quality import (
@@ -190,6 +196,10 @@ class TradingPipeline:
     event_display_days: int = 14         # how far ahead Decision is shown events
     # F10: when set, checked at every session start (None = no heartbeat producers wired)
     heartbeat_alerter: Optional[HeartbeatAlerter] = None
+    # Institutional flow (§20): a volume anomaly from our own bars is always computed; SEC 13D/13G
+    # ownership filings need a source (None = not connected, stated to the model as unavailable).
+    flow_filings_source: Optional[OwnershipFilingsSource] = None
+    flow_engine: InstitutionalFlowEngine = field(default_factory=InstitutionalFlowEngine)
     # Read-only listeners (services/pdca/observer.py): they record and grade, never decide.
     observers: list[SessionObserver] = field(default_factory=list)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
@@ -571,9 +581,17 @@ class TradingPipeline:
         regime_text = self._read_regime(symbols, now)
         news_signals, news_fetched = self._load_news([s.symbol for s in scans], now, result)
         calendar, events_fetched = self._load_events([s.symbol for s in scans], now, result)
+        filings_by_symbol, filings_fetched = self._load_flow_filings(
+            [s.symbol for s in scans], now, result)
         for scan in scans[: self.max_new_positions * 3]:
             chosen = select_for_symbol(news_signals, scan.symbol) if news_fetched else []
+            flow_lines, flow_obs = describe_flow(
+                scan.symbol, scan.bars,
+                filings_by_symbol.get(scan.symbol, []) if filings_fetched else None)
+            if flow_obs is not None:
+                self.flow_engine.ingest(flow_obs)
             ctx = DecisionContext(scan=scan, regime=regime_text,
+                                  flow_lines=flow_lines, flow_filings_fetched=filings_fetched,
                                   as_of=decision_times.get(scan.symbol, now),
                                   news=[self._untrusted(s) for s in chosen],
                                   news_fetched=news_fetched,
@@ -975,6 +993,18 @@ class TradingPipeline:
         for ev in events:
             calendar.add(ev)
         return calendar, True
+
+    def _load_flow_filings(self, symbols: list[str], now: datetime,
+                           result: "PipelineResult") -> tuple[dict[str, list[str]], bool]:
+        """Ownership filings for the session's candidates (one fetch). `fetched=False` is stated to
+        the model as "not available", never as "none"; the session carries on."""
+        if self.flow_filings_source is None or not symbols:
+            return {}, False
+        try:
+            return self.flow_filings_source.fetch(symbols, now.date()), True
+        except FlowUnavailable as e:
+            result.data_warnings.append(f"ownership filings unavailable — Decision runs without them ({e})")
+            return {}, False
 
     @staticmethod
     def _untrusted(signal: NewsSignal) -> UntrustedText:

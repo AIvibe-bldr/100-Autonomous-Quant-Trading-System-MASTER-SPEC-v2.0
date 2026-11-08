@@ -51,7 +51,8 @@ def build_paper_pipeline(clock: Clock, universe: UniverseManager,
                    cost_engine: OperatingCostEngine | None = None,
                    wall_clock=None, audit_store=None, provider=None,
                    kill_switch=None, news_source=None,
-                   event_source=None, order_store=None, observers=None) -> TradingPipeline:
+                   event_source=None, order_store=None, observers=None,
+                         flow_filings_source=None) -> TradingPipeline:
     """decision_model / skeptic_model / auditor default to the deterministic
     Mocks (keeps tests network-free and reproducible); pass real Claude
     adapters (services.decision.claude_adapters.build_llm_stack) to run the
@@ -85,7 +86,8 @@ def build_paper_pipeline(clock: Clock, universe: UniverseManager,
         auditor=auditor or IndependentAuditor(model=MockAuditModel(), environment=env,
                                               audit_all=True),
         cost_engine=cost_engine, symbol_themes=DEFAULT_THEMES, news_source=news_source,
-        event_source=event_source, observers=list(observers or []))
+        event_source=event_source, observers=list(observers or []),
+        flow_filings_source=flow_filings_source)
 
 
 @dataclass
@@ -95,6 +97,7 @@ class RealDataSources:
     provider: Any
     news_source: Optional[Any] = None
     event_source: Optional[Any] = None
+    flow_filings_source: Optional[Any] = None          # SEC 13D/13G, when EDGAR is configured
     notices: list[str] = field(default_factory=list)       # e.g. "EDGAR disabled: ..."
 
 
@@ -133,4 +136,6 @@ def build_real_data_sources() -> RealDataSources:
                      EdgarInsiderNewsSource(edgar)) if x is not None])
     out.event_source = CompositeEventSource(
         [x for x in (out.event_source, EdgarEarningsEstimator(edgar)) if x is not None])
+    from services.institutional.sources import EdgarOwnershipFilingsSource
+    out.flow_filings_source = EdgarOwnershipFilingsSource(edgar)
     return out

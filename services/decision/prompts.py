@@ -92,6 +92,16 @@ def render_news(news: list[UntrustedText], fetched: bool = True) -> str:
     return "\n".join(blocks)
 
 
+def render_flow(ctx: DecisionContext) -> str:
+    """Institutional-flow facts (§20). States what is NOT available so absence is not read as calm."""
+    lines = ["Institutional / flow indicators:"] + [f"- {x}" for x in ctx.flow_lines]
+    if not ctx.flow_filings_fetched:
+        lines.append("- ownership filings (SEC 13D/13G): not available")
+    lines.append("Not available to this system: block trades, order-flow imbalance, options flow, "
+                 "short interest, ETF flows. A single indicator is never a reason to trade (§20).")
+    return "\n".join(lines)
+
+
 def build_decision_prompt(ctx: DecisionContext) -> str:
     s = ctx.scan
     lines = [
@@ -100,6 +110,7 @@ def build_decision_prompt(ctx: DecisionContext) -> str:
         render_data_age(ctx),
         render_quote(ctx),
         render_events(ctx),
+        render_flow(ctx),
         f"20-day momentum: {s.momentum_20d:.4f}",
         f"20-day realized volatility: {s.volatility:.4f}",
         f"20-day avg dollar volume: {s.dollar_volume:,.0f}",

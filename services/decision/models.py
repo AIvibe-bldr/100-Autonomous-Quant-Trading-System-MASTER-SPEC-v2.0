@@ -49,6 +49,10 @@ class DecisionContext:
     upcoming_events: list[str] = field(default_factory=list)
     events_fetched: bool = False
     news: list[UntrustedText] = field(default_factory=list)
+    # Institutional-flow facts (§20), one line each, already rendered from our own computation and
+    # SEC filings. `flow_filings_fetched=False` means ownership filings were not available.
+    flow_lines: list[str] = field(default_factory=list)
+    flow_filings_fetched: bool = False
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 

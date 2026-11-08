@@ -72,6 +72,7 @@ def main() -> None:
     provider = None
     news_source = None
     event_source = None
+    flow_filings = None
     if args.real_data:
         from services.composition import build_real_data_sources
         from services.market_data.service import MarketDataUnavailable
@@ -81,6 +82,7 @@ def main() -> None:
             sys.exit(f"--real-data: {e} (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)")
         provider, news_source, event_source = (sources.provider, sources.news_source,
                                                sources.event_source)
+        flow_filings = sources.flow_filings_source
         for note in sources.notices:
             print(f"({note})")
         args.days = 1      # real data has no replay; one live session
@@ -103,6 +105,7 @@ def main() -> None:
         decision, skeptic, auditor = build_llm_stack(config=cfg, usage=usage)
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
                                   kill_switch=KillSwitch.from_env(), news_source=news_source, event_source=event_source,
+                                  flow_filings_source=flow_filings,
                                   decision_model=decision, skeptic_model=skeptic,
                                   auditor=auditor, provider=provider)
         # decision.name reflects whichever provider build_llm_stack actually
@@ -115,7 +118,7 @@ def main() -> None:
     else:
         pipeline = build_pipeline(clock, universe, initial_cash=args.cash, provider=provider,
                                   kill_switch=KillSwitch.from_env(), news_source=news_source,
-                                  event_source=event_source)
+                                  event_source=event_source, flow_filings_source=flow_filings)
         print("=== No Anthropic credentials found — using deterministic Mock "
               "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")

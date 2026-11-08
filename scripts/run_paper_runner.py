@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
               f"Use a new --state-dir.", file=sys.stderr)
         return 2
 
-    provider = news = events = None
+    provider = news = events = flow_filings = None
     if args.real_data:
         try:
             src = build_real_data_sources()
@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--real-data: {e} (set APCA_API_KEY_ID and APCA_API_SECRET_KEY)", file=sys.stderr)
             return 2
         provider, news, events = src.provider, src.news_source, src.event_source
+        flow_filings = src.flow_filings_source
         for note in src.notices:
             print(f"({note})")
 
@@ -100,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
     kill_switch = KillSwitch.from_env()
     pipeline = build_paper_pipeline(
         clock, universe, initial_cash=args.cash, provider=provider, news_source=news,
-        event_source=events, kill_switch=kill_switch, order_store=order_store,
+        event_source=events, flow_filings_source=flow_filings, kill_switch=kill_switch,
+        order_store=order_store,
         observers=[ForecastObserver(), PitObserver(DurablePitStore(str(state / "pit.db"), Environment.PAPER))],
         audit_store=DurableAuditStore(str(state / "audit.db"), Environment.PAPER))
     sink = LoggingAlertSink()
