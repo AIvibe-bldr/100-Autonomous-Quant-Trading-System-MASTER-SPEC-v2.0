@@ -33,6 +33,7 @@ from packages.schemas.core import (
     BrokerOrderRequest,
     OrderState,
     RiskApprovedOrder,
+    TimeInForce,
 )
 from services.execution.state_machine import OrderStateMachine
 from packages.common.alerts import AlertSeverity, notify
@@ -214,7 +215,8 @@ class ExecutionEngine:
                                  side=snapshot.side, qty=snapshot.qty,
                                  order_type=snapshot.order_type,
                                  limit_price=snapshot.limit_price,
-                                 stop_price=snapshot.stop_price)
+                                 stop_price=snapshot.stop_price,
+                                 time_in_force=TimeInForce(snapshot.time_in_force))
         sm.transition(intent.client_order_id, OrderState.SUBMITTED)
         # F3/F9: persist BEFORE calling the broker, so a crash between "we
         # decided to submit" and "the broker acknowledged" still leaves a

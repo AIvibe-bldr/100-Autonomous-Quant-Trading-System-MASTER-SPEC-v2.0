@@ -22,6 +22,7 @@ from packages.schemas.core import (
     RiskApproval,
     RiskApprovedOrder,
     RiskRejection,
+    TimeInForce,
     order_intent_hash,
 )
 from services.decision.audit import (
@@ -98,7 +99,7 @@ def _approved(pipeline, cid: str, qty: float = 1.0):
 
 @pytest.mark.parametrize("update", [
     {"order_type": OrderType.LIMIT, "limit_price": 500.0},
-    {"order_type": OrderType.STOP, "stop_price": 5.0},
+    {"order_type": OrderType.STOP, "stop_price": 5.0, "time_in_force": TimeInForce.GTC},
 ])
 def test_price_and_type_changes_after_approval_are_rejected(pipeline, update):
     """An approved MARKET buy used to be resubmittable as a LIMIT at 5x, or as

@@ -36,6 +36,7 @@ from packages.schemas.core import (
     RiskRejection,
     SizedProposal,
     StopPlan,
+    TimeInForce,
     TradeProposal,
 )
 from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
@@ -381,6 +382,7 @@ class TradingPipeline:
                                                  self._order_seq),
             proposal_id=f"protective-{symbol}", symbol=symbol, side=Action.SELL,
             qty=qty, order_type=OrderType.STOP, stop_price=stop.stop_price,
+            time_in_force=TimeInForce.GTC,           # must outlive the session (INV-15)
             environment=self.environment, is_protective_exit=True, created_at=now)
         verdict = self.risk_controller.review(intent, self._exit_risk_view(symbol, qty, now))
         if isinstance(verdict, RiskRejection):

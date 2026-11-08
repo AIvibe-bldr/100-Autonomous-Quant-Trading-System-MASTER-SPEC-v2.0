@@ -184,11 +184,13 @@ def test_order_type_change_after_approval_rejected(pipeline):
     An approved MARKET buy resubmitted as a LIMIT — or as a resting STOP the
     controller never reviewed — used to sail through: the signature covered
     neither `order_type` nor any price field."""
-    from packages.schemas.core import OrderType
+    from packages.schemas.core import OrderType, TimeInForce
 
     approved = _approved(pipeline, "hash-test-00007", qty=1.0)
     for update in ({"order_type": OrderType.LIMIT, "limit_price": 500.0},
-                   {"order_type": OrderType.STOP, "stop_price": 5.0}):
+                   # a validly built (GTC) stop: the hash, not the STOP-must-be-GTC rule, must catch it
+                   {"order_type": OrderType.STOP, "stop_price": 5.0,
+                    "time_in_force": TimeInForce.GTC}):
         with pytest.raises(ValueError, match="execution-relevant field changed"):
             RiskApprovedOrder(intent=approved.intent.model_copy(update=update),
                               approval=approved.approval)

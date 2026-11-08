@@ -11,7 +11,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Callable, Optional
 
 from packages.broker_adapters.base import (
@@ -35,6 +35,7 @@ from packages.schemas.core import (
     OrderState,
     OrderType,
     Quote,
+    TimeInForce,
 )
 
 
@@ -50,6 +51,7 @@ class _PaperOrder:
     request: BrokerOrderRequest
     broker_order_id: str
     state: OrderState
+    submitted_on: Optional[date] = None
     filled_qty: float = 0.0
     fills: list[BrokerFill] = field(default_factory=list)
 
@@ -87,7 +89,7 @@ class PaperBroker(BrokerAdapter):
             raise DuplicateClientOrderIdError(order.client_order_id)
 
         po = _PaperOrder(request=order, broker_order_id=str(uuid.uuid4()),
-                         state=OrderState.SUBMITTED)
+                         state=OrderState.SUBMITTED, submitted_on=self._clock.now().date())
         self._orders[order.client_order_id] = po
 
         if self.fault is Fault.TIMEOUT:
@@ -182,6 +184,15 @@ class PaperBroker(BrokerAdapter):
         self._settled_cash += self._unsettled_cash
         self._unsettled_cash = 0.0
 
+    def _expire_if_day(self, po: _PaperOrder) -> None:
+        """A DAY order that is still resting after its session ends expires, as at a real
+        broker (the simulation's day is the UTC date of the clock; a GTC order never expires)."""
+        if (po.request.time_in_force is TimeInForce.DAY
+                and po.state in (OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED)
+                and po.submitted_on is not None
+                and self._clock.now().date() > po.submitted_on):
+            po.state = OrderState.EXPIRED
+
     def poll_resting_orders(self) -> list[BrokerFill]:
         """Re-evaluate resting orders against current quotes.
 
@@ -192,6 +203,7 @@ class PaperBroker(BrokerAdapter):
         self._check_disconnect()
         before = len(self._all_fills)
         for po in list(self._orders.values()):
+            self._expire_if_day(po)
             if po.state in (OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED):
                 try:
                     self._execute(po)
@@ -218,6 +230,7 @@ class PaperBroker(BrokerAdapter):
     def get_order_status(self, client_order_id: str) -> BrokerOrderStatus:
         self._check_disconnect()
         po = self._orders[client_order_id]
+        self._expire_if_day(po)
         return BrokerOrderStatus(client_order_id=client_order_id,
                                  broker_order_id=po.broker_order_id, state=po.state,
                                  filled_qty=po.filled_qty,
