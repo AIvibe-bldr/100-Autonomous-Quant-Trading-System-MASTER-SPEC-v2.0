@@ -11,7 +11,10 @@ repo has, one table per narrowly-scoped consumer:
   `ExecutionEngine.submit()`, so "why did this order reach the broker"
   (A5) survives a crash, not just the lifetime of the process.
 
-Neither is a general persistence layer — `docs/database.md`'s full 15-table
+- `DurableSessionStore`: one row per trading session (equity, drawdown, funnel counts, risk
+  state, warnings) so multi-day paper results can be measured and compared across runs.
+
+None is a general persistence layer — `docs/database.md`'s full 15-table
 V1 schema (decision provenance, fills, ledger, etc.) remains future work.
 `docs/database.md` already names SQLite as the V1 fallback
 ("インメモリ/SQLite互換のリポジトリ層"); this uses stdlib `sqlite3`, so no
@@ -188,6 +191,95 @@ class DurableAuditStore:
             environment=self.environment,
             created_at=datetime.fromisoformat(created_at),
             updated_at=datetime.fromisoformat(updated_at))
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    """What one trading session left behind. `day_pnl` is the change in equity from the
+    previous recorded session (or from the initial cash for the first), measured at session
+    time — not at the close — so it is an open-to-open figure."""
+    session_date: str            # trading date in ET, ISO
+    model_tag: str               # which AI stack / configuration produced it (for comparison)
+    recorded_at: datetime
+    equity: float
+    cash: float
+    high_water_mark: float
+    drawdown: float
+    day_pnl: float
+    realized_pnl_total: float
+    fees_total: float
+    scanned: int
+    candidates: int
+    decision_candidates: int
+    skeptic_vetoes: int
+    audit_passed: int
+    risk_passed: int
+    orders_filled: int
+    stops_triggered: int
+    open_positions: int
+    data_warnings: int
+    risk_state: str
+    llm_cost_usd: Optional[float]
+    detail_json: str             # no-trade reasons, warnings, fills
+
+
+_SESSION_COLUMNS = (
+    "session_date", "model_tag", "recorded_at", "equity", "cash", "high_water_mark", "drawdown",
+    "day_pnl", "realized_pnl_total", "fees_total", "scanned", "candidates", "decision_candidates",
+    "skeptic_vetoes", "audit_passed", "risk_passed", "orders_filled", "stops_triggered",
+    "open_positions", "data_warnings", "risk_state", "llm_cost_usd", "detail_json")
+
+
+class DurableSessionStore:
+    """Append-only: a session date is recorded once. A second record for the same date is an
+    error (it would overwrite history), not an upsert."""
+
+    def __init__(self, path: str, environment: Environment) -> None:
+        self.environment = environment
+        self._table = environment.namespace("sessions")
+        self._conn = sqlite3.connect(path)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} ("
+            "session_date TEXT PRIMARY KEY, model_tag TEXT NOT NULL, recorded_at TEXT NOT NULL, "
+            "equity REAL NOT NULL, cash REAL NOT NULL, high_water_mark REAL NOT NULL, "
+            "drawdown REAL NOT NULL, day_pnl REAL NOT NULL, realized_pnl_total REAL NOT NULL, "
+            "fees_total REAL NOT NULL, scanned INTEGER NOT NULL, candidates INTEGER NOT NULL, "
+            "decision_candidates INTEGER NOT NULL, skeptic_vetoes INTEGER NOT NULL, "
+            "audit_passed INTEGER NOT NULL, risk_passed INTEGER NOT NULL, "
+            "orders_filled INTEGER NOT NULL, stops_triggered INTEGER NOT NULL, "
+            "open_positions INTEGER NOT NULL, data_warnings INTEGER NOT NULL, "
+            "risk_state TEXT NOT NULL, llm_cost_usd REAL, detail_json TEXT NOT NULL)")
+        self._conn.commit()
+
+    def record(self, rec: SessionRecord) -> None:
+        values = [getattr(rec, c) for c in _SESSION_COLUMNS]
+        values[2] = rec.recorded_at.isoformat()
+        try:
+            self._conn.execute(
+                f"INSERT INTO {self._table} ({', '.join(_SESSION_COLUMNS)}) "
+                f"VALUES ({', '.join('?' * len(_SESSION_COLUMNS))})", values)
+        except sqlite3.IntegrityError:
+            raise ValueError(f"session {rec.session_date} is already recorded") from None
+        self._conn.commit()
+
+    def all(self) -> list[SessionRecord]:
+        cur = self._conn.execute(
+            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM {self._table} ORDER BY session_date")
+        out = []
+        for row in cur.fetchall():
+            d = dict(zip(_SESSION_COLUMNS, row))
+            d["recorded_at"] = datetime.fromisoformat(d["recorded_at"])
+            out.append(SessionRecord(**d))
+        return out
+
+    def latest_equity(self) -> Optional[float]:
+        cur = self._conn.execute(
+            f"SELECT equity FROM {self._table} ORDER BY session_date DESC LIMIT 1")
+        row = cur.fetchone()
+        return row[0] if row else None
 
     def close(self) -> None:
         self._conn.close()

@@ -30,7 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from packages.common.alerts import LoggingAlertSink
 from packages.common.calendar import TradingCalendar
 from packages.common.clock import Clock
-from packages.common.durable_store import DurableAuditStore, DurableOrderStore
+from packages.common.durable_store import (
+    DurableAuditStore,
+    DurableOrderStore,
+    DurableSessionStore,
+)
 from packages.common.environment import Environment
 from packages.common.kill_switch import KillSwitch, describe
 from services.composition import DEFAULT_SYMBOLS, build_paper_pipeline, build_real_data_sources
@@ -38,6 +42,7 @@ from services.market_data.service import MarketDataUnavailable
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.supervisor.heartbeat import HeartbeatRegistry
 from services.supervisor.runner import RunnerConfig, SessionRunner, next_session_at
+from services.supervisor.session_record import SessionRecorder
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -49,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cash", type=float, default=670.0)
     parser.add_argument("--state-dir", default="var/runner")
     parser.add_argument("--show-schedule", action="store_true")
+    parser.add_argument("--model-tag", default="mock-ai",
+                        help="label stored with each session so runs can be compared")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -66,9 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     state = Path(args.state_dir)
     state.mkdir(parents=True, exist_ok=True)
     order_store = DurableOrderStore(str(state / "orders.db"), Environment.PAPER)
-    if order_store.all():
-        print(f"refusing to start: {state / 'orders.db'} holds orders from an earlier run, but the "
-              f"paper broker/ledger cannot be restored. Use a new --state-dir.", file=sys.stderr)
+    session_store = DurableSessionStore(str(state / "sessions.db"), Environment.PAPER)
+    if order_store.all() or session_store.all():
+        print(f"refusing to start: {state} holds orders/sessions from an earlier run, but the "
+              f"paper broker/ledger cannot be restored (a restart is a new account). "
+              f"Use a new --state-dir.", file=sys.stderr)
         return 2
 
     provider = news = events = None
@@ -97,9 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     stop = threading.Event()            # set by SIGINT/SIGTERM; its wait() is the tick sleep, so a
     for sig in (signal.SIGINT, signal.SIGTERM):      # stop request ends the wait at once
         signal.signal(sig, lambda *_: stop.set())
+    recorder = SessionRecorder(pipeline, session_store, args.model_tag)
+
+    def after_session(at, result):
+        recorder(at, result)             # record first: a failure here stops the runner
+        broker.settle()                  # paper T+1 tick
+
     runner = SessionRunner(pipeline, cal, clock, HeartbeatRegistry(clock), sink, cfg,
-                           sleep=stop.wait,
-                           after_session=lambda at, result: broker.settle())   # paper T+1 tick
+                           sleep=stop.wait, after_session=after_session)
 
     logging.getLogger("quant.runner").info(
         "runner up: PAPER, cash $%.2f, data=%s, kill switch %s, state %s",

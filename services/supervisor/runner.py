@@ -125,7 +125,10 @@ class SessionRunner:
                  session_date, result.scanned, result.candidates, result.orders_filled,
                  len(result.data_warnings), result.stops_triggered)
         if self._after is not None:
-            self._after(now, result)
+            try:
+                self._after(now, result)
+            except Exception as e:  # noqa: BLE001 — losing the record of a session is a failure too
+                self._fail(now, f"after-session step failed: {type(e).__name__}: {e}")
         return result
 
     def _fail(self, now: datetime, reason: str) -> None:
