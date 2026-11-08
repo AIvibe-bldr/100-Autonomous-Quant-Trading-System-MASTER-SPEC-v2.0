@@ -172,19 +172,19 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 | 仕様§ | モジュール | 影響 |
 |---|---|---|
 | 17-19 | `services/news` | ~~Decision AI にニュースが渡らない~~ → 2026-11-07 から接続（下記「ニュース接続」）。実行は `--real-data` のデモのみ |
-| 20 | `services/institutional` | 同上（機関投資家フロー未使用） |
+| 20 | `services/institutional` | ~~未使用~~ → 2026-11-08 から接続（下記「学習・観測ループの接続」。無料で得られる範囲のみ: 出来高異常＋13D/13G の事実） |
 | 16 | `services/market_data/event_calendar.py` | ~~未接続~~ → 2026-11-07 から接続（下記「イベントカレンダー接続」）。決算日は EDGAR による推定のみ（下記「SEC EDGAR 接続」） |
 | 15 | `services/market_data/corporate_actions.py` | 価格調整は不要（Alpaca の日足は `adjustment=all` で調整済み）。今後の分割・配当等は上記イベントカレンダー経由で接続済み。エンジン自体は未使用のまま |
-| 10 | `packages/common/pit_store.py` | Point-in-Time ストア未使用 |
+| 10 | `packages/common/pit_store.py` | ~~未使用~~ → 2026-11-08 から永続版 `DurablePitStore` で判断ごとの入力／出力を記録（下記） |
 | 14 | `packages/common/settlement.py` | 決済はブローカー報告（`get_cash().settled_cash`）を権威として使用。Settlement Manager 自体は未使用 |
-| 23-24, 56-61 | `services/alpha_factory`, `pdca/shadow.py` ほか | 推奨のみで設計上、Risk へ書き込まない（意図的）。ただし本番フローには未接続 |
-| 30 | `services/decision/disagreement.py` | Skeptic/Decision の不一致集計が未使用 |
-| 32 | `services/decision/forecast.py` | Forecast Tracker 未接続 |
-| 50-55 | `pdca/attribution.py`, `exit_optimizer.py` | 損益分解・出口最適化が未接続（`review.py` はスクリプトのみ） |
-| 68 | `services/supervisor/recovery.py` | 復旧処理が未接続 |
-| 76-79 | `services/decision/human_intent.py` | 人の意図解析が未接続 |
+| 23-24, 56-61 | `services/alpha_factory`, `pdca/shadow.py` ほか | ~~未接続~~ → 2026-11-08 からシャドー実行・アブレーション・Alpha 判定を接続（推奨のみ。Risk へ書き込まない設計は維持。下記） |
+| 30 | `services/decision/disagreement.py` | ~~未使用~~ → 2026-11-08 からサイズ縮小（係数 0.5〜1.0・縮める方向のみ）に接続（下記） |
+| 32 | `services/decision/forecast.py` | ~~未接続~~ → 2026-11-08 から全判断のシナリオ予測を記録・採点（下記） |
+| 50-55 | `pdca/attribution.py`, `exit_optimizer.py` | ~~未接続~~ → 2026-11-08 から接続（損益分解・損切り採点・見送りの反実仮想・日次レビュー。出口の変更提案は RESEARCH 止まり） |
+| 68 | `services/supervisor/recovery.py` | ~~未接続~~ → 2026-11-08 から実行器に接続（重大障害は人が解決するまで再起動を拒否） |
+| 76-79 | `services/decision/human_intent.py` | ~~未接続~~ → 2026-11-08 から接続（受付箱→分析→人の確認→AI と同じ関門。買いのみ） |
 | 48-49 | `services/reconciliation/engine.py` | ~~起動時のみ~~ → 2026-11-07 から毎セッション `run_session` 冒頭で実行（配線済み） |
-| — | `services/capital_cells/*` | 資本セル設計（`docs/capital_cell_architecture.md`）。ライブには未接続 |
+| — | `services/capital_cells/*` | 資本セル設計。**意図的に未接続**: 注文経路の置き換えになるアーキテクチャ変更のため、統合案を `docs/capital_cell_architecture.md` 末尾に記載（承認待ち） |
 
 ### C. パイプライン内のリテラル値 — 解消（2026-11-07）
 
@@ -291,3 +291,22 @@ import 解析（他の本番コードから参照されるか／テスト・ス�
 - 対応: `EdgarClient._filings_of` が、`recent` の最古日が必要期間（`HISTORY_DAYS`=540日。決算推定の遡り500日 `_LOOKBACK` より長く保つ）に届かない時だけ、期間に重なるシャード（`filingTo` が期間内）を取得し、期間より古い行は捨てる。`recent` が届く銘柄（AAPL など大半）は追加取得ゼロ。取得失敗は例外（「履歴が少ない」と読まない）。壊れたシャード記述は読み飛ばす（履歴が減る＝保守側）。旧CIK連結にも同じ関数が効く。
 - 効果（実サービス）: JPM 36,909件(最古 2025-05-19)、追加リクエスト6件・約2.4秒、決算日推定 2027-01-12 の **±14日 → ±7日**。
 - 限界: 期間は決算推定に合わせた540日。もっと古い履歴が必要な機能を足す時は `history_days` を増やす（取得量が増える）。クライアントは1実行内でキャッシュするが、実行をまたぐ永続キャッシュは無い（常時稼働で毎日取り直す場合は、JPMで毎回約1.5MB）。
+
+### 学習・観測ループの接続（2026-11-08）
+
+**原則**: 学習・観測は `services/pdca/observer.py` の**読み取り専用フック**に載せる。観測者は平易な事実（判断・約定・セッション終了）だけを受け取り、パイプライン／リスク／ブローカー／設定への手掛かりを持たない（「提案のみ、適用しない」を構造で保証）。観測者の失敗は取引を止めず `data_warnings` に出る。各観測者の累積サマリは日次の `DurableSessionStore.detail_json` の `observers` に入る。取引が変わらないことは、観測者あり／なしを並走させるテストで確認している。
+
+| 項目 | 実装 | 何をするか／限界 |
+|---|---|---|
+| §32 予測追跡 | `forecast_observer.py` | 全判断の Bear/Base/Bull を記録し、期限後に着地帯で採点→確率の較正表。価格が取れなければ未採点のまま。サイジングへは**戻さない**（`CalibrationTracker` への成績入力は未配線で、サイズに効くため別判断） |
+| §10 PIT | `DurablePitStore`, `pit_observer.py` | 判断ごとに AI へ見せた入力（気配・レジーム・イベント・ニュース）と出力を受信時刻つきで保存。後から「その時点で知り得たこと」を再現できる。再生側（保存した入力でのリプレイ）は未実装 |
+| §20 機関投資家フロー | `institutional/sources.py` | **出来高異常**（自前の日足。方向は当日の値動き）＋ **SEC 13D/13G の提出の事実**（売買方向は索引から不明）を Decision/Skeptic のプロンプトへ。ブロック取引・オーダーフロー・オプション・空売り残高・ETFフローは無料では取れず「利用不可」と明示。§20 により1特徴では売買しない（エンジンの `actionable` は2特徴以上） |
+| §30 不一致 | `pipeline._measure_disagreement` | quant／Decision／Skeptic／ニュース／フロー／レジームの傾きの散らばりで、校正後 confidence に 0.5〜1.0 を掛ける。**サイズは縮む方向にしか動かない**（サイジング側に床 0.25）。傾きの対応は `disagreement.py` に集約（判断を要する設定: Skeptic の低 severity は「同意」と扱う） |
+| §50-55 | `performance_observers.py` | 損益分解（市場β=1.0 を仮定し SPY との比で alpha を出す。ベンチ価格が無ければ「未帰属」と数える）、損切りの採点、**NO_TRADE/WAIT/AVOID の反実仮想**（買った場合の1週間後）、採点済み損切りが20件以上かつ50%以上が早すぎる時に**研究提案を1件**（実際の出口は変えない）、日次レビュー（WHY PROFIT/LOSS/NO TRADE） |
+| §56-58, 23-24, 60 | `shadow_observer.py`, `alpha_factory/report.py`, `scripts/judge_alphas.py` | シャドー: FULL（実際）／QUANT_ONLY／BENCHMARK と各 Alpha 候補の仮想売買を毎セッション。FULL−QUANT_ONLY が「AIスタックの寄与」（コストなしの引け値保有との比較で like-for-like ではない）。LLM の再実行が要る変種（NO_NEWS 等）は費用が出るので**行わない**。Judge は履歴が要るため別スクリプトで推奨のみ（`consider_promotion` は呼ばない） |
+| §68-69, 71 | `incident_log.py`, `scripts/incidents.py` | 重大障害（実行器の停止）は追記専用ログに postmortem 雛形つきで残り、**人が操作者名と理由つきで解決するまで実行器は起動を拒否**。ログが読めなければ未解決の重大障害として扱う。軽微な障害（データ警告）は自動解決で記録 |
+| §76-79 人の意図 | `intent_inbox.py`, `scripts/human_intent.py` | 提出（意図≠注文）→ 市場オープン中に分析を付与（§77。予測帯は固定テンプレートである旨を明記）→ **人が読んで確認**（分析前は確認不可、確認は2日で失効）→ 次のセッションで AI 候補と**同じ関門**（損切り計画・サイジング・配分・Audit・Master Risk・キルスイッチ・LIVE ゲート）。Skeptic は呼ばない。AI の見解を併記して記録し、1週間後に人 vs AI を比較（§79）。**買いのみ**（保護ストップが株数を拘束する現金口座で、願望だけで売りを出すと先にストップを外す必要があるため受付時に拒否）。新しい入力口だが、キルスイッチ等と同じ信頼モデル（ホストのファイルを書ける人が操作者） |
+
+**併せて直した不具合**: 配分で承認された候補のうち `max_new_positions` を超えた分が**理由なしで捨てられていた**（NO TRADE の理由の欠落。§93）→ 理由を記録、人の確認済み候補は先頭に並べる。
+
+**未実装・限界**: 保存した PIT 入力を使った再生、`CalibrationTracker` への成績フィードバック（サイズに効く）、WANT_SELL、資本セルの統合（上記の統合案）。数値の意味は、実LLM・実データでの長期運用で確かめる段階（少数日では優劣の根拠にならない）。
