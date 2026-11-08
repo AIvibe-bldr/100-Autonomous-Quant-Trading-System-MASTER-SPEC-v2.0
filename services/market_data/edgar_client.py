@@ -19,11 +19,15 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SUBMISSIONS_SHARD_URL = "https://data.sec.gov/submissions/{name}"
+# How far back a company's filing list must reach. The earnings estimator looks back 500 days
+# (edgar_earnings._LOOKBACK); the margin keeps the two from drifting apart silently.
+HISTORY_DAYS = 540
 ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
 ENV_VAR = "QUANT_SEC_USER_AGENT"
 _MIN_INTERVAL_SEC = 0.15          # ~6.6 req/s, under SEC's 10/s
@@ -100,6 +104,8 @@ class EdgarClient:
     def __init__(self, user_agent: str, *, http_get: Optional[HttpGet] = None,
                  http_get_text: Optional[HttpGetText] = None,
                  predecessors: Optional[dict[str, tuple[int, ...]]] = None,
+                 history_days: int = HISTORY_DAYS,
+                 today: Callable[[], date] = lambda: datetime.now(timezone.utc).date(),
                  sleep: Callable[[float], None] = time.sleep) -> None:
         if not user_agent or not _UA_SHAPE.match(user_agent.strip()):
             raise EdgarUnavailable(
@@ -109,6 +115,8 @@ class EdgarClient:
         self._get_text = http_get_text or _urllib_get_text
         self._predecessors = KNOWN_PREDECESSORS if predecessors is None else predecessors
         self._by_cik: dict[int, list[Filing]] = {}
+        self._history_days = history_days
+        self._today = today
         self._documents: dict[str, str] = {}
         self._sleep = sleep
         self._last = 0.0
@@ -163,10 +171,32 @@ class EdgarClient:
         return next((f for f in self._filings_of(cik) if f.form in SUCCESSOR_FORMS), None)
 
     def _filings_of(self, cik: int) -> list[Filing]:
+        """All filings of one CIK reaching back `history_days`. SEC's `recent` list holds the
+        newest ~1000 filings or one year, whichever is more — a prolific filer (JPM: ~26,000
+        structured-note filings a year) is cut off at about a year, so the older ones are read
+        from the dated `files` shards, but only those overlapping the needed period."""
         if cik in self._by_cik:
             return self._by_cik[cik]
+        body = self._fetch(SUBMISSIONS_URL.format(cik=cik))["filings"]
+        out = self._parse_filings(cik, body["recent"])
+        cutoff = self._today() - timedelta(days=self._history_days)
+        if out and min(f.filing_date for f in out) > cutoff:
+            for shard in body.get("files", []):
+                try:
+                    needed = date.fromisoformat(shard["filingTo"]) >= cutoff
+                    name = shard["name"]
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if needed:
+                    out += [f for f in self._parse_filings(
+                        cik, self._fetch(SUBMISSIONS_SHARD_URL.format(name=name)))
+                        if f.filing_date >= cutoff]
+        self._by_cik[cik] = out
+        return out
+
+    @staticmethod
+    def _parse_filings(cik: int, recent: dict[str, Any]) -> list[Filing]:
         out: list[Filing] = []
-        recent = self._fetch(SUBMISSIONS_URL.format(cik=cik))["filings"]["recent"]
         for i, acc in enumerate(recent["accessionNumber"]):
             try:
                 out.append(Filing(
@@ -179,7 +209,6 @@ class EdgarClient:
                     primary_document=recent["primaryDocument"][i]))
             except (KeyError, IndexError, ValueError, TypeError):
                 continue                                       # one bad row must not hide the rest
-        self._by_cik[cik] = out
         return out
 
     def document_text(self, filing: Filing) -> str:
