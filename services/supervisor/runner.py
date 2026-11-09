@@ -18,6 +18,7 @@ watcher on the registry (or the process supervisor) is needed for that."""
 from __future__ import annotations
 
 import logging
+import os
 import time as _time
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -32,6 +33,14 @@ from services.supervisor.heartbeat import Heartbeat, HeartbeatRegistry, ServiceS
 from services.supervisor.heartbeat_alerts import HeartbeatAlerter
 from services.supervisor.incident_log import IncidentLog
 from services.supervisor.recovery import FaultSeverity, RecoveryManager
+from services.supervisor.status_file import (
+    FAILED,
+    RUNNING,
+    STARTING,
+    STOPPED,
+    WAITING,
+    RunnerStatus,
+)
 
 log = logging.getLogger("quant.runner")
 
@@ -85,7 +94,8 @@ class SessionRunner:
                  after_session: Optional[Callable[[datetime, PipelineResult], None]] = None,
                  recovery: Optional[RecoveryManager] = None,
                  incident_log: Optional[IncidentLog] = None,
-                 market_open_hook: Optional[Callable[[datetime], object]] = None) -> None:
+                 market_open_hook: Optional[Callable[[datetime], object]] = None,
+                 status_sink: Optional[Callable[[RunnerStatus], None]] = None) -> None:
         self._pipeline = pipeline
         self._calendar = calendar
         self._clock = clock
@@ -98,10 +108,39 @@ class SessionRunner:
         self._recovery = recovery
         self._incident_log = incident_log
         self._market_open_hook = market_open_hook
+        self._status_sink = status_sink
+        self._started_at = clock.now()
+        self._sessions_run = 0
+        self._last_session_at: Optional[datetime] = None
         self.last_run: Optional[date] = None
         self.failed: Optional[str] = None
         self._pipeline_status = ServiceStatus.OK
         self._last_good: Optional[datetime] = None
+
+    # -- proof of life, for an outside watchdog and the ops dashboard -------------------
+    def _publish(self, state: str, session_started: Optional[datetime] = None) -> None:
+        if self._status_sink is None:
+            return
+        now = self._clock.now()
+        ks = getattr(self._pipeline.execution, "kill_switch", None)
+        try:
+            nxt = next_session_at(self._calendar, now, self.last_run, self._cfg.session_time_et).isoformat()
+        except (ValueError, RuntimeError):
+            nxt = None                                  # calendar problem: the tick reports it separately
+        status = RunnerStatus(
+            pid=os.getpid(), environment=self._pipeline.environment.value, state=state,
+            started_at=self._started_at.isoformat(), updated_at=now.isoformat(),
+            session_started_at=session_started.isoformat() if session_started else None,
+            last_session_date=self.last_run.isoformat() if self.last_run else None,
+            last_session_at=self._last_session_at.isoformat() if self._last_session_at else None,
+            sessions_run=self._sessions_run, failure=self.failed,
+            risk_state=self._pipeline.risk_controller.state.value,
+            kill_switch_engaged=bool(ks and ks.status().engaged), next_session_at=nxt,
+            tick_seconds=self._cfg.tick_seconds)
+        try:
+            self._status_sink(status)
+        except Exception as e:  # noqa: BLE001 — a status write must never stop trading; the watchdog sees the gap
+            log.warning("could not write the runner status: %s: %s", type(e).__name__, e)
 
     # -- one tick ------------------------------------------------------------
     def tick(self) -> Optional[PipelineResult]:
@@ -117,7 +156,10 @@ class SessionRunner:
         except ValueError as e:                      # calendar has no data for this year
             self._fail(now, f"trading calendar unavailable: {e}")
             return None
-        return self._run(now, due) if due else None
+        result = self._run(now, due) if due else None
+        if not self.failed:
+            self._publish(WAITING)
+        return result
 
     def _run_market_open_hook(self, now: datetime) -> None:
         """Work that should happen while the market is open but is not a session (e.g. attaching the
@@ -132,12 +174,15 @@ class SessionRunner:
 
     def _run(self, now: datetime, session_date: date) -> Optional[PipelineResult]:
         log.info("session start date=%s", session_date)
+        self._publish(RUNNING, session_started=now)
         try:
             result = self._pipeline.run_session(now)
         except Exception as e:  # noqa: BLE001 — fail closed: alert, halt entries, stop the runner
             self._fail(now, f"session {session_date} raised {type(e).__name__}: {e}")
             return None
         self.last_run = session_date
+        self._sessions_run += 1
+        self._last_session_at = now
         self._last_good = now
         self._pipeline_status = ServiceStatus.WARNING if result.data_warnings else ServiceStatus.OK
         self._beat("pipeline", self._pipeline_status, now, now)
@@ -177,6 +222,7 @@ class SessionRunner:
                                                  reason=f"runner failure: {reason}")
         notify(self._sink, AlertSeverity.CRITICAL, f"runner stopped: {reason}")
         self._alerter.check()
+        self._publish(FAILED)
         log.error("runner stopped: %s", reason)
 
     def _beat(self, service: str, status: ServiceStatus, now: datetime, last_success: datetime) -> None:
@@ -186,9 +232,11 @@ class SessionRunner:
     def run_forever(self, should_stop: Callable[[], bool] = lambda: False) -> Optional[str]:
         """Tick until `should_stop()` or a failure. Returns the failure reason, or None for
         a requested stop."""
+        self._publish(STARTING)
         while not should_stop():
             self.tick()
             if self.failed:
                 return self.failed
             self._sleep(self._cfg.tick_seconds)
+        self._publish(STOPPED)
         return None

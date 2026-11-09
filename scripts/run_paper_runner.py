@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from packages.common.alerts import LoggingAlertSink
+from packages.common.alert_sinks import alert_sink_from_env, describe_sink
 from packages.common.calendar import TradingCalendar
 from packages.common.clock import Clock
 from packages.common.durable_store import (
@@ -50,6 +50,8 @@ from services.decision.intent_inbox import IntentInbox
 from services.supervisor.heartbeat import HeartbeatRegistry
 from services.supervisor.incident_log import IncidentLog
 from services.supervisor.recovery import RecoveryManager
+from services.supervisor.status_file import FILE_NAME as STATUS_FILE
+from services.supervisor.status_file import write_status
 from services.supervisor.runner import RunnerConfig, SessionRunner, next_session_at
 from services.supervisor.session_record import SessionRecorder
 
@@ -121,7 +123,11 @@ def main(argv: list[str] | None = None) -> int:
         audit_store=DurableAuditStore(str(state / "audit.db"), Environment.PAPER))
     attach_learning_observers(pipeline, args.cash,
                               pit_store=DurablePitStore(str(state / "pit.db"), Environment.PAPER))
-    sink = LoggingAlertSink()
+    try:
+        sink = alert_sink_from_env(state / "alerts.jsonl")        # logging + history file + webhook/e-mail if configured
+    except ValueError as e:
+        print(f"alert configuration: {e}", file=sys.stderr)
+        return 2
     pipeline.risk_controller.alert_sink = sink
     broker = pipeline.execution.broker
 
@@ -138,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
                            sleep=stop.wait, after_session=after_session,
                            recovery=RecoveryManager(clock, start_seq=incidents.next_seq()),
                            incident_log=incidents,
-                           market_open_hook=pipeline.analyze_human_intents)
+                           market_open_hook=pipeline.analyze_human_intents,
+                           status_sink=lambda st: write_status(state / STATUS_FILE, st))
 
     last_year = getattr(cal.provider, "last_year", None)       # not every provider knows its range
     if last_year is not None and clock.now().year >= last_year and clock.now().month >= 10:
@@ -146,8 +153,8 @@ def main(argv: list[str] | None = None) -> int:
             "trading calendar data ends in %d: add the next year (NYSE announcement) before "
             "1 January or the runner will stop closed", last_year)
     logging.getLogger("quant.runner").info(
-        "runner up: PAPER, cash $%.2f, data=%s, kill switch %s, state %s",
-        args.cash, "alpaca" if provider else "mock", describe(kill_switch.status()), state)
+        "runner up: PAPER, cash $%.2f, data=%s, kill switch %s, state %s, alerts -> %s",
+        args.cash, "alpaca" if provider else "mock", describe(kill_switch.status()), state, describe_sink(sink))
     failure = runner.run_forever(stop.is_set)
     if failure:
         print(f"runner stopped on failure: {failure}", file=sys.stderr)
