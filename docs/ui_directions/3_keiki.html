@@ -1,0 +1,58 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>方向3 計器</title>
+<style>
+:root{--bg:#eff1ec;--ink:#15201b;--mute:#66726b;--line:#d5dad2;--acc:#d99a00;--up:#0e7a55;--dn:#c0392b;--panel:#f9faf7}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 "Hiragino Sans","Noto Sans JP",system-ui,sans-serif;padding:0 0 70px}
+.num{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.top{display:flex;justify-content:space-between;align-items:center;padding:12px 22px;border-bottom:2px solid var(--ink)}
+.top b{letter-spacing:.2em;font-size:14px}.top .st{display:flex;align-items:center;gap:8px;font-weight:700}.top .st i{width:12px;height:12px;background:var(--up);clip-path:polygon(0 0,100% 0,100% 100%,0 100%)}
+.wrap{display:grid;grid-template-columns:230px 1fr;gap:0;max-width:1100px;margin:0 auto}
+.rail{padding:22px 22px 0;border-right:1px solid var(--line)}
+.rail h2,.main h2{font-size:11px;letter-spacing:.2em;color:var(--mute);margin-bottom:10px;font-weight:700}
+.tl{list-style:none;padding:0 0 0 14px;border-left:2px solid var(--ink);margin-bottom:26px}
+.tl li{position:relative;padding:0 0 14px 12px;font-size:13.5px;line-height:1.45}.tl li::before{content:"";position:absolute;left:-21px;top:5px;width:10px;height:10px;background:var(--bg);border:2px solid var(--ink)}
+.tl li.now::before{background:var(--acc);border-color:var(--acc)}.tl time{display:block;font-size:11.5px;color:var(--mute)}
+.main{padding:22px 24px;min-width:0}
+.hero{display:flex;gap:30px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px}
+.hero small{display:block;font-size:11px;color:var(--mute);letter-spacing:.1em}.hero .b{font-size:40px;font-weight:700;line-height:1.1}.hero .m{font-size:22px;font-weight:700}
+.msg{border-left:6px solid var(--acc);background:var(--panel);padding:8px 14px;margin:14px 0 22px}
+.up{color:var(--up)}.dn{color:var(--dn)}.fl{color:var(--mute)}
+.hd,.r{display:grid;grid-template-columns:120px 1fr 96px;gap:18px;align-items:center}
+.hd{font-size:11px;color:var(--mute);letter-spacing:.1em;padding:0 0 6px;border-bottom:2px solid var(--ink)}
+.r{padding:11px 0;border-bottom:1px solid var(--line);cursor:pointer}.r:hover{background:var(--panel)}
+.r .s{font-weight:800;font-size:17px}.r .c{font-size:11.5px;color:var(--mute);line-height:1.3}
+.g{position:relative;height:26px}
+.g .tr{position:absolute;left:0;right:0;top:12px;height:3px;background:var(--line)}
+.g .sf{position:absolute;top:12px;height:3px;background:#c0392b33}
+.g .e{position:absolute;top:6px;width:2px;height:15px;background:var(--mute)}
+.g .p{position:absolute;top:3px;width:4px;height:21px;background:var(--ink);transform:translateX(-2px)}
+.g .l{position:absolute;top:-1px;font-size:10.5px;color:var(--mute)}
+.r .v{text-align:right;font-weight:700;font-size:18px;line-height:1.2}.r .v small{display:block;font-size:12px;font-weight:400;color:var(--mute)}
+.r.warn .g .p{background:var(--dn)}.tag{white-space:nowrap;font-size:11px;color:#8a5a00;background:#fff1c9;padding:0 6px;margin-left:6px}
+.det{display:none;grid-column:1/-1;font-size:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;margin-top:6px}.det.open{display:block}
+.key{font-size:12px;color:var(--mute);margin:10px 0 0}
+nav.tabs{position:fixed;bottom:0;left:0;right:0;background:var(--ink);display:none}
+nav.tabs a{flex:1;color:#cfd6d0;text-align:center;padding:14px 4px;font-size:12.5px;text-decoration:none}nav.tabs a.on{color:#fff;box-shadow:inset 0 3px var(--acc)}
+@media(max-width:760px){.wrap{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line);padding:14px 18px 0}.tl{display:flex;gap:18px;overflow-x:auto;border-left:0;border-top:2px solid var(--ink);padding:12px 0 6px;margin-bottom:10px}.tl li{flex:0 0 auto;padding:0}.tl li::before{display:none}
+.main{padding:16px 16px}.hero .b{font-size:32px}.hd{display:none}.r{grid-template-columns:1fr auto;gap:4px 10px}.r .g{grid-column:1/-1;order:3}nav.tabs{display:flex}.top{padding:12px 16px}}
+</style></head><body>
+<div class="top"><b>計器</b><span class="st"><i></i>正常に稼働</span></div>
+<div class="wrap"><aside class="rail"><h2>今日の流れ</h2><ul class="tl num" id="tl"></ul><h2>状態</h2><div style="font-size:13px;line-height:1.9;margin-bottom:20px" id="stt"></div></aside>
+<div class="main"><div class="hero"><div><small>いまの資産</small><div class="b num" id="eq"></div></div><div><small>はじめから</small><div class="m num up" id="gn"></div></div><div><small>いちばん減った幅</small><div class="m num">1.12%</div></div></div>
+<div class="msg" id="msg"></div>
+<h2>持っている銘柄　<span style="font-weight:400;letter-spacing:0">損切り ─ 現在 ─ 目標 の位置で見る</span></h2>
+<div class="hd"><span>銘柄</span><span>損切りライン　　　　　　　　　　　　　目標</span><span style="text-align:right">損益</span></div><div id="rows"></div>
+<p class="key">黒い縦線＝いまの価格 / 灰色の縦線＝買値 / 赤みの帯＝損切りまでの距離。赤線は損切りに近い銘柄。サンプルデータ。</p></div></div>
+<nav class="tabs"><a class="on" href="#">今日</a><a href="#">銘柄</a><a href="#">記録</a><a href="#">安全</a></nav>
+<script src="data.js"></script><script>
+const S=SAMPLE;$("eq").textContent=usd(S.equity);$("gn").textContent=usd(S.equity-S.start,1);
+$("msg").innerHTML=`<b>${S.status.head}</b> ${S.status.note}`;
+$("tl").innerHTML=[["23:45","セッション開始"],["23:46","候補20 → 買い2・見送り4"],["23:47","口座を保存"],["翌 23:45","次のセッション"]].map((x,i)=>`<li class="${i==2?"now":""}"><time>${x[0]}</time>${x[1]}</li>`).join("");
+$("stt").innerHTML=`安全装置　<b>通常</b><br>緊急停止　<b>解除中</b><br>検証　<b class="num">17/60</b> 営業日<br>次の取引　<b>11/10 23:45</b>`;
+const hs=[...S.H].sort((a,b)=>a.toStop-b.toStop);
+$("rows").innerHTML=hs.map(h=>{const lo=h.stop,hi=h.target,pos=v=>Math.max(0,Math.min(100,(v-lo)/(hi-lo)*100)),warn=h.toStop<S.NEAR;
+ return `<div class="r ${warn?"warn":""}" onclick="this.querySelector('.det').classList.toggle('open')"><div><span class="s">${h.sym}</span>${warn?'<span class="tag">損切り近い</span>':""}<div class="c">${h.co}・${h.cat}</div></div>
+ <div class="g"><div class="tr"></div><div class="sf" style="left:0;width:${pos(h.price)}%"></div><div class="e" style="left:${pos(h.cost)}%"></div><div class="p" style="left:${pos(h.price)}%"></div><span class="l num" style="left:0;top:20px">${usd(h.stop)}</span><span class="l num" style="right:0;top:20px">${usd(h.target)}</span></div>
+ <div class="v num ${sgn(h.pct)}">${pc(h.pct)}<small>${usd(h.pnl,1)}</small></div>
+ <div class="det" style="grid-column:1/-1"><b>なぜ持っているか</b> ${h.why}　<b>計画</b> 損切りまで ${pc(h.toStop,1)} ／ 目標まで ${pc(h.toTarget,1)} ／ 保有の目安 ${h.hz} ／ 資産の ${(h.weight*100).toFixed(0)}%</div></div>`}).join("");
+</script></body></html>

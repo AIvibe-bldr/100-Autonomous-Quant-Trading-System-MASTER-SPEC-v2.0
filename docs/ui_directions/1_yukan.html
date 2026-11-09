@@ -1,0 +1,50 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>方向1 夕刊</title>
+<style>
+:root{--paper:#f3eee3;--ink:#1c1915;--mute:#6f675a;--rule:#cfc6b3;--up:#1e6b4e;--dn:#b8301c;--hi:#fff9e6}
+*{box-sizing:border-box;margin:0}
+body{background:var(--paper);color:var(--ink);font:16px/1.75 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;padding:0 20px 56px}
+.sans{font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif}
+.page{max-width:980px;margin:0 auto}
+.mast{display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px double var(--ink);padding:18px 0 8px}
+.mast b{font-size:22px;letter-spacing:.3em}.mast span{font-size:13px;color:var(--mute)}
+nav{display:flex;gap:26px;border-bottom:1px solid var(--rule);padding:8px 0;font-size:14px}nav a{color:var(--mute);text-decoration:none}nav a.on{color:var(--ink);border-bottom:2px solid var(--ink);padding-bottom:6px;font-weight:700}
+h1{font-size:44px;line-height:1.3;margin:30px 0 6px;font-weight:800;letter-spacing:.02em}
+.lede{font-size:17px;color:#3b362d;max-width:34em}
+.strip{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);margin:26px 0}
+.strip>div{padding:12px 18px;border-left:1px solid var(--rule)}.strip>div:first-child{border-left:0;padding-left:0}
+.strip small{display:block;font-size:12px;color:var(--mute);letter-spacing:.08em}.strip b{font-size:34px;font-weight:700;font-feature-settings:"palt"}
+.up{color:var(--up)}.dn{color:var(--dn)}.fl{color:var(--mute)}
+h2{font-size:15px;letter-spacing:.25em;border-bottom:1px solid var(--ink);padding-bottom:4px;margin:34px 0 14px}
+.watch{background:var(--hi);border:2px solid var(--ink);padding:6px 20px 14px}
+.watch h2{border:0;margin:12px 0 4px}
+.rows{display:grid;grid-template-columns:1fr 1fr;column-gap:44px}
+.row{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:11px 0;border-bottom:1px solid var(--rule);cursor:pointer}
+.row:hover{background:#00000008}
+.row .s{font-weight:800;font-size:18px;letter-spacing:.04em}.row .c{font-size:12.5px;color:var(--mute);font-family:"Hiragino Sans",system-ui,sans-serif}
+.row .p{font-size:26px;font-weight:700;text-align:right;line-height:1.2;font-variant-numeric:lining-nums tabular-nums}.row .a{font-size:13px;text-align:right;color:var(--mute);font-family:"Hiragino Sans",system-ui,sans-serif}
+.row .n{grid-column:1/-1;font-size:13.5px;color:#8a3b10;font-family:"Hiragino Sans",system-ui,sans-serif}
+.more{display:inline-block;margin-top:14px;color:var(--ink);font-weight:700;border-bottom:2px solid var(--ink);text-decoration:none}
+.detail{display:none;grid-column:1/-1;background:#fffdf6;border-left:4px solid var(--ink);padding:10px 16px;margin:6px 0 10px;font-size:15px}
+.detail.open{display:block}.detail dt{font-size:12px;color:var(--mute);letter-spacing:.1em;margin-top:8px}.detail dd{margin:0}
+.chart{margin:6px 0 2px}.foot{font-size:12.5px;color:var(--mute);margin-top:22px}
+@media(max-width:640px){h1{font-size:30px}.strip{grid-template-columns:1fr}.strip>div{border-left:0;border-top:1px solid var(--rule);padding-left:0}.strip>div:first-child{border-top:0}.rows{grid-template-columns:1fr}nav{overflow-x:auto;white-space:nowrap}}
+</style></head><body><div class="page">
+<div class="mast"><b>運用日報</b><span id="dt" class="sans"></span></div>
+<nav class="sans"><a class="on" href="#">今日</a><a href="#">銘柄</a><a href="#">記録</a><a href="#">AIの判断</a><a href="#">障害・通知</a></nav>
+<h1 id="h"></h1><p class="lede" id="l"></p>
+<div class="strip sans" id="strip"></div>
+<div class="watch"><h2>今日の注目</h2><div class="rows" id="w"></div></div>
+<h2>資産の歩み</h2><div class="chart" id="ch"></div>
+<div class="sans" style="font-size:13px;color:var(--mute)">検証 <b>17 / 60</b> 営業日。まだ短いため、増減で良し悪しは判断できません。</div>
+<h2>全ての銘柄（10）</h2><div class="rows" id="all"></div>
+<p class="foot sans">サンプルデータ。値は直近セッション時点で、リアルタイムではありません。</p>
+</div><script src="data.js"></script><script>
+const S=SAMPLE;$("dt").textContent="2026年8月14日（金）のセッション";$("h").textContent=S.status.head;$("l").textContent=S.status.note+" 次の取引は "+S.next+" です。";
+$("strip").innerHTML=`<div><small>いまの資産</small><b>${usd(S.equity)}</b></div><div><small>はじめから</small><b class="up">${usd(S.equity-S.start,1)}</b></div><div><small>いちばん減った幅</small><b>${pc(S.max_dd,2,false)}</b></div>`;
+$("ch").innerHTML=spark(S.eq,900,90,"#1c1915");
+const watch=[...S.H].sort((a,b)=>a.toStop-b.toStop).slice(0,4);
+const row=(h,note)=>`<div class="row" onclick="this.nextElementSibling.classList.toggle('open')"><div><div class="s">${h.sym}</div><div class="c">${h.co}・${h.cat}</div></div><div><div class="p ${sgn(h.pct)}">${pc(h.pct)}</div><div class="a">${usd(h.pnl,1)}</div></div>${note?`<div class="n">${note}</div>`:""}</div>
+<dl class="detail sans"><dt>なぜ持っているか</dt><dd>${h.why}</dd><dt>今後の計画</dt><dd>損切り ${usd(h.stop)}（いまから ${pc(h.toStop-0,1)}）／ 目標 ${usd(h.target)}（${pc(h.toTarget,1)}）／ 保有の目安 ${h.hz}</dd></dl>`;
+$("w").innerHTML=watch.map(h=>row(h,`損切りラインまであと ${(h.toStop*100).toFixed(1)}%`)).join("");
+$("all").innerHTML=[...S.H].sort((a,b)=>b.value-a.value).map(h=>row(h)).join("");
+</script></body></html>
