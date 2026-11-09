@@ -48,29 +48,41 @@
   .chip { background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 2px 12px; font-size: 14px; }
   .chip.grey { background: #f3f4f6; color: #374151; }
   canvas { width: 100%; height: 150px; display: block; }
-  /* holdings: one tappable row per symbol */
-  .hold-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+  /* holdings: a grid of tappable boxes */
+  .hold-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
   .hold-total { font-size: 14px; }
-  .hold { border-top: 1px solid var(--border); }
-  .hold:first-of-type { border-top: 0; }
-  .hold > button { all: unset; box-sizing: border-box; display: grid; width: 100%; cursor: pointer; padding: 12px 2px;
-                   grid-template-columns: minmax(70px, 1fr) minmax(90px, 1.2fr) minmax(90px, 1fr) 18px; align-items: center; gap: 8px; }
-  .hold > button:focus-visible { outline: 2px solid var(--blue); border-radius: 8px; }
-  .hold .sym { font-weight: 700; font-size: 17px; }
-  .hold .sub { color: var(--muted); font-size: 12px; line-height: 1.3; }
-  .hold .pl { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .hold .pl small { display: block; font-weight: 600; font-size: 13px; }
-  .hold .chev { color: var(--muted); transition: transform .15s; text-align: center; }
-  .hold.open .chev { transform: rotate(90deg); }
-  .meter { height: 6px; background: #eef0f3; border-radius: 4px; position: relative; }
-  .meter i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
-  .hold .why { display: none; background: #f8fafc; border-radius: 12px; padding: 12px 14px; margin: 0 0 12px; font-size: 14px; }
-  .hold.open .why { display: block; }
-  .why h4 { font-size: 12px; color: var(--muted); margin: 10px 0 2px; font-weight: 600; letter-spacing: .04em; }
-  .why h4:first-child { margin-top: 0; }
-  .why p { overflow-wrap: anywhere; }
+  .boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; }
+  .box { all: unset; box-sizing: border-box; cursor: pointer; background: #fff; border: 1px solid var(--border); border-radius: 14px;
+         padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; position: relative; }
+  .box:hover { border-color: #c7d2fe; } .box:focus-visible { outline: 2px solid var(--blue); }
+  .box.up { border-top: 4px solid var(--green); } .box.down { border-top: 4px solid var(--red); } .box.flat { border-top: 4px solid #d1d5db; }
+  .box .sym { font-weight: 800; font-size: 17px; line-height: 1.2; }
+  .box .co { font-size: 12px; color: var(--muted); line-height: 1.3; overflow-wrap: anywhere; }
+  .box .cat { display: inline-block; align-self: flex-start; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 0 8px; font-size: 11px; margin: 2px 0 4px; }
+  .box .pct { font-size: 24px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .box .amt { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .box .sub { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+  .box .why1 { margin-top: 4px; font-size: 11.5px; color: #92400e; background: #fffbeb; border-radius: 8px; padding: 2px 8px; line-height: 1.35; }
+  .more-link { all: unset; cursor: pointer; display: inline-block; margin-top: 12px; color: var(--blue); font-size: 15px; font-weight: 600; }
+  .more-link:focus-visible { outline: 2px solid var(--blue); border-radius: 6px; }
+  .back { all: unset; cursor: pointer; color: var(--blue); font-size: 15px; font-weight: 600; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 12px; }
+  .controls select { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: #fff; }
+  .fchip { all: unset; cursor: pointer; padding: 2px 12px; border-radius: 999px; background: #f3f4f6; color: #374151; font-size: 13px; }
+  .fchip.on { background: #3730a3; color: #fff; }
+  .fchip:focus-visible { outline: 2px solid var(--blue); }
+  body.all #viewHome, body.all .toggle { display: none; } #viewAll { display: none; } body.all #viewAll { display: block; }
+  /* detail sheet for one symbol */
+  .sheet-bg { position: fixed; inset: 0; background: rgba(20,33,61,.45); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+  .sheet { background: #fff; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; border-radius: 20px 20px 0 0; padding: 18px 20px 24px; }
+  @media (min-width: 700px) { .sheet-bg { align-items: center; } .sheet { border-radius: 20px; } }
+  .sheet-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .sheet-top .x { all: unset; cursor: pointer; font-size: 26px; line-height: 1; color: var(--muted); padding: 0 6px; }
+  .sheet .big { font-size: 28px; font-weight: 800; }
+  .why h4 { font-size: 12px; color: var(--muted); margin: 14px 0 2px; font-weight: 600; letter-spacing: .04em; }
+  .why p { overflow-wrap: anywhere; font-size: 15px; }
   .why .plan { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 4px; }
-  .why .plan div { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; }
+  .why .plan div { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; }
   .why .plan b { display: block; font-size: 16px; }
   .why .plan span { color: var(--muted); font-size: 12px; }
   details { margin: 4px 0; } summary { cursor: pointer; color: var(--blue); font-size: 14px; }
@@ -103,8 +115,7 @@
   @media (max-width: 600px) {
     .tiles { grid-template-columns: 1fr 1fr; } .tiles .tile:first-child { grid-column: 1 / -1; }
     .hero h2 { font-size: 22px; }
-    .hold > button { grid-template-columns: 1fr 1fr 18px; }
-    .hold .mid { grid-column: 1 / 3; grid-row: 2; }
+    .boxes { grid-template-columns: 1fr 1fr; gap: 8px; }
   }
 </style>
 </head>
@@ -114,11 +125,12 @@
   <div class="toggle" role="group" aria-label="表示の切り替え"><button id="bSimple" class="on" type="button">かんたん</button><button id="bFull" type="button">くわしい</button></div>
 </header>
 <div id="error" class="banner CRITICAL"></div>
+<div id="viewHome">
 <div id="hero"></div>
 <div id="findings"></div>
 <div class="tiles" id="tiles"></div>
 
-<section><h2>持っている銘柄</h2><div id="holdings"></div></section>
+<section><h2>気にしてほしい銘柄</h2><div id="holdings"></div></section>
 
 <div class="card"><h2>資産の推移</h2><canvas id="chart" width="800" height="150"></canvas>
   <div class="note" style="display:flex;justify-content:space-between"><span id="d0"></span><span id="d1"></span></div>
@@ -136,6 +148,17 @@
 <section><h2>人の意図</h2><div id="intents"></div></section>
 <section><h2>通知の履歴</h2><div id="alerts"></div></section>
 </div>
+</div>
+<div id="viewAll">
+  <button class="back" id="backBtn" type="button">← もどる</button>
+  <section><h2 id="allTitle">持っている全ての銘柄</h2><div id="allHead"></div>
+    <div class="controls"><label class="note">並べ方 <select id="sortSel">
+      <option value="attention">気にしてほしい順</option><option value="pnl_pct">損益％の高い順</option><option value="pnl_pct_asc">損益％の低い順</option>
+      <option value="value">評価額の大きい順</option><option value="symbol">ティッカー順</option></select></label>
+      <span id="catChips" class="controls" style="margin:0"></span></div>
+    <div class="boxes" id="allBoxes"></div></section>
+</div>
+<div id="sheetHost"></div>
 <footer id="footer"></footer>
 
 <script>
@@ -264,25 +287,30 @@ function renderPerf(p) {
   ] : []);
 }
 
-// ---- holdings: every held symbol at a glance; tap one for why it is held and what happens next ----
-const open = new Set();      // symbols whose explanation is open (kept across the 30 s refresh)
+// ---- holdings: boxes. The home page shows the few a human should look at; "all" shows every one; tap = why + plan ----
 const qtyText = (q) => Number(q).toLocaleString("en-US", { maximumFractionDigits: 4 });
 const dist = (from, to) => from > 0 ? to / from - 1 : null;
+let holdData = null, catFilter = null;
 function planBox(label, value, sub) { return el("div", {}, el("span", { text: label }), el("b", { text: value }), sub ? el("span", { text: sub }) : null); }
-function holdingRow(x, maxAbs) {
-  const row = el("div", { class: "hold" + (open.has(x.symbol) ? " open" : "") });
-  const c = cls(x.pnl), width = maxAbs > 0 ? Math.max(4, Math.abs(x.pnl_pct) / maxAbs * 50) : 4;
-  const btn = el("button", { type: "button", "aria-expanded": String(open.has(x.symbol)) },
-    el("div", {}, el("div", { class: "sym", text: x.symbol }), el("div", { class: "sub", text: qtyText(x.qty) + " 株 · 買値 " + money(x.avg_cost) })),
-    el("div", { class: "mid" }, el("div", { class: "meter" }, el("i", { style: "background:" + (x.pnl >= 0 ? "var(--green)" : "var(--red)") + ";" +
-      (x.pnl >= 0 ? "left:50%;" : "right:50%;") + "width:" + width + "%" })), el("div", { class: "sub", text: "評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) })),
-    el("div", { class: "pl " + c }, signed(x.pnl, money), el("small", { text: signed(x.pnl_pct, pct) })),
-    el("div", { class: "chev", text: "›" }));
-  btn.addEventListener("click", () => {
-    const on = !row.classList.contains("open");
-    row.classList.toggle("open", on); btn.setAttribute("aria-expanded", String(on));
-    on ? open.add(x.symbol) : open.delete(x.symbol);
-  });
+
+function holdingBox(x) {
+  const tone = x.pnl > 0 ? "up" : x.pnl < 0 ? "down" : "flat";
+  const b = el("button", { type: "button", class: "box " + tone, "aria-label": x.symbol + " " + (x.company || "") + " の理由と計画を開く" },
+    el("div", { class: "sym", text: x.symbol }),
+    el("div", { class: "co", text: x.company || "（会社名は未登録）" }),
+    x.category ? el("span", { class: "cat", text: x.category }) : null,
+    el("div", { class: "pct " + cls(x.pnl), text: signed(x.pnl_pct, pct) }),
+    el("div", { class: "amt " + cls(x.pnl), text: signed(x.pnl, money) }),
+    el("div", { class: "sub", text: "評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) }),
+    x.attention_reasons.length ? el("div", { class: "why1", text: x.attention_reasons[0] }) : null);
+  b.addEventListener("click", () => openSheet(x));
+  return b;
+}
+
+function openSheet(x) {
+  const close = () => { setChildren("sheetHost"); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   const pl = x.plan, why = el("div", { class: "why" });
   if (!pl) why.append(el("p", { class: "warn", text: "この銘柄の計画の記録がありません。" }));
   else why.append(
@@ -295,25 +323,70 @@ function holdingRow(x, maxAbs) {
       planBox("最悪の損失（目安）", money(pl.risk_amount), "損切りに達した場合")),
     el("h4", { text: "やめる条件" }), el("p", { text: pl.invalidation }),
     el("h4", { text: "損切りラインの根拠" }), el("p", { text: pl.stop_reason }),
-    el("p", { class: "note", text: "損切りは取引所に置いた注文で自動的に働きます。計画は買う前に作られたものです。" }));
-  row.append(btn, why);
-  return row;
+    el("p", { class: "note", style: "margin-top:10px", text: "損切りは取引所に置いた注文で自動的に働きます。計画は買う前に作られたものです。" }));
+  const closeBtn = el("button", { class: "x", type: "button", "aria-label": "閉じる", text: "×" });
+  closeBtn.addEventListener("click", close);
+  const bg = el("div", { class: "sheet-bg" }, el("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": x.symbol },
+    el("div", { class: "sheet-top" },
+      el("div", {}, el("div", { class: "sym big", text: x.symbol }), el("div", { class: "co", text: (x.company || "") + (x.category ? " · " + x.category : "") })),
+      closeBtn),
+    el("div", { style: "margin:8px 0 2px" }, el("span", { class: "big " + cls(x.pnl), text: signed(x.pnl_pct, pct) }), "  ", el("b", { class: cls(x.pnl), text: signed(x.pnl, money) })),
+    el("div", { class: "note", text: qtyText(x.qty) + " 株 · 買値 " + money(x.avg_cost) + " → いま " + money(x.price) + " · 評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) }),
+    x.attention_reasons.length ? el("div", { class: "why1", style: "margin-top:8px;display:inline-block", text: x.attention_reasons.join(" / ") }) : null,
+    why));
+  bg.addEventListener("click", (e) => { if (e.target === bg) close(); });
+  setChildren("sheetHost", bg); closeBtn.focus();
 }
+
+const holdMsg = (id, text, c) => setChildren(id, el("div", { class: c || "muted", text }));
 function renderHoldings(h) {
-  if (h.error) return setChildren("holdings", errorBox(h));
-  if (!h.session_date) return setChildren("holdings", el("div", { class: "muted", text: "まだセッションがありません。" }));
-  if (!h.recorded) return setChildren("holdings", el("div", { class: "muted", text: h.session_date + " のセッションは、銘柄ごとの記録が残る前のものです。次のセッションから表示されます。" }));
-  const items = [...h.holdings].sort((a, b) => b.value - a.value);
-  if (!items.length) return setChildren("holdings", el("div", { class: "muted", text: "いまは何も持っていません（現金 " + money(h.cash) + "）。" }));
-  const cost = items.reduce((t, x) => t + x.qty * x.avg_cost, 0), pnl = items.reduce((t, x) => t + x.pnl, 0);
-  const maxAbs = Math.max(...items.map((x) => Math.abs(x.pnl_pct)));
+  holdData = h;
+  if (h.error) { setChildren("holdings", errorBox(h)); return renderAll(); }
+  if (!h.session_date) return holdMsg("holdings", "まだセッションがありません。");
+  if (!h.recorded) return holdMsg("holdings", h.session_date + " のセッションは、銘柄ごとの記録が残る前のものです。次のセッションから表示されます。");
+  const byS = new Map(h.holdings.map((x) => [x.symbol, x]));
+  const picks = h.attention.map((k) => byS.get(k)).filter(Boolean);
+  if (!h.holdings.length) return holdMsg("holdings", "いまは何も持っていません（現金 " + money(h.cash) + "）。");
+  const pnl = h.holdings.reduce((t, x) => t + x.pnl, 0), cost = h.holdings.reduce((t, x) => t + x.qty * x.avg_cost, 0);
+  const more = el("button", { class: "more-link", type: "button", text: "持っている全ての銘柄を見る（" + h.holdings.length + "）→" });
+  more.addEventListener("click", () => { location.hash = "all"; });
   setChildren("holdings",
     el("div", { class: "hold-head" },
-      el("div", { class: "hold-total" }, "合計の損益 ", el("b", { class: cls(pnl), text: signed(pnl, money) + "（" + signed(cost > 0 ? pnl / cost : 0, pct) + "）" })),
-      el("div", { class: "note", text: "現金 " + money(h.cash) + " · タップで理由と計画" })),
-    items.map((x) => holdingRow(x, maxAbs)),
-    el("div", { class: "note", text: h.session_date + " のセッション時点の値です（リアルタイムではありません）。" }));
+      el("div", { class: "hold-total" }, "全 " + h.holdings.length + " 銘柄の合計 ", el("b", { class: cls(pnl), text: signed(pnl, money) + "（" + signed(cost > 0 ? pnl / cost : 0, pct) + "）" })),
+      el("div", { class: "note", text: "現金 " + money(h.cash) })),
+    el("div", { class: "note", style: "margin-bottom:8px", text: "損切りに近い・大きく動いた・割合が大きい順に最大 " + picks.length + " 件。タップで理由と計画。" }),
+    el("div", { class: "boxes" }, picks.map(holdingBox)), more,
+    el("div", { class: "note", style: "margin-top:8px", text: h.session_date + " のセッション時点の値です（リアルタイムではありません）。" }));
+  renderAll();
 }
+
+function renderAll() {
+  const h = holdData;
+  if (!h || !h.recorded) return setChildren("allBoxes");
+  const sort = document.getElementById("sortSel").value;
+  const cats = [...new Set(h.holdings.map((x) => x.category || "未分類"))].sort();
+  const chip = (label, val) => { const c = el("button", { class: "fchip" + (catFilter === val ? " on" : ""), type: "button", text: label });
+    c.addEventListener("click", () => { catFilter = val; renderAll(); }); return c; };
+  setChildren("catChips", chip("すべて", null), cats.map((c) => chip(c, c)));
+  let items = h.holdings.filter((x) => catFilter === null || (x.category || "未分類") === catFilter);
+  const cmp = { attention: (a, b) => b.attention_score - a.attention_score || Math.abs(b.pnl_pct) - Math.abs(a.pnl_pct),
+    pnl_pct: (a, b) => b.pnl_pct - a.pnl_pct, pnl_pct_asc: (a, b) => a.pnl_pct - b.pnl_pct,
+    value: (a, b) => b.value - a.value, symbol: (a, b) => a.symbol.localeCompare(b.symbol) }[sort];
+  items = [...items].sort(cmp);
+  const pnl = items.reduce((t, x) => t + x.pnl, 0);
+  setChildren("allHead", el("div", { class: "note", text: items.length + " 銘柄 · 合計 " + signed(pnl, money) + " · " + h.session_date + " のセッション時点" }));
+  setChildren("allBoxes", items.map(holdingBox));
+}
+
+function route() {
+  const all = location.hash === "#all";
+  document.body.classList.toggle("all", all);
+  if (all) window.scrollTo(0, 0);
+  if (location.hash === "#full") setFull(true);
+}
+document.getElementById("backBtn").addEventListener("click", () => { location.hash = ""; });
+document.getElementById("sortSel").addEventListener("change", renderAll);
+window.addEventListener("hashchange", route);
 
 function renderDid(o, sessions) {
   const last = (sessions.sessions || [])[0];
@@ -418,7 +491,7 @@ function setFull(full) {
 }
 document.getElementById("bSimple").addEventListener("click", () => setFull(false));
 document.getElementById("bFull").addEventListener("click", () => setFull(true));
-if (location.hash === "#full") setFull(true);
+route();
 refresh(); setInterval(refresh, 30000); window.addEventListener("resize", () => drawChart(lastSeries));
 </script>
 </body>

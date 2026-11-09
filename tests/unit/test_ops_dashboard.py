@@ -98,6 +98,39 @@ def test_holdings_show_pnl_and_the_plan_made_before_entry(state, tmp_path):
     assert sum(x["value"] for x in h["holdings"]) + h["cash"] == pytest.approx(h["equity"])
 
 
+def _h(price=100.0, stop=90.0, target=120.0, pnl_pct=0.0, weight=0.05, plan=True):
+    return {"symbol": "X", "price": price, "pnl_pct": pnl_pct, "weight": weight,
+            "plan": {"stop_price": stop, "profit_target": target} if plan else None}
+
+
+def test_attention_flags_what_a_human_should_look_at_first():
+    from services.supervisor.ops_state import attention_of
+    calm, _ = attention_of(_h())
+    assert calm == 0 and attention_of(_h())[1] == []
+    s, r = attention_of(_h(price=92.0))                                   # 2.2% above its stop
+    assert s > 4 and "損切りライン" in r[0]
+    assert "利益の目標" in attention_of(_h(price=118.0))[1][0]
+    assert any("含み損" in x for x in attention_of(_h(pnl_pct=-0.05))[1])
+    assert any("20%" in x for x in attention_of(_h(weight=0.2))[1])
+    assert attention_of(_h(plan=False))[0] >= 5                            # a missing plan is always raised
+    assert attention_of(_h(price=91.0))[0] > attention_of(_h(price=92.5))[0]   # closer to the stop ranks higher
+
+
+def test_holdings_carry_names_categories_and_at_most_ten_attention_picks(state, tmp_path):
+    h = ops(state, tmp_path).holdings()
+    assert 0 < len(h["attention"]) <= 10 and set(h["attention"]) <= {x["symbol"] for x in h["holdings"]}
+    scores = {x["symbol"]: x["attention_score"] for x in h["holdings"]}
+    assert [scores[s] for s in h["attention"]] == sorted((scores[s] for s in h["attention"]), reverse=True)
+    for x in h["holdings"]:
+        assert x["company"] and x["category"]                              # every default symbol has a profile
+
+
+def test_every_default_symbol_has_a_profile():
+    from packages.common.symbol_profiles import SYMBOL_PROFILES
+    from services.composition import DEFAULT_SYMBOLS
+    assert set(DEFAULT_SYMBOLS) <= set(SYMBOL_PROFILES)
+
+
 def test_holdings_of_a_session_recorded_before_the_field_existed_say_so(tmp_path):
     st = DurableSessionStore(str(tmp_path / "sessions.db"), Environment.PAPER)
     from tests.unit.test_session_records import _rec
