@@ -6,79 +6,136 @@
 <title>運用ダッシュボード</title>
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
-    --muted: #8b949e; --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #58a6ff;
+    --bg: #f6f7f9; --panel: #ffffff; --border: #e5e7eb; --text: #14213d; --muted: #6b7280;
+    --green: #16a34a; --red: #dc2626; --amber: #d97706; --blue: #2563eb;
   }
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); color: var(--text);
-         font: 14px/1.5 -apple-system, "Segoe UI", "Hiragino Sans", sans-serif;
-         padding: 16px; max-width: 1100px; margin: 0 auto; }
-  header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  h1 { font-size: 18px; font-weight: 600; }
-  .badge { display: inline-block; padding: 3px 12px; border-radius: 6px; font-weight: 700; letter-spacing: .08em; font-size: 12px; }
-  .env-PAPER { background: #1f6feb33; color: var(--blue); border: 1px solid var(--blue); }
-  .env-LIVE { background: #da363333; color: var(--red); border: 1px solid var(--red); }
-  .lamp-OK { background: #3fb95022; color: var(--green); border: 1px solid var(--green); }
-  .lamp-WARNING { background: #d2992222; color: var(--amber); border: 1px solid var(--amber); }
-  .lamp-CRITICAL, .lamp-NODATA { background: #da363322; color: var(--red); border: 1px solid var(--red); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
-  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
-  .card .value { font-size: 18px; font-weight: 700; margin-top: 2px; overflow-wrap: anywhere; }
-  .card .sub { color: var(--muted); font-size: 11px; }
-  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
-  section h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
-  h3 { font-size: 12px; color: var(--muted); margin: 10px 0 4px; font-weight: 600; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  th:first-child, td:first-child { text-align: left; }
-  td.l, th.l { text-align: left; }
-  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .scroll table { min-width: 520px; }
+         font: 16px/1.7 -apple-system, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+         padding: 16px 16px 48px; max-width: 900px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  h1 { font-size: 17px; font-weight: 600; }
+  .toggle { display: inline-flex; background: #e6ebf2; border-radius: 999px; padding: 3px; }
+  .toggle button { border: 0; background: none; padding: 6px 18px; border-radius: 999px; font: inherit; font-size: 14px; color: var(--muted); cursor: pointer; }
+  .toggle button.on { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .badge { display: inline-block; padding: 1px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; background: #e6ebf2; color: var(--muted); }
+  .badge.live { background: #fee2e2; color: var(--red); }
+  .hero { border-radius: 20px; padding: 26px 26px 22px; color: #fff; margin-bottom: 14px; }
+  .hero.ok { background: linear-gradient(135deg, #16a34a, #22c55e); }
+  .hero.warn { background: linear-gradient(135deg, #d97706, #f59e0b); }
+  .hero.bad { background: linear-gradient(135deg, #dc2626, #ef4444); }
+  .hero.ok, .hero.warn, .hero.bad { color: #fff; }
+  .hero .w { font-size: 13px; letter-spacing: .2em; opacity: .9; }
+  .hero h2 { font-size: 27px; line-height: 1.4; margin: 4px 0 6px; font-weight: 700; }
+  .hero p { opacity: .96; overflow-wrap: anywhere; }
+  .alerts { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 14px; padding: 12px 18px; margin-bottom: 14px; }
+  .alerts.bad { background: #fef2f2; border-color: #fecaca; }
+  .alerts b { display: block; margin-bottom: 2px; }
+  .alerts li { margin-left: 1.2em; font-size: 14px; overflow-wrap: anywhere; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; min-width: 0; }
+  .tile .l { color: var(--muted); font-size: 13px; }
+  .tile .v { font-size: 26px; font-weight: 700; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  .tile .s { color: var(--muted); font-size: 12px; line-height: 1.4; }
+  section, .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; margin-bottom: 14px; }
+  section h2, .card h2 { font-size: 15px; margin-bottom: 8px; font-weight: 700; }
+  h3 { font-size: 13px; color: var(--muted); margin: 12px 0 4px; font-weight: 600; }
   .pos { color: var(--green); } .neg { color: var(--red); } .warn { color: var(--amber); } .muted { color: var(--muted); }
-  .banner { border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; }
-  .banner.WARNING { background: #d2992222; border: 1px solid var(--amber); color: var(--amber); }
-  .banner.CRITICAL { background: #da363322; border: 1px solid var(--red); color: var(--red); }
-  .banner.info { background: #1f6feb22; border: 1px solid var(--blue); color: var(--blue); }
+  .note { color: var(--muted); font-size: 13px; }
+  .bar { height: 10px; background: #e5e7eb; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; }
+  .bar i { display: block; height: 100%; background: var(--blue); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+  .chip { background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 2px 12px; font-size: 14px; }
+  .chip.grey { background: #f3f4f6; color: #374151; }
+  canvas { width: 100%; height: 150px; display: block; }
+  /* holdings: one tappable row per symbol */
+  .hold-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+  .hold-total { font-size: 14px; }
+  .hold { border-top: 1px solid var(--border); }
+  .hold:first-of-type { border-top: 0; }
+  .hold > button { all: unset; box-sizing: border-box; display: grid; width: 100%; cursor: pointer; padding: 12px 2px;
+                   grid-template-columns: minmax(70px, 1fr) minmax(90px, 1.2fr) minmax(90px, 1fr) 18px; align-items: center; gap: 8px; }
+  .hold > button:focus-visible { outline: 2px solid var(--blue); border-radius: 8px; }
+  .hold .sym { font-weight: 700; font-size: 17px; }
+  .hold .sub { color: var(--muted); font-size: 12px; line-height: 1.3; }
+  .hold .pl { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .hold .pl small { display: block; font-weight: 600; font-size: 13px; }
+  .hold .chev { color: var(--muted); transition: transform .15s; text-align: center; }
+  .hold.open .chev { transform: rotate(90deg); }
+  .meter { height: 6px; background: #eef0f3; border-radius: 4px; position: relative; }
+  .meter i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+  .hold .why { display: none; background: #f8fafc; border-radius: 12px; padding: 12px 14px; margin: 0 0 12px; font-size: 14px; }
+  .hold.open .why { display: block; }
+  .why h4 { font-size: 12px; color: var(--muted); margin: 10px 0 2px; font-weight: 600; letter-spacing: .04em; }
+  .why h4:first-child { margin-top: 0; }
+  .why p { overflow-wrap: anywhere; }
+  .why .plan { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 4px; }
+  .why .plan div { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; }
+  .why .plan b { display: block; font-size: 16px; }
+  .why .plan span { color: var(--muted); font-size: 12px; }
+  details { margin: 4px 0; } summary { cursor: pointer; color: var(--blue); font-size: 14px; }
   ul.plain { list-style: none; padding: 0; }
   ul.plain li { padding: 3px 0; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  canvas { width: 100%; height: 200px; display: block; }
-  details { margin: 4px 0; } summary { cursor: pointer; color: var(--blue); font-size: 12px; }
-  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
+  /* くわしい view */
+  .detail { display: none; } body.full .detail { display: block; } body.full .only-simple { display: none; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .grid .card { margin-bottom: 0; padding: 10px 14px; border-radius: 12px; }
+  .grid .card .label { color: var(--muted); font-size: 12px; }
+  .grid .card .value { font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+  .grid .card .sub { color: var(--muted); font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  th:first-child, td:first-child, td.l, th.l { text-align: left; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .scroll table { min-width: 520px; }
   .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
   .cols section { margin-bottom: 0; min-width: 0; }
   .cols .scroll table { min-width: 0; }
   .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
+  .banner { border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; }
+  .banner.WARNING { background: #fff7ed; border: 1px solid #fed7aa; color: var(--amber); }
+  .banner.CRITICAL { background: #fef2f2; border: 1px solid #fecaca; color: var(--red); }
+  .banner.info { background: #eff6ff; border: 1px solid #bfdbfe; color: var(--blue); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
   #error { display: none; }
-  footer { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  @media (max-width: 600px) {
+    .tiles { grid-template-columns: 1fr 1fr; } .tiles .tile:first-child { grid-column: 1 / -1; }
+    .hero h2 { font-size: 22px; }
+    .hold > button { grid-template-columns: 1fr 1fr 18px; }
+    .hold .mid { grid-column: 1 / 3; grid-row: 2; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>運用ダッシュボード <span class="muted" style="font-size:12px">（読み取り専用）</span></h1>
-  <div><span id="env" class="badge">…</span> <span id="lamp" class="badge">…</span></div>
+  <h1>運用ダッシュボード <span id="env" class="badge">…</span></h1>
+  <div class="toggle" role="group" aria-label="表示の切り替え"><button id="bSimple" class="on" type="button">かんたん</button><button id="bFull" type="button">くわしい</button></div>
 </header>
 <div id="error" class="banner CRITICAL"></div>
+<div id="hero"></div>
 <div id="findings"></div>
+<div class="tiles" id="tiles"></div>
 
+<section><h2>持っている銘柄</h2><div id="holdings"></div></section>
+
+<div class="card"><h2>資産の推移</h2><canvas id="chart" width="800" height="150"></canvas>
+  <div class="note" style="display:flex;justify-content:space-between"><span id="d0"></span><span id="d1"></span></div>
+  <div class="bar"><i id="progress" style="width:0"></i></div><div class="note" id="perfWarn"></div></div>
+
+<div class="card"><h2 id="didTitle">直近のセッションでしたこと</h2><div id="did"></div></div>
+
+<div class="detail">
 <div class="grid" id="runnerCards"></div>
-
-<section><h2>成績</h2>
-  <div id="perfWarn"></div>
-  <div class="grid" id="perfCards"></div>
-  <canvas id="chart" width="1060" height="200"></canvas>
-</section>
-
+<section><h2>成績</h2><div class="grid" id="perfCards"></div></section>
 <section><h2>セッション（新しい順）</h2><div class="scroll"><table id="sessions"></table></div></section>
-
 <section><h2>最新セッションの詳細</h2><div id="latest"></div></section>
-
 <div class="cols" id="observers"></div>
-
 <section><h2>障害（インシデント）</h2><div id="incidents"></div></section>
 <section><h2>人の意図</h2><div id="intents"></div></section>
 <section><h2>通知の履歴</h2><div id="alerts"></div></section>
+</div>
 <footer id="footer"></footer>
 
 <script>
@@ -127,26 +184,44 @@ function drawChart(series) {
   const w = cv.clientWidth, h = cv.clientHeight; cv.width = w * dpr; cv.height = h * dpr;
   const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
   const css = getComputedStyle(document.documentElement);
-  if (series.length < 2) { g.fillStyle = css.getPropertyValue("--muted"); g.fillText("2セッション以上で表示されます", 12, 24); return; }
-  const ys = series.map((s) => s.equity), lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.1 || 1;
-  const L = 56, R = 8, T = 10, B = 22, x = (i) => L + (w - L - R) * i / (series.length - 1);
+  if (series.length < 2) { g.fillStyle = css.getPropertyValue("--muted"); g.font = "13px sans-serif"; g.fillText("2回以上セッションが終わると表示されます", 4, 24); return; }
+  const ys = series.map((s) => s.equity), lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.15 || 1;
+  const T = 10, B = 6, x = (i) => 6 + (w - 12) * i / (series.length - 1);
   const y = (v) => T + (h - T - B) * (1 - (v - (lo - pad)) / (hi - lo + 2 * pad));
-  g.strokeStyle = css.getPropertyValue("--border"); g.fillStyle = css.getPropertyValue("--muted"); g.font = "11px sans-serif"; g.lineWidth = 1;
-  for (let k = 0; k <= 3; k++) { const v = lo - pad + (hi - lo + 2 * pad) * k / 3, yy = y(v);
-    g.beginPath(); g.moveTo(L, yy); g.lineTo(w - R, yy); g.stroke(); g.fillText(v.toFixed(2), 4, yy + 4); }
-  g.fillText(series[0].date, L, h - 6); const last = series[series.length - 1].date; g.fillText(last, w - R - g.measureText(last).width, h - 6);
-  g.strokeStyle = css.getPropertyValue("--blue"); g.lineWidth = 2; g.beginPath();
+  const blue = css.getPropertyValue("--blue").trim();
+  g.beginPath(); series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity)));
+  g.lineTo(x(series.length - 1), h - B); g.lineTo(x(0), h - B); g.closePath(); g.fillStyle = blue + "1f"; g.fill();
+  g.strokeStyle = blue; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
   series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity))); g.stroke();
+  g.fillStyle = blue; g.beginPath(); g.arc(x(series.length - 1), y(ys[ys.length - 1]), 4, 0, 7); g.fill();
+}
+
+const jstShort = (iso) => iso ? new Date(iso).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
+
+// One sentence about the system's state, in plain words. Worst case wins; the exact wording of each reason is
+// the watchdog's own finding, so nothing is invented here.
+function heroOf(s) {
+  const r = s.runner, bad = s.findings.filter((f) => f.level === "CRITICAL"), warn = s.findings.filter((f) => f.level === "WARNING");
+  if (!r) return { level: "bad", word: "停止", head: "まだ動いていません。", text: "状態ファイルがありません。ランナーを起動してください。" };
+  if (s.kill_switch.engaged) return { level: "bad", word: "停止", head: "緊急停止中です。", text: s.kill_switch.operator + ": " + s.kill_switch.reason };
+  if (r.state === "FAILED") return { level: "bad", word: "停止", head: "異常で止まっています。", text: r.failure || "原因は障害の履歴を見てください。" };
+  if (s.overall === "CRITICAL") return { level: "bad", word: "要確認", head: "確認が必要です。", text: bad.length ? bad[0].message : "くわしい画面を見てください。" };
+  if (r.risk_state !== "NORMAL") return { level: "warn", word: "注意",
+    head: r.risk_state === "HALT_NEW_ENTRIES" ? "新しい買いを止めています。" : "安全装置が働いています。",
+    text: "持っている分の損切りは動いています（状態: " + r.risk_state + "）。" };
+  if (s.overall === "WARNING") return { level: "warn", word: "注意", head: "動いていますが、注意があります。", text: warn.length ? warn[0].message : "" };
+  return { level: "ok", word: "正常", head: "正常に動いています。", text: r.next_session_at ? "次の取引は " + jstShort(r.next_session_at) + " です。" : "" };
 }
 
 function renderStatus(s) {
-  const r = s.runner;
-  document.getElementById("env").textContent = r ? r.environment : "—";
-  document.getElementById("env").className = "badge env-" + (r ? r.environment : "PAPER");
-  const lamp = r ? s.overall : "NODATA";
-  document.getElementById("lamp").textContent = r ? s.overall : "NO DATA";
-  document.getElementById("lamp").className = "badge lamp-" + lamp;
-  setChildren("findings", s.findings.map((f) => el("div", { class: "banner " + f.level, text: f.level + " · " + f.code + " — " + f.message })));
+  const r = s.runner, h = heroOf(s);
+  const env = document.getElementById("env");
+  env.textContent = r ? r.environment : "—"; env.className = "badge" + (r && r.environment === "LIVE" ? " live" : "");
+  setChildren("hero", el("div", { class: "hero " + h.level }, el("div", { class: "w", text: h.word }),
+    el("h2", { text: h.head }), h.text ? el("p", { text: h.text }) : null));
+  const notes = s.findings.filter((f) => f.level !== "OK");
+  setChildren("findings", notes.length ? el("div", { class: "alerts" + (s.overall === "CRITICAL" ? " bad" : "") },
+    el("b", { text: "確認してほしいこと" }), el("ul", {}, notes.map((f) => el("li", { text: f.message })))) : null);
   const age = r ? Math.max(0, Math.round((new Date(s.now) - new Date(r.updated_at)) / 1000)) : null;
   const cards = [
     card("ランナー", r ? r.state : "未起動", r ? "心拍 " + age + " 秒前 · pid " + r.pid : "状態ファイルがありません", r && r.state === "FAILED" ? "neg" : ""),
@@ -162,11 +237,21 @@ function renderStatus(s) {
 }
 
 let lastSeries = [];
+const tile = (l, v, sub, c) => el("div", { class: "tile" }, el("div", { class: "l", text: l }), el("div", { class: "v " + (c || ""), text: v }), sub ? el("div", { class: "s", text: sub }) : null);
 function renderPerf(p) {
-  const warn = [errorBox(p)];
-  if (p.warning) warn.push(el("div", { class: "banner info", text: p.warning + "。優劣の判断材料にはなりません（基準案: " + p.proposed_min_sessions + "営業日以上）。" }));
-  setChildren("perfWarn", warn);
-  const s = p.summary;
+  const s = p.summary, last = (p.series || []).slice(-1)[0];
+  setChildren("tiles", errorBox(p), s ? [
+    tile("いまの資産", money(s.end_equity), "はじめは " + money(s.start_equity) + "。" + signed(s.end_equity - s.start_equity, money) + "（" + signed(s.total_return, pct) + "）"),
+    tile("直近の増減", last ? signed(last.day_pnl, money) : "—", last ? last.date + " のセッション" : null, last ? cls(last.day_pnl) : ""),
+    tile("いちばん減った幅", pct(s.max_drawdown), "これまでの高値からの最大の落ち込み", s.max_drawdown > 0.05 ? "warn" : ""),
+  ] : el("div", { class: "muted", text: "まだセッションが記録されていません" }));
+  document.getElementById("progress").style.width = Math.min(100, 100 * (p.sessions || 0) / (p.proposed_min_sessions || 1)) + "%";
+  document.getElementById("perfWarn").textContent = s ? "検証期間 " + p.sessions + " / " + p.proposed_min_sessions + " 営業日。" +
+    (p.enough_sessions ? "" : "まだ短いので、増えた・減ったで良し悪しは判断できません。") : "";
+  lastSeries = p.series || [];
+  document.getElementById("d0").textContent = lastSeries.length ? lastSeries[0].date : "";
+  document.getElementById("d1").textContent = lastSeries.length ? lastSeries[lastSeries.length - 1].date : "";
+  drawChart(lastSeries);
   setChildren("perfCards", s ? [
     card("資産", money(s.end_equity), "開始 " + money(s.start_equity)),
     card("総リターン", signed(s.total_return, pct), null, cls(s.total_return)),
@@ -176,9 +261,72 @@ function renderPerf(p) {
     card("約定／損切り", s.orders_filled + " / " + s.stops_triggered, "手数料 " + money(s.fees_total)),
     card("非 NORMAL で終了", String(s.non_normal_risk_days), "警告あり " + s.warning_days + " 日", s.non_normal_risk_days ? "warn" : ""),
     card("LLM 費用", s.llm_cost_usd == null ? "未記録" : money(s.llm_cost_usd)),
-  ] : [el("div", { class: "muted", text: "まだセッションが記録されていません" })]);
-  lastSeries = p.series || [];
-  drawChart(lastSeries);
+  ] : []);
+}
+
+// ---- holdings: every held symbol at a glance; tap one for why it is held and what happens next ----
+const open = new Set();      // symbols whose explanation is open (kept across the 30 s refresh)
+const qtyText = (q) => Number(q).toLocaleString("en-US", { maximumFractionDigits: 4 });
+const dist = (from, to) => from > 0 ? to / from - 1 : null;
+function planBox(label, value, sub) { return el("div", {}, el("span", { text: label }), el("b", { text: value }), sub ? el("span", { text: sub }) : null); }
+function holdingRow(x, maxAbs) {
+  const row = el("div", { class: "hold" + (open.has(x.symbol) ? " open" : "") });
+  const c = cls(x.pnl), width = maxAbs > 0 ? Math.max(4, Math.abs(x.pnl_pct) / maxAbs * 50) : 4;
+  const btn = el("button", { type: "button", "aria-expanded": String(open.has(x.symbol)) },
+    el("div", {}, el("div", { class: "sym", text: x.symbol }), el("div", { class: "sub", text: qtyText(x.qty) + " 株 · 買値 " + money(x.avg_cost) })),
+    el("div", { class: "mid" }, el("div", { class: "meter" }, el("i", { style: "background:" + (x.pnl >= 0 ? "var(--green)" : "var(--red)") + ";" +
+      (x.pnl >= 0 ? "left:50%;" : "right:50%;") + "width:" + width + "%" })), el("div", { class: "sub", text: "評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) })),
+    el("div", { class: "pl " + c }, signed(x.pnl, money), el("small", { text: signed(x.pnl_pct, pct) })),
+    el("div", { class: "chev", text: "›" }));
+  btn.addEventListener("click", () => {
+    const on = !row.classList.contains("open");
+    row.classList.toggle("open", on); btn.setAttribute("aria-expanded", String(on));
+    on ? open.add(x.symbol) : open.delete(x.symbol);
+  });
+  const pl = x.plan, why = el("div", { class: "why" });
+  if (!pl) why.append(el("p", { class: "warn", text: "この銘柄の計画の記録がありません。" }));
+  else why.append(
+    el("h4", { text: "なぜ持っているか" }), el("p", { text: pl.thesis }),
+    el("h4", { text: "今後の計画" }),
+    el("div", { class: "plan" },
+      planBox("損切りライン", money(pl.stop_price), "いまから " + signed(dist(x.price, pl.stop_price), pct)),
+      planBox("利益の目標", money(pl.profit_target), "いまから " + signed(dist(x.price, pl.profit_target), pct)),
+      planBox("保有の目安", pl.holding_horizon),
+      planBox("最悪の損失（目安）", money(pl.risk_amount), "損切りに達した場合")),
+    el("h4", { text: "やめる条件" }), el("p", { text: pl.invalidation }),
+    el("h4", { text: "損切りラインの根拠" }), el("p", { text: pl.stop_reason }),
+    el("p", { class: "note", text: "損切りは取引所に置いた注文で自動的に働きます。計画は買う前に作られたものです。" }));
+  row.append(btn, why);
+  return row;
+}
+function renderHoldings(h) {
+  if (h.error) return setChildren("holdings", errorBox(h));
+  if (!h.session_date) return setChildren("holdings", el("div", { class: "muted", text: "まだセッションがありません。" }));
+  if (!h.recorded) return setChildren("holdings", el("div", { class: "muted", text: h.session_date + " のセッションは、銘柄ごとの記録が残る前のものです。次のセッションから表示されます。" }));
+  const items = [...h.holdings].sort((a, b) => b.value - a.value);
+  if (!items.length) return setChildren("holdings", el("div", { class: "muted", text: "いまは何も持っていません（現金 " + money(h.cash) + "）。" }));
+  const cost = items.reduce((t, x) => t + x.qty * x.avg_cost, 0), pnl = items.reduce((t, x) => t + x.pnl, 0);
+  const maxAbs = Math.max(...items.map((x) => Math.abs(x.pnl_pct)));
+  setChildren("holdings",
+    el("div", { class: "hold-head" },
+      el("div", { class: "hold-total" }, "合計の損益 ", el("b", { class: cls(pnl), text: signed(pnl, money) + "（" + signed(cost > 0 ? pnl / cost : 0, pct) + "）" })),
+      el("div", { class: "note", text: "現金 " + money(h.cash) + " · タップで理由と計画" })),
+    items.map((x) => holdingRow(x, maxAbs)),
+    el("div", { class: "note", text: h.session_date + " のセッション時点の値です（リアルタイムではありません）。" }));
+}
+
+function renderDid(o, sessions) {
+  const last = (sessions.sessions || [])[0];
+  document.getElementById("didTitle").textContent = (o.session_date || "直近") + " にしたこと";
+  if (!o.session_date) return setChildren("did", el("div", { class: "muted", text: "まだありません" }));
+  const fills = o.fills || [], reasons = o.no_trade_reasons || [];
+  setChildren("did", errorBox(o),
+    el("div", { class: "chips" },
+      fills.map((f) => el("span", { class: "chip", text: (f.side === "BUY" ? "買い " : "売り ") + f.symbol })),
+      last && last.stops_triggered ? el("span", { class: "chip", text: "損切り " + last.stops_triggered + " 件" }) : null,
+      el("span", { class: "chip grey", text: "見送り " + reasons.length + (reasons.length >= 10 ? " 件以上" : " 件") })),
+    reasons.length ? el("details", {}, el("summary", { text: "見送った理由を見る" }), el("ul", { class: "plain" }, reasons.map((x) => el("li", { text: x })))) : null,
+    (o.data_warnings || []).length ? el("ul", { class: "plain" }, o.data_warnings.map((x) => el("li", { class: "warn", text: x }))) : null);
 }
 
 function renderSessions(d) {
@@ -254,15 +402,23 @@ function renderAlerts(d) {
 
 async function refresh() {
   try {
-    const [s, p, ss, o, inc, intents, al] = await Promise.all([get("/api/status"), get("/api/performance"), get("/api/sessions?limit=60"),
-      get("/api/observers"), get("/api/incidents"), get("/api/intents"), get("/api/alerts?limit=50")]);
-    renderStatus(s); renderPerf(p); renderSessions(ss); renderObservers(o); renderIncidents(inc); renderIntents(intents); renderAlerts(al);
+    const [s, p, ss, o, inc, intents, al, hold] = await Promise.all([get("/api/status"), get("/api/performance"), get("/api/sessions?limit=60"),
+      get("/api/observers"), get("/api/incidents"), get("/api/intents"), get("/api/alerts?limit=50"), get("/api/holdings")]);
+    renderStatus(s); renderPerf(p); renderHoldings(hold); renderDid(o, ss); renderSessions(ss); renderObservers(o); renderIncidents(inc); renderIntents(intents); renderAlerts(al);
     document.getElementById("error").style.display = "none";
-    document.getElementById("footer").textContent = "更新 " + jst(s.now) + " · 30秒ごとに自動更新 · 表示のみ（操作は CLI）";
+    document.getElementById("footer").textContent = "更新 " + jst(s.now) + " · 30秒ごとに自動更新 · 表示のみ（操作は CLI）。数字は直近のセッション時点で、リアルタイムではありません。";
   } catch (e) {
     const b = document.getElementById("error"); b.style.display = "block"; b.textContent = "取得に失敗しました: " + e.message;
   }
 }
+function setFull(full) {
+  document.body.classList.toggle("full", full);
+  document.getElementById("bSimple").classList.toggle("on", !full); document.getElementById("bFull").classList.toggle("on", full);
+  try { history.replaceState(null, "", full ? "#full" : location.pathname + location.search); } catch (e) { /* a view preference only */ }
+}
+document.getElementById("bSimple").addEventListener("click", () => setFull(false));
+document.getElementById("bFull").addEventListener("click", () => setFull(true));
+if (location.hash === "#full") setFull(true);
 refresh(); setInterval(refresh, 30000); window.addEventListener("resize", () => drawChart(lastSeries));
 </script>
 </body>

@@ -95,6 +95,21 @@ class OpsState:
                 "no_trade_reasons": detail.get("no_trade_reasons", []),
                 "data_warnings": detail.get("data_warnings", []), "fills": detail.get("fills", [])}
 
+    def holdings(self) -> dict[str, Any]:
+        """The positions held at the end of the latest recorded session, with P&L and the plan made before entry.
+        Values are as of that session, not live; sessions recorded before this field existed say so."""
+        try:
+            recs = self._records()
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"session database unreadable: {type(e).__name__}", "holdings": []}
+        if not recs:
+            return {"session_date": None, "holdings": [], "recorded": False}
+        last = recs[-1]
+        detail = json.loads(last.detail_json)
+        items = detail.get("holdings")
+        return {"session_date": last.session_date, "recorded": items is not None,
+                "cash": last.cash, "equity": last.equity, "holdings": items or []}
+
     def checkpoint(self) -> Optional[dict[str, Any]]:
         """When the account was last saved, and why (read-only; the state itself is not parsed)."""
         path = self.state_dir / "checkpoints.db"

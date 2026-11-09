@@ -73,6 +73,10 @@ def create_ops_app(ops: OpsState, token: Optional[str] = None,
             raise HTTPException(status_code=404, detail="no such session")
         return detail
 
+    @app.get("/api/holdings", dependencies=[Depends(authorize)])
+    def holdings() -> dict[str, Any]:
+        return ops.holdings()
+
     @app.get("/api/observers", dependencies=[Depends(authorize)])
     def observers() -> dict[str, Any]:
         return ops.observers()

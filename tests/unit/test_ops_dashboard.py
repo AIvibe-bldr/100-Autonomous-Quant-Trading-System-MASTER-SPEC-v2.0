@@ -84,6 +84,29 @@ def test_sessions_are_newest_first_and_detail_includes_the_observers(state, tmp_
     assert latest["session_date"] == "2026-08-14" and "no_trade_reasons" in latest
 
 
+def test_holdings_show_pnl_and_the_plan_made_before_entry(state, tmp_path):
+    h = ops(state, tmp_path).holdings()
+    assert h["session_date"] == "2026-08-14" and h["recorded"] is True and h["holdings"]
+    last = ops(state, tmp_path).sessions(1)["sessions"][0]
+    assert len(h["holdings"]) == last["open_positions"]
+    for x in h["holdings"]:
+        assert x["pnl"] == pytest.approx(x["value"] - x["qty"] * x["avg_cost"])
+        assert x["pnl_pct"] == pytest.approx(x["price"] / x["avg_cost"] - 1.0)
+        plan = x["plan"]                      # every held position was bought with a plan and a resting stop
+        assert plan and plan["thesis"] and plan["invalidation"] and plan["stop_price"] < x["avg_cost"] * 1.5
+        assert 0 < x["weight"] <= 1
+    assert sum(x["value"] for x in h["holdings"]) + h["cash"] == pytest.approx(h["equity"])
+
+
+def test_holdings_of_a_session_recorded_before_the_field_existed_say_so(tmp_path):
+    st = DurableSessionStore(str(tmp_path / "sessions.db"), Environment.PAPER)
+    from tests.unit.test_session_records import _rec
+    st.record(_rec("2026-08-11", 1000.0, 0.0))
+    o = OpsState(tmp_path, incidents=IncidentLog(tmp_path / "i.jsonl"), intents=IntentInbox(tmp_path / "n.jsonl"))
+    h = o.holdings()
+    assert h["recorded"] is False and h["holdings"] == []
+
+
 def test_status_says_ok_while_fresh_and_critical_once_the_heartbeat_is_stale(state, tmp_path):
     d, now = state
     o = ops(state, tmp_path)
@@ -163,7 +186,7 @@ def test_every_route_is_a_get_and_nothing_can_write(state, tmp_path):
 def test_endpoints_answer_and_validate_input(state, tmp_path):
     c = client(state, tmp_path)
     for path in ("/api/status", "/api/performance", "/api/sessions?limit=5", "/api/observers", "/api/incidents",
-                 "/api/intents", "/api/alerts"):
+                 "/api/intents", "/api/alerts", "/api/holdings"):
         assert c.get(path).status_code == 200, path
     assert c.get("/api/sessions/2026-08-12").json()["session_date"] == "2026-08-12"
     assert c.get("/api/sessions/2030-01-01").status_code == 404

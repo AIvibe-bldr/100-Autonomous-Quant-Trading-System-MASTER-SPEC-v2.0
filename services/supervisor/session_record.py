@@ -18,6 +18,31 @@ from services.pipeline import PipelineResult, TradingPipeline
 _MAX_DETAIL_ITEMS = 10
 
 
+def holdings_view(pipeline: TradingPipeline, prices: dict[str, float]) -> list[dict]:
+    """What is held at the end of the session, valued at `prices`, with the plan made before entry (§33).
+    Plain data for the dashboard: it reads the books and the stop registry, and changes neither. The plan is the
+    one stored with the protective stop — a position bought in several lots shows the latest lot's plan."""
+    equity = pipeline.ledger.equity(prices)
+    out = []
+    for sym, lot in sorted(pipeline.ledger.positions.items()):
+        if lot.qty <= 0:
+            continue
+        price = prices.get(sym, lot.avg_cost)
+        cost, value = lot.qty * lot.avg_cost, lot.qty * price
+        entry = pipeline.open_stops.get(sym)
+        plan = None
+        if entry is not None:
+            stop = entry[1]
+            plan = {"thesis": stop.thesis, "stop_price": stop.stop_price, "stop_type": stop.stop_type.value,
+                    "stop_reason": stop.stop_reason, "profit_target": stop.profit_target,
+                    "holding_horizon": stop.holding_horizon, "invalidation": stop.invalidation,
+                    "risk_amount": entry[3]}
+        out.append({"symbol": sym, "qty": lot.qty, "avg_cost": lot.avg_cost, "price": price, "value": value,
+                    "pnl": value - cost, "pnl_pct": (value / cost - 1.0) if cost > 0 else 0.0,
+                    "weight": value / equity if equity > 0 else 0.0, "plan": plan})
+    return out
+
+
 class SessionRecorder:
     def __init__(self, pipeline: TradingPipeline, store: DurableSessionStore, model_tag: str) -> None:
         if not model_tag.strip():
@@ -29,7 +54,8 @@ class SessionRecorder:
     def __call__(self, at: datetime, result: PipelineResult,
                  llm_cost_usd: Optional[float] = None) -> SessionRecord:
         p = self._pipeline
-        snap = p.ledger.snapshot(p.mark_prices({}, at))
+        prices = p.mark_prices({}, at)
+        snap = p.ledger.snapshot(prices)
         previous = self._store.latest_equity()
         baseline = p.ledger.initial_cash if previous is None else previous
         detail = {
@@ -38,6 +64,7 @@ class SessionRecorder:
             "fills": [{"symbol": f.symbol, "side": f.side.value, "qty": f.qty, "price": f.price}
                       for f in result.fills[:_MAX_DETAIL_ITEMS]],
             "disagreement_multipliers": result.disagreement_multipliers,
+            "holdings": holdings_view(p, prices),
             # cumulative state of the pipeline's observers (forecast calibration, ...)
             "observers": {o.name: o.summary() for o in p.observers},
         }
