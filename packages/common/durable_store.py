@@ -13,6 +13,8 @@ repo has, one table per narrowly-scoped consumer:
 
 - `DurablePitStore` (§10): the durable twin of `PointInTimeStore` — every record keeps the
   time we RECEIVED it, so a query "as of T" can never see what arrived after T.
+- `DurableCheckpointStore`: versioned, checksummed snapshots of the whole paper account (broker + ledger +
+  registries), so a restart resumes the SAME account instead of starting a new one.
 - `DurableSessionStore`: one row per trading session (equity, drawdown, funnel counts, risk
   state, warnings) so multi-day paper results can be measured and compared across runs.
 
@@ -361,6 +363,87 @@ class DurablePitStore:
         return DurablePitRecord(key=key, value=json.loads(value_json),
                                 event_time=datetime.fromisoformat(event_time),
                                 received_time=datetime.fromisoformat(received_time), source=source)
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+@dataclass(frozen=True)
+class CheckpointRecord:
+    id: int
+    at: datetime
+    reason: str
+    schema_version: int
+    state: dict
+
+
+class DurableCheckpointStore:
+    """Append-only snapshots (the newest `keep` are retained). Each row carries a SHA-256 of its JSON, and
+    `latest_valid` returns the newest row whose checksum still verifies — a torn or damaged write falls back
+    to the previous snapshot instead of being trusted. The state must be JSON-safe by construction: a value
+    that is not raises at save time, it is never stringified into something that will not restore."""
+
+    def __init__(self, path: str, environment: Environment, read_only: bool = False, keep: int = 50) -> None:
+        self.environment = environment
+        self._table = environment.namespace("checkpoints")
+        self._keep = keep
+        self._read_only = read_only
+        self.skipped_corrupt = 0
+        if read_only:
+            self._conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            return
+        self._conn = sqlite3.connect(path)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, reason TEXT NOT NULL, "
+            "schema_version INTEGER NOT NULL, state_json TEXT NOT NULL, checksum TEXT NOT NULL)")
+        self._conn.commit()
+
+    def save(self, state: dict, reason: str, at: datetime, schema_version: int = 1) -> int:
+        if self._read_only:
+            raise PermissionError("this checkpoint store was opened read-only")
+        import hashlib
+        import json
+        body = json.dumps(state, sort_keys=True)
+        with self._conn:                                           # one transaction: row in, old rows out
+            cur = self._conn.execute(
+                f"INSERT INTO {self._table} (at, reason, schema_version, state_json, checksum) VALUES (?, ?, ?, ?, ?)",
+                (at.isoformat(), reason, schema_version, body, hashlib.sha256(body.encode()).hexdigest()))
+            self._conn.execute(f"DELETE FROM {self._table} WHERE id <= ?", (cur.lastrowid - self._keep,))
+        return int(cur.lastrowid)
+
+    def latest_valid(self) -> Optional[CheckpointRecord]:
+        import hashlib
+        import json
+        self.skipped_corrupt = 0
+        try:
+            rows = self._conn.execute(
+                f"SELECT id, at, reason, schema_version, state_json, checksum FROM {self._table} "
+                "ORDER BY id DESC").fetchall()
+        except sqlite3.OperationalError:
+            if self._read_only:
+                return None
+            raise
+        for id_, at, reason, version, body, checksum in rows:
+            if hashlib.sha256(body.encode()).hexdigest() != checksum:
+                self.skipped_corrupt += 1
+                continue
+            try:
+                return CheckpointRecord(id=id_, at=datetime.fromisoformat(at), reason=reason,
+                                        schema_version=version, state=json.loads(body))
+            except ValueError:
+                self.skipped_corrupt += 1
+        return None
+
+    def info(self) -> Optional[dict]:
+        """The newest snapshot's id/time/reason and how many are kept, without parsing any state."""
+        try:
+            row = self._conn.execute(
+                f"SELECT id, at, reason, (SELECT COUNT(*) FROM {self._table}) FROM {self._table} "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return None if row is None else {"id": row[0], "at": row[1], "reason": row[2], "count": row[3]}
 
     def close(self) -> None:
         self._conn.close()

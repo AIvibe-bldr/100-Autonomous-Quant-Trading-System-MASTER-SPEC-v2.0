@@ -153,9 +153,9 @@ class ExitReviewObserver(SessionObserver):
 class DailyReviewObserver(SessionObserver):
     name = "daily_review"
 
-    def __init__(self, initial_equity: float) -> None:
+    def __init__(self, initial_equity: float, previous_equity: Optional[float] = None) -> None:
         self._initial = initial_equity
-        self._prev = initial_equity
+        self._prev = previous_equity if previous_equity is not None else initial_equity   # resume: last session's equity
         self._day = 0
         self._last: Optional[dict[str, Any]] = None
 

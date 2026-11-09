@@ -141,7 +141,8 @@ def build_real_data_sources() -> RealDataSources:
     return out
 
 
-def attach_learning_observers(pipeline: TradingPipeline, initial_cash: float, pit_store=None) -> list:
+def attach_learning_observers(pipeline: TradingPipeline, initial_cash: float, pit_store=None,
+                              resumed_equity: Optional[float] = None) -> list:
     """Attach the read-only learning observers (forecast grading, P&L attribution, exit/counterfactual
     review, daily review, shadow portfolios + alpha shadow-running, the observe-only
     capital-cell mirror (AI/HUMAN cells reconciled against the Master Ledger), and Point-in-Time recording when a store is given). Returns them."""
@@ -156,9 +157,16 @@ def attach_learning_observers(pipeline: TradingPipeline, initial_cash: float, pi
     from services.pdca.pit_observer import PitObserver
     from services.pdca.shadow_observer import ShadowObserver
 
+    mirror = CapitalCellMirrorObserver(initial_cash)
+    if resumed_equity is not None:
+        # a resumed account already holds cash and positions: the mirror starts from them (the observers keep
+        # only running statistics, which restart empty; the account itself is restored by services/checkpoint.py)
+        mirror.seed_from_books(pipeline.ledger.cash,
+                               {s: (l.qty, l.avg_cost) for s, l in pipeline.ledger.positions.items()},
+                               pipeline.clock.now())
     observers = [ForecastObserver(), AttributionObserver(), ExitReviewObserver(pipeline.post_trade),
-                 DailyReviewObserver(initial_cash), ShadowObserver(initial_cash),
-                 HumanOverrideObserver(), CapitalCellMirrorObserver(initial_cash)]
+                 DailyReviewObserver(initial_cash, previous_equity=resumed_equity), ShadowObserver(initial_cash),
+                 HumanOverrideObserver(), mirror]
     if pit_store is not None:
         observers.append(PitObserver(pit_store))
     pipeline.observers.extend(observers)

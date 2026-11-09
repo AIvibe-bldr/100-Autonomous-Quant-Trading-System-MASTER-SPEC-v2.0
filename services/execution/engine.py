@@ -356,7 +356,18 @@ class ExecutionEngine:
                 self._route_fills(client_order_id)
         return sm.get(client_order_id).state
 
-    def recover_from_store(self) -> int:
+    def export_state(self) -> dict:
+        """What must survive a restart so a fill is never booked twice and slippage is still measured against
+        the right plan. (Rate-limit windows of the circuit breakers restart empty, by design.)"""
+        return {"seen_fill_ids": sorted(self._seen_fill_ids), "slippage_checked": sorted(self._slippage_checked),
+                "reference_prices": dict(self._reference_prices)}
+
+    def restore_state(self, state: dict) -> None:
+        self._seen_fill_ids = set(state["seen_fill_ids"])
+        self._slippage_checked = set(state["slippage_checked"])
+        self._reference_prices = dict(state["reference_prices"])
+
+    def recover_from_store(self, truth: Optional[Callable[[str], Optional[OrderState]]] = None) -> int:
         """Rehydrate in-memory order state from the durable store after a
         process restart (F3/F9). Recovered orders are NOT re-submitted or
         re-polled here — this only makes them visible to
@@ -364,6 +375,12 @@ class ExecutionEngine:
         The caller is responsible for reconciling against the broker before
         resuming normal trading (F4 — startup reconciliation is a separate,
         still-open finding this does not by itself close).
+
+        `truth(client_order_id)` is for a SIMULATED broker restored from a checkpoint: it returns the state the
+        restored broker holds for the order, or None if the broker has never heard of it (the process died
+        between recording the submission and the next checkpoint, so that part of the simulated world never
+        happened). The order is then restored as REJECTED and the store is updated to say so. A real broker is
+        reconciled instead of rewound, so it does not use this.
 
         Returns the number of orders recovered."""
         if self.store is None:
@@ -375,7 +392,13 @@ class ExecutionEngine:
                 continue  # already known in-memory (e.g. re-recovery, no-op)
             except KeyError:
                 pass
-            self.state_machine.restore(rec.client_order_id, rec.state)
+            state = rec.state
+            if truth is not None:
+                known = truth(rec.client_order_id)
+                state = known if known is not None else OrderState.REJECTED
+                if state is not rec.state:
+                    self.store.update_state(rec.client_order_id, state, self.clock.now())
+            self.state_machine.restore(rec.client_order_id, state)
             self._snapshots[rec.client_order_id] = rec.snapshot
             recovered += 1
         return recovered

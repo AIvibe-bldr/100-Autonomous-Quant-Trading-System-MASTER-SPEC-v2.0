@@ -14,7 +14,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Callable, Optional
 
 from packages.common.clock import Clock
 from packages.common.durable_store import DurableAuditStore
@@ -226,6 +226,10 @@ class TradingPipeline:
     # takes the SAME gates as an AI candidate (Audit AI, Master Risk Controller, ...) — INV-8.
     human_inbox: Optional[IntentInbox] = None
     human_analyzer: HumanIntentAnalyzer = field(default_factory=HumanIntentAnalyzer)
+    # Durability (services/checkpoint.py): called with a reason at the points where the books are consistent —
+    # after an order's fills AND its protective stop, after exit fills, and around each session. NOT swallowed:
+    # a system that cannot save its state must stop (the runner turns the exception into a halted failure).
+    checkpointer: Optional[Callable[[str], None]] = None
     # Read-only listeners (services/pdca/observer.py): they record and grade, never decide.
     observers: list[SessionObserver] = field(default_factory=list)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
@@ -273,6 +277,23 @@ class TradingPipeline:
         self.reconciliation = ReconciliationEngine(
             broker=self.execution.broker, ledger=self.ledger,
             risk_controller=self.risk_controller)
+
+    def _checkpoint(self, reason: str) -> None:
+        if self.checkpointer is not None:
+            self.checkpointer(reason)
+
+    def export_registry(self) -> dict:
+        """The pipeline's own memory that outlives a session: which protective stop belongs to which
+        position, and the order sequence number."""
+        return {"order_seq": self._order_seq,
+                "open_stops": {sym: {"order_id": cid, "stop": stop.model_dump(mode="json"),
+                                     "entry_price": entry_px, "risk_amount": risk}
+                               for sym, (cid, stop, entry_px, risk) in self.open_stops.items()}}
+
+    def restore_registry(self, state: dict) -> None:
+        self._order_seq = state["order_seq"]
+        self.open_stops = {sym: (v["order_id"], StopPlan.model_validate(v["stop"]), v["entry_price"],
+                                 v["risk_amount"]) for sym, v in state["open_stops"].items()}
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
         """Read-only view for callers outside the pipeline (the status API's
@@ -507,6 +528,8 @@ class TradingPipeline:
                                   DecisionKind.SELL, now, f.price,
                                   had_stop_plan=True, skeptic_consulted=False)
             triggered += 1
+        if fills:
+            self._checkpoint("exits")
         return triggered, len(fills)
 
     def run_session(self, as_of: datetime) -> PipelineResult:
@@ -555,6 +578,10 @@ class TradingPipeline:
         self._final_theses.clear()
         self._signal_captured_at.clear()
         self._book_correlation.clear()
+        # Flow observations are facts about THIS session's bars. The engine keeps the latest observation per
+        # feature forever, so a volume spike days ago kept tilting today's disagreement (and therefore the
+        # position size) — and it was the one piece of hidden cross-session state a restart would lose.
+        self.flow_engine = InstitutionalFlowEngine()
 
         if self.heartbeat_alerter is not None:
             self.heartbeat_alerter.check()
@@ -982,6 +1009,7 @@ class TradingPipeline:
                 self._persist_audit_record(log_rec, now)
                 result.no_trade_reasons.append(
                     f"{sized.proposal.symbol}: order ended {state.value}")
+            self._checkpoint("order")        # fills, ledger and protective stop are now all in place
         return result
 
     # -- helpers -------------------------------------------------------------

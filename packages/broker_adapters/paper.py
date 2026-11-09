@@ -76,6 +76,34 @@ class PaperBroker(BrokerAdapter):
     def environment(self) -> Environment:
         return Environment.PAPER          # a simulation is never anything else
 
+    # -- persistence ------------------------------------------------------------
+    def export_state(self) -> dict:
+        """The simulated account as JSON-safe data: cash, positions, every order and every fill. Fault
+        injection and the fee/slippage parameters are configuration, not state, and are not included."""
+        return {
+            "settled_cash": self._settled_cash, "unsettled_cash": self._unsettled_cash,
+            "positions": [p.model_dump(mode="json") for p in self._positions.values()],
+            "fills": [f.model_dump(mode="json") for f in self._all_fills],
+            "orders": [{"request": o.request.model_dump(mode="json"), "broker_order_id": o.broker_order_id,
+                        "state": o.state.value, "filled_qty": o.filled_qty,
+                        "submitted_on": o.submitted_on.isoformat() if o.submitted_on else None,
+                        "fill_ids": [f.broker_fill_id for f in o.fills]} for o in self._orders.values()]}
+
+    def restore_state(self, state: dict) -> None:
+        fills = [BrokerFill.model_validate(f) for f in state["fills"]]
+        by_id = {f.broker_fill_id: f for f in fills}
+        orders: dict[str, _PaperOrder] = {}
+        for o in state["orders"]:
+            req = BrokerOrderRequest.model_validate(o["request"])
+            orders[req.client_order_id] = _PaperOrder(
+                request=req, broker_order_id=o["broker_order_id"], state=OrderState(o["state"]),
+                submitted_on=date.fromisoformat(o["submitted_on"]) if o["submitted_on"] else None,
+                filled_qty=o["filled_qty"], fills=[by_id[i] for i in o["fill_ids"]])
+        self._settled_cash, self._unsettled_cash = state["settled_cash"], state["unsettled_cash"]
+        self._positions = {p["symbol"]: BrokerPosition.model_validate(p) for p in state["positions"]}
+        self._all_fills, self._orders = fills, orders
+        self.fault = Fault.NONE
+
     # -- fault helpers ------------------------------------------------------
     def _check_disconnect(self) -> None:
         if self.fault is Fault.DISCONNECT:

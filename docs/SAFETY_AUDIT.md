@@ -635,7 +635,7 @@ prefers — recommend the former since it costs one line and keeps the
 
 ### P2 — improvement, not blocking
 
-#### F9. No persistence layer at all (root cause of F3/F4/F7) — RESOLVED
+#### F9. No persistence layer at all (root cause of F3/F4/F7) — RESOLVED (account persistence added 2026-11-10)
 
 Already covered above as the shared root cause; listed separately here
 because it is itself the single highest-leverage fix in this report.
@@ -794,3 +794,9 @@ sound; what's missing is durability and a few dead/unwired checks.
 **Live Trading readiness (instruction §35): not ready.** F1, F2, F3, F4
 are unresolved P0s. This audit report itself does not change that
 determination — no code has been modified.
+
+**Update 2026-11-10 (account persistence).** The paper broker, ledger and stop registry were still in memory, so a restart
+meant a new account. `services/checkpoint.py` now saves them at consistent points and restores them with verification
+(ledger re-derived from its entries, ledger-vs-broker reconciliation, every held position has a live protective stop);
+a failed verification refuses to trade. See `docs/MASTER_SPEC.md` "ペーパー口座の永続化". Found by the crash/restore
+equivalence test: the flow engine's observations never expired and tilted position sizing across sessions (fixed).

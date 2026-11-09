@@ -153,6 +153,7 @@ function renderStatus(s) {
     card("リスク状態", r ? r.risk_state : "—", null, r && r.risk_state !== "NORMAL" ? "warn" : "pos"),
     card("キルスイッチ", s.kill_switch.engaged ? "作動中" : "解除", s.kill_switch.engaged ? s.kill_switch.operator + ": " + s.kill_switch.reason : null, s.kill_switch.engaged ? "neg" : "pos"),
     card("最終セッション", r && r.last_session_date ? r.last_session_date : "—", r ? "実行 " + r.sessions_run + " 回" : null),
+    card("口座の保存", s.checkpoint && s.checkpoint.at ? jst(s.checkpoint.at) : "なし", s.checkpoint ? (s.checkpoint.error || s.checkpoint.reason + " · " + s.checkpoint.count + " 世代") : "再起動で引き継げません", s.checkpoint && s.checkpoint.at ? "" : "warn"),
     card("次のセッション", r && r.next_session_at ? jst(r.next_session_at) : "—", r && r.next_session_at ? et(r.next_session_at) : null),
     card("未解決の重大障害", String(s.open_major_incidents.length), s.open_major_incidents.join(", ") || null, s.open_major_incidents.length ? "neg" : "pos"),
   ];

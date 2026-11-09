@@ -95,7 +95,9 @@ class SessionRunner:
                  recovery: Optional[RecoveryManager] = None,
                  incident_log: Optional[IncidentLog] = None,
                  market_open_hook: Optional[Callable[[datetime], object]] = None,
-                 status_sink: Optional[Callable[[RunnerStatus], None]] = None) -> None:
+                 status_sink: Optional[Callable[[RunnerStatus], None]] = None,
+                 checkpoint: Optional[Callable[[str], None]] = None,
+                 initial_last_run: Optional[date] = None) -> None:
         self._pipeline = pipeline
         self._calendar = calendar
         self._clock = clock
@@ -109,10 +111,11 @@ class SessionRunner:
         self._incident_log = incident_log
         self._market_open_hook = market_open_hook
         self._status_sink = status_sink
+        self._checkpoint = checkpoint
         self._started_at = clock.now()
         self._sessions_run = 0
         self._last_session_at: Optional[datetime] = None
-        self.last_run: Optional[date] = None
+        self.last_run: Optional[date] = initial_last_run     # a resumed account has already run up to here
         self.failed: Optional[str] = None
         self._pipeline_status = ServiceStatus.OK
         self._last_good: Optional[datetime] = None
@@ -176,6 +179,8 @@ class SessionRunner:
         log.info("session start date=%s", session_date)
         self._publish(RUNNING, session_started=now)
         try:
+            if self._checkpoint is not None:
+                self._checkpoint(f"session_start:{session_date}")
             result = self._pipeline.run_session(now)
         except Exception as e:  # noqa: BLE001 — fail closed: alert, halt entries, stop the runner
             self._fail(now, f"session {session_date} raised {type(e).__name__}: {e}")
@@ -196,6 +201,11 @@ class SessionRunner:
                 self._after(now, result)
             except Exception as e:  # noqa: BLE001 — losing the record of a session is a failure too
                 self._fail(now, f"after-session step failed: {type(e).__name__}: {e}")
+        if self._checkpoint is not None and not self.failed:
+            try:                                                  # after settle/record: the day is complete
+                self._checkpoint(f"session_end:{session_date}")
+            except Exception as e:  # noqa: BLE001 — a system that cannot save its state must stop
+                self._fail(now, f"checkpoint failed: {type(e).__name__}: {e}")
         return result
 
     def _minor_fault(self, now: datetime, description: str) -> None:
@@ -208,6 +218,11 @@ class SessionRunner:
         self._incident_log.record_resolution(inc.incident_id, "auto",
                                              "minor fault; auto-resume allowed (§69)", now,
                                              human_approved=False)
+
+    def record_minor_fault(self, description: str) -> None:
+        """Public entry for the start-up code: note a minor, already-handled condition (e.g. orders rewound by
+        a restore) in the incident log, auto-resolved (§69)."""
+        self._minor_fault(self._clock.now(), description)
 
     def _fail(self, now: datetime, reason: str) -> None:
         self.failed = reason

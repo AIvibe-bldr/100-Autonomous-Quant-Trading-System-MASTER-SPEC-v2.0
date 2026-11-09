@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from packages.common.alert_sinks import read_alert_history
 from packages.common.calendar import TradingCalendar
-from packages.common.durable_store import DurableSessionStore, SessionRecord
+from packages.common.durable_store import DurableCheckpointStore, DurableSessionStore, SessionRecord
 from packages.common.environment import Environment
 from packages.common.kill_switch import KillSwitch
 from packages.common.live_gate import LiveGate
@@ -95,6 +95,16 @@ class OpsState:
                 "no_trade_reasons": detail.get("no_trade_reasons", []),
                 "data_warnings": detail.get("data_warnings", []), "fills": detail.get("fills", [])}
 
+    def checkpoint(self) -> Optional[dict[str, Any]]:
+        """When the account was last saved, and why (read-only; the state itself is not parsed)."""
+        path = self.state_dir / "checkpoints.db"
+        if not path.exists():
+            return None
+        try:
+            return DurableCheckpointStore(str(path), Environment.PAPER, read_only=True).info()
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"checkpoint database unreadable: {type(e).__name__}"}
+
     # -- the runner and the operator files --------------------------------------------------
     def status(self, now: datetime) -> dict[str, Any]:
         status, error = None, None
@@ -120,6 +130,7 @@ class OpsState:
             "kill_switch": {"engaged": ks.engaged, "operator": ks.operator, "reason": ks.reason, "at": ks.at},
             "live_gate": None if live_open is None else {"open": live_open},
             "open_major_incidents": majors,
+            "checkpoint": self.checkpoint(),
         }
 
     def incidents(self) -> dict[str, Any]:

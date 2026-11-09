@@ -41,17 +41,35 @@ LLM のキー（`MY_ANTHROPIC_API_KEY`・`OPENAI_API_KEY`）は、この実行�
 ```bash
 # 1. スケジュールの確認（取引はしない。日本時間の冬は 23:45 JST）
 python3 scripts/run_paper_runner.py --show-schedule
-# 2. 新しい口座として起動（--state-dir は毎回新しいディレクトリ）
+# 2. 新しい口座として起動（空のディレクトリ）
 python3 scripts/run_paper_runner.py --real-data --state-dir var/runner-20261110 --model-tag mock-ai
+#    落ちた後・再起動後は同じディレクトリで続ける（保存を復元して検証する）
+python3 scripts/run_paper_runner.py --real-data --state-dir var/runner-20261110 --resume
 # 3. 別のターミナル／プロセスで監視役
 python3 scripts/watchdog.py --state-dir var/runner-20261110 --loop
 # 4. 画面（http://127.0.0.1:8080/）
 python3 scripts/run_ops_dashboard.py --state-dir var/runner-20261110
 ```
 
-**重要な性質**: ペーパーの口座と台帳は**メモリ上**にあるため、**再起動は新しい口座**になる。前回の注文・セッションが残る状態ディレクトリでは
-runner は**起動を拒否**する。したがって **「落ちたら自動で再起動」は設定しない**（再起動しても拒否され、障害ログが開いている間は起動しない）。
-落ちたら通知を受けて人が判断する、が正しい運用。
+**口座は保存され、再開できる（2026-11-10）**: ペーパー口座（模擬ブローカー＋台帳＋損切り登録簿）は、整合点
+（注文の約定と保護ストップが揃った時点・決済約定の後・各セッションの前後）で `checkpoints.db` に保存される。再起動時は:
+
+| 状態ディレクトリ | 指定 | 動作 |
+|---|---|---|
+| 空（新規） | なし | 新しい口座を開始 |
+| 口座あり | なし | **拒否**（`--resume` か新しい `--state-dir` を促す） |
+| 口座あり | `--resume` | 保存を**復元して検証**し、継続（検証に失敗すれば起動せず人の判断） |
+| 空 | `--resume` | 拒否（再開するものがない） |
+| どちらでも | `--resume-if-exists` | あれば再開、なければ新規（サービス管理用） |
+
+**復元は信頼せず検証する**: 台帳は記録から再計算し、台帳と模擬ブローカーの照合が一致し、保有する全銘柄に生きた保護ストップがあることを確認する。
+どれかが崩れていれば `cannot resume` で止まる（その口座では取引しない）。破損した最新の保存は、前の世代へ自動で退避する。
+- **途中で落ちた場合**: 最後の整合点までを復元する。その後・次の保存の前に動いていた取引（エントリーと保護ストップの2本）は
+  **一緒に巻き戻され**（記録上 REJECTED）、「ストップの無い保有」は残らない。軽微な障害として記録される。
+- **セッション中に落ちた日**は再実行しない（途中で止まった日の二重取引を避ける）。成績の記録は欠ける。
+- **リスク停止（HALT）は再起動をまたいで残る**。解除は名前付きで: `--resume --clear-halt --operator 名前 --reason "確認したこと"`（インシデントログに記録）。
+- 復元されないもの: 観測者の**累積統計**（予測の較正・シャドー・損益分解などは再開時に0から）、資本セルの「AI／人」の内訳
+  （再開時点の保有は AI セルに入る）、サーキットブレーカーの窓（空から）。口座そのものは完全に復元される。
 
 ### systemd の例（未検証の書式例）
 ```ini
@@ -59,8 +77,12 @@ runner は**起動を拒否**する。したがって **「落ちたら自動で
 [Service]
 WorkingDirectory=/opt/quant
 EnvironmentFile=/etc/quant/runner.env          # 秘密はここ（権限 600）
-ExecStart=/usr/bin/python3 scripts/run_paper_runner.py --real-data --state-dir /var/lib/quant/runner-20261110
-Restart=no                                     # 上記の理由で自動再起動しない
+ExecStart=/usr/bin/python3 scripts/run_paper_runner.py --real-data --state-dir /var/lib/quant/runner-20261110 --resume-if-exists
+Restart=on-failure                             # 落ちたら保存から再開（検証に失敗・未解決の重大障害なら起動しない）
+RestartSec=30
+RestartPreventExitStatus=2                     # 「起動を拒否」(終了コード2)は再試行しても無駄なので止める（watchdog が通知）
+StartLimitIntervalSec=600
+StartLimitBurst=5
 KillSignal=SIGTERM
 TimeoutStopSec=30
 ```
@@ -103,8 +125,9 @@ python3 scripts/incidents.py list
 python3 scripts/incidents.py show INC-0003     # postmortem の雛形（TODO）を埋める材料
 # 原因を調べ、直したうえで:
 python3 scripts/incidents.py resolve INC-0003 --operator あなたの名前 --reason "原因と対処"
-# 新しい口座として起動し直す（古い --state-dir は使えない）
-python3 scripts/run_paper_runner.py --real-data --state-dir var/runner-NEW
+# 同じ口座を続ける（保存を復元・検証する。リスク停止が残っていれば --clear-halt を足して解除）
+python3 scripts/run_paper_runner.py --real-data --state-dir var/runner-20261110 --resume
+# 復元できない（cannot resume）場合は、新しい --state-dir で新しい口座を始める
 ```
 解決の記録がない間、runner は起動しない。解決は操作者名と理由が必須で、追記専用のログに残る。
 
@@ -123,7 +146,7 @@ python3 scripts/human_intent.py confirm HI-... --operator 名前   # 次のセ�
 確認しても、Audit AI・Master Risk Controller が拒否することがある。結果は `show` とダッシュボードに残る。買いのみ。
 
 ## 9. バックアップと保守
-- 状態ディレクトリは**丸ごと**コピー（`sessions.db` が成績の唯一の記録）。実行中のコピーは読み取りで安全だが、停止後が確実。
+- 状態ディレクトリは**丸ごと**コピー（`sessions.db` が成績、`checkpoints.db` が口座の唯一の記録）。実行中のコピーは読み取りで安全だが、停止後が確実。
 - 取引カレンダーは**2028年末まで**。以降は `packages/common/calendar.py` へ NYSE の発表で追加（無いと runner は停止する。10月以降の起動時に警告が出る）。
 - ダッシュボードを外部に出す場合: `QUANT_OPS_TOKEN` ＋ TLS（リバースプロキシ）。トークンは URL の `?token=` でも渡せるが、履歴に残るので Bearer ヘッダを推奨。
 
@@ -131,3 +154,4 @@ python3 scripts/human_intent.py confirm HI-... --operator 名前   # 次のセ�
 - watchdog は runner と**同じファイル**を見るので、同一マシンならマシンの停止は検知できない → `QUANT_WATCHDOG_PING_URL` の外部死活監視で補う。
 - 通知先（Slack 等）への**実送信は、ローカルの模擬サーバーでしか確認していない**。設定後に、わざと異常を作って（例: `--state-dir` を間違える）届くか試すこと。
 - 実LLM・実データでの長期連続稼働は未経験。数日は人が見守る前提。
+- 保存は**模擬ブローカー専用**。実ブローカーは相手が口座の真実を持つので、復元ではなく照合で扱う（未実装）。

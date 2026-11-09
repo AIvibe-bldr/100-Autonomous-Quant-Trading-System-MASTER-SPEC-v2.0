@@ -66,9 +66,23 @@ class CapitalCellMirrorObserver(SessionObserver):
         self.fills_attributed = {CELL_AI: 0, CELL_HUMAN: 0}
         self.defaulted_to_ai = 0         # a buy whose originator was not stated
         self.errors: list[str] = []      # fills the mirror could not post (the reconciliation will show it)
+        self.seeded_positions: list[str] = []      # held at resume; the AI/HUMAN origin is unknown
         self.sessions_checked = 0
         self.sessions_inconsistent = 0
         self._last_report: Optional[dict[str, Any]] = None
+
+    def seed_from_books(self, cash: float, positions: dict[str, tuple[float, float]], at) -> None:
+        """Start from an account that already exists (a resumed one): everything held is put in the AI cell at
+        its average cost — who originally bought it is not known any more, which is stated, not guessed —
+        and the cash is the unallocated pool. Only valid on a fresh mirror."""
+        if self.fills_attributed[CELL_AI] or self.fills_attributed[CELL_HUMAN]:
+            raise RuntimeError("seed_from_books is only for a mirror that has seen no fills")
+        self._unallocated = cash
+        for symbol, (qty, avg_cost) in positions.items():
+            cost = qty * avg_cost
+            self.cells[CELL_AI].allocate_cash(cost, at, note="resume: existing position")
+            self.cells[CELL_AI].record_broker_fill(symbol, qty, avg_cost, 0.0, at, note="resume: existing position")
+        self.seeded_positions = sorted(positions)
 
     # -- fills ------------------------------------------------------------------------------
     def on_fill(self, e: FillEvent) -> None:
@@ -163,7 +177,7 @@ class CapitalCellMirrorObserver(SessionObserver):
             "phase": "A: observe-only mirror (no effect on sizing, allocation or orders)",
             "unallocated_cash": round(self._unallocated, 4),
             "fills_attributed": dict(self.fills_attributed), "defaulted_to_ai": self.defaulted_to_ai,
-            "errors": list(self.errors),
+            "errors": list(self.errors), "seeded_at_resume": list(self.seeded_positions),
             "reconciliation": {"sessions_checked": self.sessions_checked,
                                "sessions_inconsistent": self.sessions_inconsistent,
                                "latest": self._last_report},

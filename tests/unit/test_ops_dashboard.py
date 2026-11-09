@@ -217,3 +217,11 @@ def test_the_runbook_only_names_scripts_and_variables_that_exist():
                         for p in (root / d).rglob("*.py"))
     for var in set(re.findall(r"`(QUANT_[A-Z_]+)`", doc)):
         assert var in sources, var                      # every variable the runbook names is read by some code
+
+
+def test_status_reports_when_the_account_was_last_saved(tmp_path):
+    from packages.common.durable_store import DurableCheckpointStore
+    o = OpsState(tmp_path, incidents=IncidentLog(tmp_path / "i"), intents=IntentInbox(tmp_path / "n"))
+    assert o.status(START)["checkpoint"] is None
+    DurableCheckpointStore(str(tmp_path / "checkpoints.db"), Environment.PAPER).save({"x": 1}, "session_end:2026-08-11", START)
+    assert o.status(START)["checkpoint"]["reason"] == "session_end:2026-08-11"
