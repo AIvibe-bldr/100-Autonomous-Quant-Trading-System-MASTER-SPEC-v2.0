@@ -239,9 +239,15 @@ class DurableSessionStore:
     """Append-only: a session date is recorded once. A second record for the same date is an
     error (it would overwrite history), not an upsert."""
 
-    def __init__(self, path: str, environment: Environment) -> None:
+    def __init__(self, path: str, environment: Environment, read_only: bool = False) -> None:
+        """`read_only=True` opens the file in SQLite's read-only mode and never creates a table: for a
+        dashboard in another process, which must not be able to change (or even create) anything."""
         self.environment = environment
+        self._read_only = read_only
         self._table = environment.namespace("sessions")
+        if read_only:
+            self._conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            return
         self._conn = sqlite3.connect(path)
         self._conn.execute(
             f"CREATE TABLE IF NOT EXISTS {self._table} ("
@@ -257,6 +263,8 @@ class DurableSessionStore:
         self._conn.commit()
 
     def record(self, rec: SessionRecord) -> None:
+        if self._read_only:
+            raise PermissionError("this session store was opened read-only")
         values = [getattr(rec, c) for c in _SESSION_COLUMNS]
         values[2] = rec.recorded_at.isoformat()
         try:
@@ -268,8 +276,13 @@ class DurableSessionStore:
         self._conn.commit()
 
     def all(self) -> list[SessionRecord]:
-        cur = self._conn.execute(
-            f"SELECT {', '.join(_SESSION_COLUMNS)} FROM {self._table} ORDER BY session_date")
+        try:
+            cur = self._conn.execute(
+                f"SELECT {', '.join(_SESSION_COLUMNS)} FROM {self._table} ORDER BY session_date")
+        except sqlite3.OperationalError:
+            if self._read_only:
+                return []                    # no table yet: the runner has not recorded a session
+            raise
         out = []
         for row in cur.fetchall():
             d = dict(zip(_SESSION_COLUMNS, row))

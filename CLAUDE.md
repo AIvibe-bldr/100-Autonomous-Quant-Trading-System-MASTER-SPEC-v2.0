@@ -21,6 +21,7 @@
 | SAFETY（安全設計） | `docs/invariants.md`（Safety Invariants）＋ `docs/risk.md`（Risk Pipeline）＋ `docs/execution.md`（Order State Machine） |
 | INVARIANTS（絶対に破ってはいけない条件） | `docs/invariants.md`（INV-1〜21）＋ `docs/MASTER_SPEC.md`（Requirement Map） |
 | 監査結果・既知のGap | `docs/SAFETY_AUDIT.md`（P0〜P3、2026-09時点の未解決事項） |
+| 運用手順（起動・監視・障害対応・緊急停止） | `docs/operations.md` |
 
 新しい安全設計・構造ドキュメントが必要になった場合も、まずこれらへの追記を優先し、本当に別文書が
 必要な場合のみ新規作成し、ここに追記する。

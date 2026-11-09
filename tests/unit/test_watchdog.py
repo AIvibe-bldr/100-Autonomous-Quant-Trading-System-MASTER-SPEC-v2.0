@@ -213,3 +213,42 @@ def test_cli_with_no_status_file_is_critical_and_no_alert_mode_stays_silent(tmp_
     cli = _cli()
     assert cli.check_once(tmp_path, True, False, now=NOW) == 2
     assert "no_status" in capsys.readouterr().out and not (tmp_path / "alerts.jsonl").exists()
+
+
+# ---- the dead-man's switch ----
+
+class _Ping:
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        self.hits = 0
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                outer.hits += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+            def log_message(self, *a):
+                pass
+        self.server = HTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/ping/SECRET"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+
+def test_the_dead_mans_switch_is_pinged_unless_critical_and_a_bad_url_is_never_called(tmp_path, capsys):
+    cli = _cli()
+    srv = _Ping()
+    r, p, clock, _ = _runner(tmp_path)
+    r.run_forever(lambda: clock.now() >= NOW + timedelta(minutes=3))
+    r._publish(WAITING)
+    t = clock.now()
+    assert cli.check_once(tmp_path, True, False, now=t + timedelta(seconds=20), ping_url=srv.url) == 0
+    assert srv.hits == 1                                                               # healthy: pinged
+    assert cli.check_once(tmp_path, True, False, now=t + timedelta(minutes=30), ping_url=srv.url) == 2
+    assert srv.hits == 1                                                               # critical: silence is the alarm
+    assert cli.ping("http://example.com/x") is False and "SECRET" not in capsys.readouterr().out
+    srv.server.shutdown()
+    assert cli.ping(srv.url, timeout=1.0) is False                                     # unreachable: logged, not raised

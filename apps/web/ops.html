@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>運用ダッシュボード</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "Segoe UI", "Hiragino Sans", sans-serif;
+         padding: 16px; max-width: 1100px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  h1 { font-size: 18px; font-weight: 600; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 6px; font-weight: 700; letter-spacing: .08em; font-size: 12px; }
+  .env-PAPER { background: #1f6feb33; color: var(--blue); border: 1px solid var(--blue); }
+  .env-LIVE { background: #da363333; color: var(--red); border: 1px solid var(--red); }
+  .lamp-OK { background: #3fb95022; color: var(--green); border: 1px solid var(--green); }
+  .lamp-WARNING { background: #d2992222; color: var(--amber); border: 1px solid var(--amber); }
+  .lamp-CRITICAL, .lamp-NODATA { background: #da363322; color: var(--red); border: 1px solid var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .card .value { font-size: 18px; font-weight: 700; margin-top: 2px; overflow-wrap: anywhere; }
+  .card .sub { color: var(--muted); font-size: 11px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  section h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+  h3 { font-size: 12px; color: var(--muted); margin: 10px 0 4px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  th:first-child, td:first-child { text-align: left; }
+  td.l, th.l { text-align: left; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .scroll table { min-width: 520px; }
+  .pos { color: var(--green); } .neg { color: var(--red); } .warn { color: var(--amber); } .muted { color: var(--muted); }
+  .banner { border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; }
+  .banner.WARNING { background: #d2992222; border: 1px solid var(--amber); color: var(--amber); }
+  .banner.CRITICAL { background: #da363322; border: 1px solid var(--red); color: var(--red); }
+  .banner.info { background: #1f6feb22; border: 1px solid var(--blue); color: var(--blue); }
+  ul.plain { list-style: none; padding: 0; }
+  ul.plain li { padding: 3px 0; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  canvas { width: 100%; height: 200px; display: block; }
+  details { margin: 4px 0; } summary { cursor: pointer; color: var(--blue); font-size: 12px; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .cols section { margin-bottom: 0; min-width: 0; }
+  .cols .scroll table { min-width: 0; }
+  .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
+  #error { display: none; }
+  footer { color: var(--muted); font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>運用ダッシュボード <span class="muted" style="font-size:12px">（読み取り専用）</span></h1>
+  <div><span id="env" class="badge">…</span> <span id="lamp" class="badge">…</span></div>
+</header>
+<div id="error" class="banner CRITICAL"></div>
+<div id="findings"></div>
+
+<div class="grid" id="runnerCards"></div>
+
+<section><h2>成績</h2>
+  <div id="perfWarn"></div>
+  <div class="grid" id="perfCards"></div>
+  <canvas id="chart" width="1060" height="200"></canvas>
+</section>
+
+<section><h2>セッション（新しい順）</h2><div class="scroll"><table id="sessions"></table></div></section>
+
+<section><h2>最新セッションの詳細</h2><div id="latest"></div></section>
+
+<div class="cols" id="observers"></div>
+
+<section><h2>障害（インシデント）</h2><div id="incidents"></div></section>
+<section><h2>人の意図</h2><div id="intents"></div></section>
+<section><h2>通知の履歴</h2><div id="alerts"></div></section>
+<footer id="footer"></footer>
+
+<script>
+"use strict";
+const token = new URLSearchParams(location.search).get("token");
+const headers = token ? { Authorization: "Bearer " + token } : {};
+
+// All data is rendered through textContent — never as HTML — because it contains text we did not write
+// (news-derived reasons, incident descriptions, operator-typed reasons).
+function el(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat(Infinity)) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return e;
+}
+const money = (x) => x == null ? "—" : (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (x, d = 2) => x == null ? "—" : (x * 100).toFixed(d) + "%";
+const signed = (x, f) => x == null ? "—" : (x > 0 ? "+" : "") + f(x);
+const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
+const jst = (iso) => iso ? new Date(iso).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }) + " JST" : "—";
+const et = (iso) => iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", hour12: false }) + " ET" : "—";
+const card = (label, value, sub, c) => el("div", { class: "card" }, el("div", { class: "label", text: label }),
+  el("div", { class: "value " + (c || ""), text: value }), sub ? el("div", { class: "sub", text: sub }) : null);
+function table(head, rows, leftCols = 1) {
+  const t = el("table");
+  t.append(el("thead", {}, el("tr", {}, head.map((h, i) => el("th", { class: i < leftCols ? "l" : "", text: h })))));
+  t.append(el("tbody", {}, rows.map((r) => el("tr", {}, r.map((c, i) => {
+    const text = (c && typeof c === "object" && "t" in c) ? c.t : c;
+    return el("td", { class: ((c && c.c) || "") + (i < leftCols ? " l" : ""), text: text == null ? "—" : text });
+  })))));
+  return el("div", { class: "scroll" }, t);
+}
+function panel(title, ...body) { return el("section", {}, el("h2", { text: title }), body); }
+async function get(path) {
+  const r = await fetch(path, { headers });
+  if (!r.ok) throw new Error(path + " → HTTP " + r.status);
+  return r.json();
+}
+function setChildren(id, ...kids) { const e = document.getElementById(id); e.replaceChildren(...kids.flat(Infinity).filter(Boolean)); }
+function errorBox(data) { return data && data.error ? el("div", { class: "banner CRITICAL", text: data.error }) : null; }
+
+function drawChart(series) {
+  const cv = document.getElementById("chart"), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight; cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  if (series.length < 2) { g.fillStyle = css.getPropertyValue("--muted"); g.fillText("2セッション以上で表示されます", 12, 24); return; }
+  const ys = series.map((s) => s.equity), lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.1 || 1;
+  const L = 56, R = 8, T = 10, B = 22, x = (i) => L + (w - L - R) * i / (series.length - 1);
+  const y = (v) => T + (h - T - B) * (1 - (v - (lo - pad)) / (hi - lo + 2 * pad));
+  g.strokeStyle = css.getPropertyValue("--border"); g.fillStyle = css.getPropertyValue("--muted"); g.font = "11px sans-serif"; g.lineWidth = 1;
+  for (let k = 0; k <= 3; k++) { const v = lo - pad + (hi - lo + 2 * pad) * k / 3, yy = y(v);
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(w - R, yy); g.stroke(); g.fillText(v.toFixed(2), 4, yy + 4); }
+  g.fillText(series[0].date, L, h - 6); const last = series[series.length - 1].date; g.fillText(last, w - R - g.measureText(last).width, h - 6);
+  g.strokeStyle = css.getPropertyValue("--blue"); g.lineWidth = 2; g.beginPath();
+  series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity))); g.stroke();
+}
+
+function renderStatus(s) {
+  const r = s.runner;
+  document.getElementById("env").textContent = r ? r.environment : "—";
+  document.getElementById("env").className = "badge env-" + (r ? r.environment : "PAPER");
+  const lamp = r ? s.overall : "NODATA";
+  document.getElementById("lamp").textContent = r ? s.overall : "NO DATA";
+  document.getElementById("lamp").className = "badge lamp-" + lamp;
+  setChildren("findings", s.findings.map((f) => el("div", { class: "banner " + f.level, text: f.level + " · " + f.code + " — " + f.message })));
+  const age = r ? Math.max(0, Math.round((new Date(s.now) - new Date(r.updated_at)) / 1000)) : null;
+  const cards = [
+    card("ランナー", r ? r.state : "未起動", r ? "心拍 " + age + " 秒前 · pid " + r.pid : "状態ファイルがありません", r && r.state === "FAILED" ? "neg" : ""),
+    card("リスク状態", r ? r.risk_state : "—", null, r && r.risk_state !== "NORMAL" ? "warn" : "pos"),
+    card("キルスイッチ", s.kill_switch.engaged ? "作動中" : "解除", s.kill_switch.engaged ? s.kill_switch.operator + ": " + s.kill_switch.reason : null, s.kill_switch.engaged ? "neg" : "pos"),
+    card("最終セッション", r && r.last_session_date ? r.last_session_date : "—", r ? "実行 " + r.sessions_run + " 回" : null),
+    card("次のセッション", r && r.next_session_at ? jst(r.next_session_at) : "—", r && r.next_session_at ? et(r.next_session_at) : null),
+    card("未解決の重大障害", String(s.open_major_incidents.length), s.open_major_incidents.join(", ") || null, s.open_major_incidents.length ? "neg" : "pos"),
+  ];
+  if (s.live_gate) cards.push(card("LIVE ゲート", s.live_gate.open ? "承認あり" : "閉", null, s.live_gate.open ? "warn" : "neg"));
+  setChildren("runnerCards", cards);
+}
+
+let lastSeries = [];
+function renderPerf(p) {
+  const warn = [errorBox(p)];
+  if (p.warning) warn.push(el("div", { class: "banner info", text: p.warning + "。優劣の判断材料にはなりません（基準案: " + p.proposed_min_sessions + "営業日以上）。" }));
+  setChildren("perfWarn", warn);
+  const s = p.summary;
+  setChildren("perfCards", s ? [
+    card("資産", money(s.end_equity), "開始 " + money(s.start_equity)),
+    card("総リターン", signed(s.total_return, pct), null, cls(s.total_return)),
+    card("最大ドローダウン", pct(s.max_drawdown), null, s.max_drawdown > 0.05 ? "warn" : ""),
+    card("セッション数", s.sessions + " / " + p.proposed_min_sessions, s.first_date + " 〜 " + s.last_date),
+    card("上昇／下落／横ばい", s.up_days + " / " + s.down_days + " / " + s.flat_days, "最良 " + signed(s.best_day, (v) => v.toFixed(2)) + " 最悪 " + signed(s.worst_day, (v) => v.toFixed(2))),
+    card("約定／損切り", s.orders_filled + " / " + s.stops_triggered, "手数料 " + money(s.fees_total)),
+    card("非 NORMAL で終了", String(s.non_normal_risk_days), "警告あり " + s.warning_days + " 日", s.non_normal_risk_days ? "warn" : ""),
+    card("LLM 費用", s.llm_cost_usd == null ? "未記録" : money(s.llm_cost_usd)),
+  ] : [el("div", { class: "muted", text: "まだセッションが記録されていません" })]);
+  lastSeries = p.series || [];
+  drawChart(lastSeries);
+}
+
+function renderSessions(d) {
+  setChildren("sessions", errorBox(d), table(["日付", "資産", "日次損益", "DD", "候補", "約定", "損切り", "保有", "警告", "リスク", "LLM費用"],
+    (d.sessions || []).slice(0, 20).map((r) => [r.session_date, money(r.equity), { t: signed(r.day_pnl, (v) => v.toFixed(2)), c: cls(r.day_pnl) },
+      pct(r.drawdown), r.candidates, r.orders_filled, r.stops_triggered, r.open_positions, r.data_warnings,
+      { t: r.risk_state, c: r.risk_state === "NORMAL" ? "" : "warn" }, r.llm_cost_usd == null ? "—" : money(r.llm_cost_usd)])));
+}
+
+function renderObservers(o) {
+  const O = o.observers || {}, parts = [];
+  setChildren("latest", errorBox(o), o.session_date ? [
+    el("div", { class: "muted", text: "セッション " + o.session_date }),
+    el("h3", { text: "見送り・除外の理由（上位10）" }),
+    el("ul", { class: "plain" }, (o.no_trade_reasons || []).slice(0, 10).map((x) => el("li", { text: x }))),
+    (o.data_warnings || []).length ? [el("h3", { text: "データ警告" }), el("ul", { class: "plain" }, o.data_warnings.map((x) => el("li", { class: "warn", text: x })))] : null,
+    el("h3", { text: "約定" }),
+    (o.fills || []).length ? table(["銘柄", "売買", "数量", "価格"], o.fills.map((f) => [f.symbol, f.side, f.qty, f.price])) : el("div", { class: "muted", text: "なし" }),
+    Object.keys(o.disagreement_multipliers || {}).length ? [el("h3", { text: "モデル不一致によるサイズ係数（1.0=縮小なし）" }),
+      table(["銘柄", "係数"], Object.entries(o.disagreement_multipliers).map(([k, v]) => [k, { t: v.toFixed(3), c: v < 0.9 ? "warn" : "" }]))] : null,
+  ] : el("div", { class: "muted", text: "まだありません" }));
+
+  if (O.forecast) { const f = O.forecast, cal = f.calibration || {};
+    parts.push(panel("予測の較正（§32）", el("div", { class: "muted", text: "記録 " + f.recorded + " · 採点済み " + f.resolved + " · 待ち " + f.pending + " · 採点不能 " + f.skipped }),
+      Object.keys(cal).length ? table(["シナリオ", "予測確率", "実現頻度", "差"], ["bear", "base", "bull"].map((k) => [k, pct(cal[k].predicted), pct(cal[k].realized), signed(cal[k].gap, (v) => pct(v))])) : el("div", { class: "muted", text: "採点できた予測がまだありません" }))); }
+  if (O.shadow) { const s = O.shadow;
+    parts.push(panel("シャドー比較（§56-58）", el("div", { class: "muted", text: s.sessions + " セッション" }),
+      table(["変種", "累積リターン"], (s.ranking || []).map((r) => [r.variant, { t: pct(r.total_return), c: cls(r.total_return) }])),
+      el("div", { text: "AIスタックの寄与（FULL − QUANT_ONLY）: " + (s.ai_stack_contribution == null ? "—" : signed(s.ai_stack_contribution, (v) => pct(v))) }),
+      Object.keys(s.alpha_shadow || {}).length ? table(["Alpha", "回数", "平均リターン"], Object.entries(s.alpha_shadow).map(([k, v]) => [k, v.sessions, pct(v.mean_return)])) : null,
+      el("ul", { class: "plain" }, (s.caveats || []).map((c) => el("li", { text: c }))))); }
+  if (O.attribution) { const a = O.attribution;
+    parts.push(panel("損益分解（§54-55）", el("div", { class: "muted", text: "閉じた取引 " + a.closed_trades + " · 未帰属 " + a.unattributed + " · " + a.assumption }),
+      table(["項目", "金額"], [["合計", money(a.total_pnl)], ["市場β", money(a.market_beta_pnl)], ["alpha", money(a.alpha_pnl)], ["スリッページ", money(-a.slippage)], ["手数料", money(-a.fees)]]),
+      a.profit_quality ? el("div", { text: "利益の質: " + a.profit_quality.source + "（" + a.profit_quality.score + "）— " + a.profit_quality.detail }) : null)); }
+  if (O.exit_review) { const e = O.exit_review, st = e.stops || {}, cf = e.counterfactual || {};
+    parts.push(panel("出口・見送りの検証（§50-53）",
+      el("div", { text: "採点済み損切り " + (st.graded || 0) + " · 良い " + pct(st.good_rate || 0, 0) + " · 早すぎ " + pct(st.early_rate || 0, 0) }),
+      el("div", { text: "見送りの追跡 " + cf.tracked + " 件（1週間後の結果あり " + cf.with_1w_outcome + "）· 平均 " + (cf.mean_1w_return_of_skipped == null ? "—" : pct(cf.mean_1w_return_of_skipped)) }),
+      (e.proposals || []).length ? table(["提案", "段階"], e.proposals.map((p) => [p.name, p.stage])) : el("div", { class: "muted", text: "出口の研究提案: なし" }))); }
+  if (O.daily_review && O.daily_review.grades) { const d = O.daily_review;
+    parts.push(panel("日次レビュー（§63-64）", el("div", { text: d.day + " · 損益 " + signed(d.pnl, (v) => v.toFixed(2)) }),
+      table(["観点", "評価"], Object.entries(d.grades).map(([k, v]) => [k, v])), el("ul", { class: "plain" }, (d.narrative || []).map((n) => el("li", { text: n }))))); }
+  if (O.human_vs_ai) { const h = O.human_vs_ai;
+    parts.push(panel("人 vs AI（§79）", el("div", { text: "介入 " + h.overrides + " · 結果が出た " + h.resolved + " · 待ち " + h.pending }),
+      el("div", { text: "人の付加価値: " + (h.human_value_added == null ? "—" : h.human_value_added) + "（" + h.unit + "）" }))); }
+  if (O.capital_cells) { const c = O.capital_cells, rc = c.reconciliation || {}, latest = rc.latest;
+    parts.push(panel("資本セル（案A・観測のみ）",
+      el("div", { class: rc.sessions_inconsistent ? "warn" : "pos", text: "照合 " + rc.sessions_checked + " 回 · 不一致 " + rc.sessions_inconsistent + " 回" }),
+      latest ? table(["セル", "現金", "評価額", "実現損益"], Object.entries(latest.cells).map(([k, v]) => [k, money(v.cash), money(v.marked_equity), money(v.virtual_realized_pnl)])) : null,
+      (c.errors || []).length ? el("ul", { class: "plain" }, c.errors.map((x) => el("li", { class: "warn", text: x }))) : null,
+      el("div", { class: "muted", text: "未配分プール " + money(c.unallocated_cash) + " · " + c.note }))); }
+  if (O.pit) parts.push(panel("Point-in-Time 記録（§10）", el("div", { text: "判断の入力・出力を記録: " + O.pit.decisions_recorded + " 件" })));
+  setChildren("observers", parts.length ? parts : [el("div", { class: "muted", text: "観測者の出力はまだありません" })]);
+}
+
+function renderIncidents(d) {
+  setChildren("incidents", errorBox(d), (d.incidents || []).length ? table(["ID", "重大度", "状態", "サービス", "内容"],
+    d.incidents.map((i) => [i.incident_id, i.severity, { t: i.resolved ? "解決" : "未解決", c: i.resolved ? "" : "neg" }, i.service, i.description]), 1) : el("div", { class: "muted", text: "記録なし" }));
+}
+function renderIntents(d) {
+  setChildren("intents", errorBox(d), (d.intents || []).length ? (d.intents || []).map((i) => el("div", {},
+    el("div", {}, el("b", { text: i.intent_id + " " + i.symbol + " " }), el("span", { class: i.status === "CONFIRMED" ? "warn" : "muted", text: i.status }),
+      el("span", { class: "muted", text: " · " + i.submitted_by + " · " + i.reason })),
+    i.outcome ? el("div", { class: "muted", text: "結果: " + i.outcome }) : null,
+    i.analysis ? el("details", {}, el("summary", { text: "分析を見る" }), el("pre", { text: JSON.stringify(i.analysis, null, 2) })) : null))
+    : el("div", { class: "muted", text: "なし（提出・確認・取消は scripts/human_intent.py）" }));
+}
+function renderAlerts(d) {
+  setChildren("alerts", (d.alerts || []).length ? el("ul", { class: "plain" }, d.alerts.slice(0, 15).map((a) =>
+    el("li", { class: a.severity === "CRITICAL" ? "neg" : "warn", text: jst(a.at) + " [" + a.severity + "] " + a.message }))) : el("div", { class: "muted", text: "通知はありません" }));
+}
+
+async function refresh() {
+  try {
+    const [s, p, ss, o, inc, intents, al] = await Promise.all([get("/api/status"), get("/api/performance"), get("/api/sessions?limit=60"),
+      get("/api/observers"), get("/api/incidents"), get("/api/intents"), get("/api/alerts?limit=50")]);
+    renderStatus(s); renderPerf(p); renderSessions(ss); renderObservers(o); renderIncidents(inc); renderIntents(intents); renderAlerts(al);
+    document.getElementById("error").style.display = "none";
+    document.getElementById("footer").textContent = "更新 " + jst(s.now) + " · 30秒ごとに自動更新 · 表示のみ（操作は CLI）";
+  } catch (e) {
+    const b = document.getElementById("error"); b.style.display = "block"; b.textContent = "取得に失敗しました: " + e.message;
+  }
+}
+refresh(); setInterval(refresh, 30000); window.addEventListener("resize", () => drawChart(lastSeries));
+</script>
+</body>
+</html>
