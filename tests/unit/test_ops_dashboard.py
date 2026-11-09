@@ -213,7 +213,7 @@ def test_the_runbook_only_names_scripts_and_variables_that_exist():
     doc = (root / "docs" / "operations.md").read_text()
     for name in set(re.findall(r"scripts/([a-z_]+\.py)", doc)):
         assert (root / "scripts" / name).exists(), name
-    sources = "\n".join(p.read_text() for p in (root / "packages" / "common").glob("*.py")) + \
-        (root / "scripts" / "watchdog.py").read_text() + (root / "scripts" / "run_ops_dashboard.py").read_text()
+    sources = "\n".join(p.read_text() for d in ("packages", "services", "scripts", "apps")
+                        for p in (root / d).rglob("*.py"))
     for var in set(re.findall(r"`(QUANT_[A-Z_]+)`", doc)):
-        assert var in sources or var.startswith("QUANT_SMTP"), var
+        assert var in sources, var                      # every variable the runbook names is read by some code
