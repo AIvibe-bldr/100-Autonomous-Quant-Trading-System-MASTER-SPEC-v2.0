@@ -638,9 +638,11 @@ class TradingPipeline:
             spread_pct = quote.spread / quote.mid
             cap = self.risk_controller.config.max_spread_pct
             if spread_pct > cap:
+                note = (" (IEX-only quote: the exchange's own book, not the market-wide spread — it can look "
+                        "wider than the real one)" if "iex" in quote.source.lower() else "")
                 result.no_trade_reasons.append(
                     f"{s.symbol}: quote spread {spread_pct:.2%} exceeds cap {cap:.2%} — "
-                    f"no Decision call")
+                    f"no Decision call{note}")
                 continue
             quotes[s.symbol] = quote
             decision_times[s.symbol] = decided_at

@@ -58,6 +58,27 @@ def _print_decision_rationale(records, limit: int = 3) -> None:
                 print(f"      {label}: {item}")
 
 
+def _print_observer_outputs(pipeline, result, provider) -> None:
+    """Display-only: what the read-only observers recorded this session, plus the data and safety state the run
+    ended in. Nothing here is a decision input."""
+    import json
+    print("\n--- data and safety state ---")
+    if provider is not None:
+        feed = getattr(provider, "bars_feed", None)
+        print(f"daily bars feed: {feed}" + ("  (consolidated tape)" if feed == "sip" else "  (IEX only: volume ~5% of market)"))
+        if getattr(provider, "bars_feed_notice", None):
+            print(f"  NOTICE: {provider.bars_feed_notice}")
+        print("quotes feed: iex (the latest SIP quote needs a paid subscription)")
+    print(f"risk state: {pipeline.risk_controller.state.value} | data health: {pipeline.integrity.health}")
+    print(f"data warnings: {len(result.data_warnings)}" + ("" if not result.data_warnings else " — " + "; ".join(result.data_warnings)[:300]))
+    print(f"disagreement multipliers: {result.disagreement_multipliers or 'none (no sized trade)'}")
+    print(f"human intents: {result.human_intents or 'none'}")
+    print("\n--- observers (first output; cumulative, one session only) ---")
+    for o in pipeline.observers:
+        text = json.dumps(o.summary(), default=str, ensure_ascii=False)
+        print(f"  [{o.name}] {text[:700]}{' …' if len(text) > 700 else ''}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1)
@@ -123,6 +144,9 @@ def main() -> None:
               "Decision/Skeptic/Audit AI instead (set MY_ANTHROPIC_API_KEY to use "
               "the real API) ===")
 
+    from services.composition import attach_learning_observers
+    attach_learning_observers(pipeline, args.cash)     # read-only: records and grades, changes no decision
+
     for day in range(args.days):
         result = pipeline.run_session(clock.now())
         print(f"\n--- session {day + 1} ---")
@@ -139,6 +163,7 @@ def main() -> None:
             for r in result.no_trade_reasons[:5]:
                 print(f"    · {r}")
         _print_decision_rationale(pipeline.provenance.all())
+        _print_observer_outputs(pipeline, result, provider)
         pipeline.execution.broker.settle()
         from datetime import timedelta
         clock.current = clock.current + timedelta(days=1)

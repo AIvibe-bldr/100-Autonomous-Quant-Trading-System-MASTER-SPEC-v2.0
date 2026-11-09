@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from services.market_data.alpaca_provider import SOURCE, AlpacaMarketDataProvider
+from services.market_data.alpaca_provider import SOURCE, SOURCE_SIP, AlpacaMarketDataProvider
 from services.market_data.service import MarketDataUnavailable
 
 NOW = datetime(2026, 11, 5, 15, 0, tzinfo=timezone.utc)
@@ -34,9 +34,9 @@ def test_bars_are_returned_adjusted_sorted_labelled_and_capped_to_days():
     p, calls = _prov(lambda url: _payload(60))
     bars = p.get_bars("AAPL", NOW, 40)
     assert len(bars) == 40 and [b.ts for b in bars] == sorted(b.ts for b in bars)
-    assert all(b.source == SOURCE for b in bars)
+    assert all(b.source == SOURCE_SIP for b in bars)
     url, headers = calls[0]
-    assert "adjustment=all" in url and "feed=iex" in url and "timeframe=1Day" in url
+    assert "adjustment=all" in url and "feed=sip" in url and "timeframe=1Day" in url
     assert headers["APCA-API-KEY-ID"] == "KID"
 
 
@@ -124,3 +124,58 @@ def test_scanner_and_pipeline_skip_unavailable_symbols_instead_of_crashing():
     pipe.scanner.md.provider = pipe.market_data.provider
     result = pipe.run_session(clock.now())          # must not raise
     assert pipe.scanner.last_funnel.data_unavailable >= 1
+
+
+def test_bars_can_be_pinned_to_iex_and_a_bad_feed_name_is_refused():
+    calls = []
+    p = AlpacaMarketDataProvider("K", "S", http_get=lambda u, h: (calls.append(u), _payload(60))[1],
+                                 now_fn=lambda: NOW, bars_feed="iex")
+    assert all(b.source == SOURCE for b in p.get_bars("AAPL", NOW, 40)) and "feed=iex" in calls[0]
+    with pytest.raises(MarketDataUnavailable):
+        AlpacaMarketDataProvider("K", "S", bars_feed="opra")
+
+
+def test_a_refused_sip_subscription_falls_back_to_labelled_iex_bars_and_says_so():
+    calls = []
+
+    def get(url, headers):
+        calls.append(url)
+        if "feed=sip" in url:
+            raise MarketDataUnavailable("Alpaca HTTP 403")
+        return _payload(60)
+    p = AlpacaMarketDataProvider("K", "S", http_get=get, now_fn=lambda: NOW)
+    assert p.bars_feed_notice is None
+    bars = p.get_bars("AAPL", NOW, 40)
+    assert all(b.source == SOURCE for b in bars) and p.bars_feed == "iex"
+    assert "IEX" in p.bars_feed_notice and "403" in p.bars_feed_notice
+    p.get_bars("MSFT", NOW, 40)
+    assert sum("feed=sip" in u for u in calls) == 1            # sticky: SIP is not retried for every symbol
+
+
+def test_other_failures_do_not_trigger_a_fallback():
+    def get(url, headers):
+        raise MarketDataUnavailable("Alpaca HTTP 500")
+    p = AlpacaMarketDataProvider("K", "S", http_get=get, now_fn=lambda: NOW)
+    with pytest.raises(MarketDataUnavailable):
+        p.get_bars("AAPL", NOW, 40)
+    assert p.bars_feed == "sip" and p.bars_feed_notice is None
+
+
+def test_the_feed_can_be_chosen_from_the_environment(monkeypatch):
+    monkeypatch.setenv("APCA_API_KEY_ID", "K"); monkeypatch.setenv("APCA_API_SECRET_KEY", "S")
+    monkeypatch.setenv("QUANT_ALPACA_BARS_FEED", "iex")
+    assert AlpacaMarketDataProvider.from_env().bars_feed == "iex"
+    monkeypatch.delenv("QUANT_ALPACA_BARS_FEED")
+    assert AlpacaMarketDataProvider.from_env().bars_feed == "sip"
+
+
+def test_the_bars_request_ends_yesterday_because_sip_refuses_recent_data():
+    """Alpaca's free plan refuses SIP when the window reaches today (HTTP 403, measured against the real API),
+    and today's bar is dropped by the no-lookahead rule anyway."""
+    def get(url, headers):
+        if f"end={NOW.date().isoformat()}" in url and "feed=sip" in url:
+            raise MarketDataUnavailable("Alpaca HTTP 403")
+        return _payload(60)
+    p = AlpacaMarketDataProvider("K", "S", http_get=get, now_fn=lambda: NOW)
+    bars = p.get_bars("AAPL", NOW, 40)
+    assert p.bars_feed == "sip" and p.bars_feed_notice is None and all(b.source == SOURCE_SIP for b in bars)

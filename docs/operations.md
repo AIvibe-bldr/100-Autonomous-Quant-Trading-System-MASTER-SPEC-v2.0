@@ -25,6 +25,7 @@
 | 変数 | 用途 | 必須 |
 |---|---|---|
 | `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` | Alpaca の市場データ・ニュース（`--real-data`） | 実データ時 |
+| `QUANT_ALPACA_BARS_FEED` | 日足の取得元: `sip`（既定。全取引所合算の出来高。無料プランで取れる）／`iex`（IEX のみ。出来高は市場の約5%）。SIP が拒否されたら自動で IEX に戻り、画面・出力に注意書きが出る。**気配（スプレッド）は無料プランでは IEX のみ** | 任意 |
 | `QUANT_SEC_USER_AGENT` | SEC EDGAR（`"アプリ名 連絡先メール"`） | 任意（無ければ EDGAR 無し） |
 | `QUANT_ALERT_WEBHOOK_URL` | Slack / Discord / Teams の受信 Webhook（**https のみ**） | 通知する場合 |
 | `QUANT_ALERT_EMAIL_TO`, `QUANT_SMTP_HOST`, `QUANT_SMTP_FROM`（＋`_PORT`・`_USER`・`_PASSWORD`・`_STARTTLS`） | メール通知 | 任意 |
