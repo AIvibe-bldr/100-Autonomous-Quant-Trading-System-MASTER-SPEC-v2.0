@@ -146,7 +146,8 @@ class OpsState:
         for h in items or []:
             prof = profile_of(h["symbol"])
             score, reasons = attention_of(h)
-            out.append({**h, "company": prof.company if prof else None, "category": prof.category if prof else None,
+            out.append({**h, "company": prof.company if prof else None, "company_ja": prof.company_ja if prof else None,
+                        "category": prof.category if prof else None, "business": prof.business if prof else None,
                         "attention_score": round(score, 4), "attention_reasons": reasons})
         order = sorted(out, key=lambda x: (-x["attention_score"], -abs(x["pnl_pct"]), x["symbol"]))
         top = [x["symbol"] for x in order[:ATTENTION_COUNT]]

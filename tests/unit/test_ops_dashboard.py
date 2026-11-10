@@ -122,7 +122,8 @@ def test_holdings_carry_names_categories_and_at_most_ten_attention_picks(state, 
     scores = {x["symbol"]: x["attention_score"] for x in h["holdings"]}
     assert [scores[s] for s in h["attention"]] == sorted((scores[s] for s in h["attention"]), reverse=True)
     for x in h["holdings"]:
-        assert x["company"] and x["category"]                              # every default symbol has a profile
+        # every default symbol says who it is, in Japanese, what kind of stock it is, and what the company does
+        assert x["company"] and x["company_ja"] and x["category"] and x["business"]
 
 
 def test_every_default_symbol_has_a_profile():
@@ -281,3 +282,8 @@ def test_status_reports_when_the_account_was_last_saved(tmp_path):
     assert o.status(START)["checkpoint"] is None
     DurableCheckpointStore(str(tmp_path / "checkpoints.db"), Environment.PAPER).save({"x": 1}, "session_end:2026-08-11", START)
     assert o.status(START)["checkpoint"]["reason"] == "session_end:2026-08-11"
+
+
+def test_a_ticker_without_a_profile_is_shown_by_its_symbol_alone():
+    from packages.common.symbol_profiles import profile_of
+    assert profile_of("ZZZZ") is None and profile_of("NVDA").company_ja == "エヌビディア"
