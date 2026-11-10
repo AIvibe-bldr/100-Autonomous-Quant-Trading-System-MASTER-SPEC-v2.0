@@ -5,140 +5,145 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>運用ダッシュボード</title>
 <style>
-  :root {
-    --bg: #f6f7f9; --panel: #ffffff; --border: #e5e7eb; --text: #14213d; --muted: #6b7280;
-    --green: #16a34a; --red: #dc2626; --amber: #d97706; --blue: #2563eb;
-  }
+  :root { --bg:#eff1ec; --panel:#f9faf7; --ink:#15201b; --mute:#5a665f; --line:#d5dad2; --acc:#d99a00; --up:#0e7a55; --dn:#c0392b; --flat:#5a665f; }
   * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text);
-         font: 16px/1.7 -apple-system, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
-         padding: 16px 16px 48px; max-width: 900px; margin: 0 auto; }
-  header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-  h1 { font-size: 17px; font-weight: 600; }
-  .toggle { display: inline-flex; background: #e6ebf2; border-radius: 999px; padding: 3px; }
-  .toggle button { border: 0; background: none; padding: 6px 18px; border-radius: 999px; font: inherit; font-size: 14px; color: var(--muted); cursor: pointer; }
-  .toggle button.on { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
-  .badge { display: inline-block; padding: 1px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; background: #e6ebf2; color: var(--muted); }
-  .badge.live { background: #fee2e2; color: var(--red); }
-  .hero { border-radius: 20px; padding: 26px 26px 22px; color: #fff; margin-bottom: 14px; }
-  .hero.ok { background: linear-gradient(135deg, #16a34a, #22c55e); }
-  .hero.warn { background: linear-gradient(135deg, #d97706, #f59e0b); }
-  .hero.bad { background: linear-gradient(135deg, #dc2626, #ef4444); }
-  .hero.ok, .hero.warn, .hero.bad { color: #fff; }
-  .hero .w { font-size: 13px; letter-spacing: .2em; opacity: .9; }
-  .hero h2 { font-size: 27px; line-height: 1.4; margin: 4px 0 6px; font-weight: 700; }
-  .hero p { opacity: .96; overflow-wrap: anywhere; }
-  .alerts { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 14px; padding: 12px 18px; margin-bottom: 14px; }
-  .alerts.bad { background: #fef2f2; border-color: #fecaca; }
-  .alerts b { display: block; margin-bottom: 2px; }
-  .alerts li { margin-left: 1.2em; font-size: 14px; overflow-wrap: anywhere; }
-  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
-  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; min-width: 0; }
-  .tile .l { color: var(--muted); font-size: 13px; }
-  .tile .v { font-size: 26px; font-weight: 700; letter-spacing: -.02em; overflow-wrap: anywhere; }
-  .tile .s { color: var(--muted); font-size: 12px; line-height: 1.4; }
-  section, .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; margin-bottom: 14px; }
-  section h2, .card h2 { font-size: 15px; margin-bottom: 8px; font-weight: 700; }
-  h3 { font-size: 13px; color: var(--muted); margin: 12px 0 4px; font-weight: 600; }
-  .pos { color: var(--green); } .neg { color: var(--red); } .warn { color: var(--amber); } .muted { color: var(--muted); }
-  .note { color: var(--muted); font-size: 13px; }
-  .bar { height: 10px; background: #e5e7eb; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; }
-  .bar i { display: block; height: 100%; background: var(--blue); }
-  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
-  .chip { background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 2px 12px; font-size: 14px; }
-  .chip.grey { background: #f3f4f6; color: #374151; }
-  canvas { width: 100%; height: 150px; display: block; }
-  /* holdings: a grid of tappable boxes */
-  .hold-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-  .hold-total { font-size: 14px; }
-  .boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; }
-  .box { all: unset; box-sizing: border-box; cursor: pointer; background: #fff; border: 1px solid var(--border); border-radius: 14px;
-         padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; position: relative; }
-  .box:hover { border-color: #c7d2fe; } .box:focus-visible { outline: 2px solid var(--blue); }
-  .box.up { border-top: 4px solid var(--green); } .box.down { border-top: 4px solid var(--red); } .box.flat { border-top: 4px solid #d1d5db; }
-  .box .sym { font-weight: 800; font-size: 17px; line-height: 1.2; }
-  .box .co { font-size: 12px; color: var(--muted); line-height: 1.3; overflow-wrap: anywhere; }
-  .box .cat { display: inline-block; align-self: flex-start; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 0 8px; font-size: 11px; margin: 2px 0 4px; }
-  .box .pct { font-size: 24px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.2; }
-  .box .amt { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .box .sub { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
-  .box .why1 { margin-top: 4px; font-size: 11.5px; color: #92400e; background: #fffbeb; border-radius: 8px; padding: 2px 8px; line-height: 1.35; }
-  .more-link { all: unset; cursor: pointer; display: inline-block; margin-top: 12px; color: var(--blue); font-size: 15px; font-weight: 600; }
-  .more-link:focus-visible { outline: 2px solid var(--blue); border-radius: 6px; }
-  .back { all: unset; cursor: pointer; color: var(--blue); font-size: 15px; font-weight: 600; }
-  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 12px; }
-  .controls select { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: #fff; }
-  .fchip { all: unset; cursor: pointer; padding: 2px 12px; border-radius: 999px; background: #f3f4f6; color: #374151; font-size: 13px; }
-  .fchip.on { background: #3730a3; color: #fff; }
-  .fchip:focus-visible { outline: 2px solid var(--blue); }
-  body.all #viewHome, body.all .toggle { display: none; } #viewAll { display: none; } body.all #viewAll { display: block; }
-  /* detail sheet for one symbol */
-  .sheet-bg { position: fixed; inset: 0; background: rgba(20,33,61,.45); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
-  .sheet { background: #fff; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; border-radius: 20px 20px 0 0; padding: 18px 20px 24px; }
-  @media (min-width: 700px) { .sheet-bg { align-items: center; } .sheet { border-radius: 20px; } }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.6 "Hiragino Sans","Noto Sans JP",system-ui,sans-serif; padding-bottom: 72px; }
+  .num, .tile .v, .box-pct, .pl, .g .l, .tl { font-family: ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  /* top bar + tabs */
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 24px; border-bottom: 2px solid var(--ink); }
+  .top h1 { font-size: 15px; letter-spacing: .18em; font-weight: 700; }
+  .badge { display: inline-block; padding: 0 8px; margin-left: 8px; font-size: 11px; letter-spacing: .06em; border: 1px solid var(--ink); }
+  .badge.live { background: var(--dn); color: #fff; border-color: var(--dn); }
+  .lamp { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
+  .lamp i { width: 12px; height: 12px; background: var(--up); } .lamp.warn i { background: var(--acc); } .lamp.bad i { background: var(--dn); }
+  nav.tabs { display: flex; gap: 4px; }
+  nav.tabs a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; color: var(--mute); text-decoration: none; font-size: 14px; border-bottom: 3px solid transparent; }
+  nav.tabs a[aria-current="page"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--acc); }
+  .wrap { display: grid; grid-template-columns: 230px minmax(0,1fr); max-width: 1180px; margin: 0 auto; }
+  .rail { padding: 22px 22px 0; border-right: 1px solid var(--line); }
+  main { padding: 22px 24px; min-width: 0; }
+  h2 { font-size: 11px; letter-spacing: .2em; color: var(--mute); margin-bottom: 10px; font-weight: 700; }
+  h3 { font-size: 12px; color: var(--mute); margin: 12px 0 4px; font-weight: 700; }
+  .up, .pos { color: var(--up); } .dn, .neg { color: var(--dn); } .warn { color: #8a5a00; } .muted, .note { color: var(--mute); } .note { font-size: 13px; }
+  /* views */
+  .view-home, .view-all, .view-full { display: none; }
+  body.v-home .view-home, body.v-all .view-all, body.v-full .view-full { display: block; }
+  body.v-home .rail { display: block; } body.v-all .rail, body.v-full .rail { display: none; } body.v-all .wrap, body.v-full .wrap { grid-template-columns: minmax(0,1fr); }
+  /* timeline */
+  .tl { list-style: none; padding: 0 0 0 14px; border-left: 2px solid var(--ink); margin-bottom: 26px; }
+  .tl li { position: relative; padding: 0 0 14px 12px; font-size: 13px; line-height: 1.45; font-family: "Hiragino Sans","Noto Sans JP",system-ui,sans-serif; }
+  .tl li::before { content: ""; position: absolute; left: -21px; top: 5px; width: 10px; height: 10px; background: var(--bg); border: 2px solid var(--ink); }
+  .tl li.now::before { background: var(--acc); border-color: var(--acc); } .tl li.future::before { border-style: dashed; }
+  .tl time { display: block; font-size: 11.5px; color: var(--mute); font-family: ui-monospace,Menlo,Consolas,monospace; }
+  .kv { font-size: 13.5px; line-height: 2; margin-bottom: 20px; }
+  /* status strip + numbers */
+  .tiles { display: flex; gap: 30px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 6px; }
+  .tile .l { font-size: 11px; color: var(--mute); letter-spacing: .1em; } .tile .v { font-size: 22px; font-weight: 700; line-height: 1.2; } .tiles .tile:first-child .v { font-size: 40px; line-height: 1.1; }
+  .tile .s { font-size: 12px; color: var(--mute); }
+  .hero { border-left: 6px solid var(--up); background: var(--panel); padding: 8px 14px; margin: 14px 0 22px; }
+  .hero.warn { border-left-color: var(--acc); } .hero.bad { border-left-color: var(--dn); }
+  .hero .w { display: none; } .hero h2 { font-size: 18px; letter-spacing: 0; color: var(--ink); margin: 0; } .hero p { font-size: 14px; overflow-wrap: anywhere; }
+  .alerts { border: 1px solid var(--acc); background: #fff7df; padding: 10px 16px; margin-bottom: 18px; } .alerts.bad { border-color: var(--dn); background: #fdecea; }
+  .alerts b { display: block; } .alerts li { margin-left: 1.2em; font-size: 14px; overflow-wrap: anywhere; }
+  /* gauge rows (方向3) */
+  .rows .hd, .r { display: grid; grid-template-columns: minmax(130px,190px) minmax(0,1fr) 100px; gap: 18px; align-items: center; }
+  .rows .hd { font-size: 11px; color: var(--mute); letter-spacing: .1em; padding: 0 0 6px; border-bottom: 2px solid var(--ink); }
+  .r { all: unset; box-sizing: border-box; display: grid; grid-template-columns: minmax(130px,190px) minmax(0,1fr) 100px; gap: 18px; align-items: center; width: 100%; min-height: 64px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .r:hover { background: var(--panel); } .r:focus-visible { outline: 3px solid var(--ink); outline-offset: -3px; }
+  .r .s { font-weight: 800; font-size: 17px; } .r .c { font-size: 12px; color: var(--mute); line-height: 1.3; overflow-wrap: anywhere; }
+  .tag { white-space: nowrap; font-size: 11px; color: #6b4600; background: #ffe9ad; padding: 0 6px; margin-left: 6px; font-weight: 700; }
+  .g { position: relative; height: 32px; } .g .tr { position: absolute; left: 0; right: 0; top: 11px; height: 4px; background: var(--line); }
+  .g .sf { position: absolute; left: 0; top: 11px; height: 4px; background: #d9a9a1; } .g .e { position: absolute; top: 5px; width: 2px; height: 16px; background: var(--mute); }
+  .g .p { position: absolute; top: 2px; width: 5px; height: 22px; background: var(--ink); transform: translateX(-2px); } .r.near .g .p { background: var(--dn); }
+  .g .l { position: absolute; top: 21px; font-size: 10.5px; color: var(--mute); }
+  .r .v { text-align: right; font-weight: 700; font-size: 18px; line-height: 1.2; } .r .v small { display: block; font-size: 12px; font-weight: 400; color: var(--mute); }
+  .key { font-size: 12px; color: var(--mute); margin: 10px 0 0; }
+  .more-link { all: unset; cursor: pointer; display: inline-flex; align-items: center; min-height: 44px; margin-top: 6px; color: var(--ink); font-weight: 700; border-bottom: 2px solid var(--ink); }
+  .more-link:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  /* 盤: equal windows, green = profit, red = loss */
+  .board { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-rows: 132px; gap: 10px; }
+  .win { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; border-radius: 6px; overflow: hidden; color: #fff; background: var(--flat); min-width: 0; }
+  .win.up { background: var(--up); } .win.dn { background: var(--dn); }
+  .win:hover { filter: brightness(1.08); } .win:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .wt { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: rgba(0,0,0,.22); font-weight: 800; font-size: 14px; letter-spacing: .04em; }
+  .wb { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0 10px; }
+  .box-pct { font-size: 26px; font-weight: 700; line-height: 1.15; } .wb .a { font-size: 13px; opacity: .95; }
+  .wf { padding: 0 10px 8px; font-size: 11.5px; line-height: 1.3; opacity: .95; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 14px; }
+  .controls select { font: inherit; font-size: 14px; min-height: 44px; padding: 0 10px; border: 1px solid var(--ink); background: var(--panel); color: var(--ink); }
+  .seg { display: inline-flex; border: 1px solid var(--ink); } .seg button { all: unset; cursor: pointer; min-height: 44px; padding: 0 18px; font-size: 14px; color: var(--ink); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; font-weight: 700; } .seg button:focus-visible { outline: 3px solid var(--acc); outline-offset: -3px; }
+  .fchip { all: unset; cursor: pointer; display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+  .fchip[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); } .fchip:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  /* detail sheet */
+  .sheet-bg { position: fixed; inset: 0; background: rgba(21,32,27,.5); display: flex; align-items: flex-end; justify-content: center; z-index: 20; animation: fade .12s ease-out; }
+  .sheet { background: var(--panel); width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; padding: 18px 20px 26px; border-top: 4px solid var(--ink); }
+  @media (min-width: 700px) { .sheet-bg { align-items: center; } .sheet { border: 1px solid var(--ink); border-top-width: 4px; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
   .sheet-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-  .sheet-top .x { all: unset; cursor: pointer; font-size: 26px; line-height: 1; color: var(--muted); padding: 0 6px; }
-  .sheet .big { font-size: 28px; font-weight: 800; }
-  .why h4 { font-size: 12px; color: var(--muted); margin: 14px 0 2px; font-weight: 600; letter-spacing: .04em; }
-  .why p { overflow-wrap: anywhere; font-size: 15px; }
+  .sheet .x { all: unset; cursor: pointer; font-size: 28px; line-height: 1; min-width: 44px; min-height: 44px; text-align: center; } .sheet .x:focus-visible { outline: 3px solid var(--ink); }
+  .sym { font-weight: 800; font-size: 17px; } .sym.big { font-size: 28px; } .co { font-size: 12.5px; color: var(--mute); } .big { font-size: 28px; font-weight: 800; }
+  .why1 { font-size: 12px; color: #6b4600; background: #ffe9ad; padding: 0 8px; display: inline-block; }
+  .why h4 { font-size: 12px; color: var(--mute); margin: 14px 0 2px; font-weight: 700; letter-spacing: .08em; } .why p { overflow-wrap: anywhere; font-size: 15px; }
   .why .plan { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 4px; }
-  .why .plan div { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; }
-  .why .plan b { display: block; font-size: 16px; }
-  .why .plan span { color: var(--muted); font-size: 12px; }
-  details { margin: 4px 0; } summary { cursor: pointer; color: var(--blue); font-size: 14px; }
-  ul.plain { list-style: none; padding: 0; }
-  ul.plain li { padding: 3px 0; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  /* くわしい view */
-  .detail { display: none; } body.full .detail { display: block; } body.full .only-simple { display: none; }
+  .why .plan div { background: var(--bg); border: 1px solid var(--line); padding: 6px 10px; } .why .plan b { display: block; font-size: 16px; } .why .plan span { color: var(--mute); font-size: 12px; }
+  /* chart + misc panels */
+  section, .card { background: var(--panel); border: 1px solid var(--line); padding: 16px 18px; margin-bottom: 14px; }
+  .card h2, section h2 { margin-bottom: 8px; }
+  canvas { width: 100%; height: 150px; display: block; }
+  .bar { height: 8px; background: var(--line); margin: 8px 0 4px; } .bar i { display: block; height: 100%; background: var(--ink); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; } .chip { border: 1px solid var(--ink); padding: 0 12px; font-size: 14px; } .chip.grey { border-color: var(--line); color: var(--mute); }
+  details { margin: 4px 0; } summary { cursor: pointer; min-height: 32px; font-size: 14px; text-decoration: underline; }
+  ul.plain { list-style: none; padding: 0; } ul.plain li { padding: 3px 0; border-bottom: 1px solid var(--line); color: var(--mute); font-size: 13px; overflow-wrap: anywhere; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
-  .grid .card { margin-bottom: 0; padding: 10px 14px; border-radius: 12px; }
-  .grid .card .label { color: var(--muted); font-size: 12px; }
-  .grid .card .value { font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
-  .grid .card .sub { color: var(--muted); font-size: 11px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  th:first-child, td:first-child, td.l, th.l { text-align: left; }
-  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .scroll table { min-width: 520px; }
-  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
-  .cols section { margin-bottom: 0; min-width: 0; }
-  .cols .scroll table { min-width: 0; }
-  .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
-  .banner { border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px; }
-  .banner.WARNING { background: #fff7ed; border: 1px solid #fed7aa; color: var(--amber); }
-  .banner.CRITICAL { background: #fef2f2; border: 1px solid #fecaca; color: var(--red); }
-  .banner.info { background: #eff6ff; border: 1px solid #bfdbfe; color: var(--blue); }
-  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
-  #error { display: none; }
-  footer { color: var(--muted); font-size: 12px; margin-top: 8px; }
-  @media (max-width: 600px) {
-    .tiles { grid-template-columns: 1fr 1fr; } .tiles .tile:first-child { grid-column: 1 / -1; }
-    .hero h2 { font-size: 22px; }
-    .boxes { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid .card { margin-bottom: 0; padding: 10px 14px; } .grid .card .label { color: var(--mute); font-size: 12px; } .grid .card .value { font-size: 17px; font-weight: 700; overflow-wrap: anywhere; } .grid .card .sub { color: var(--mute); font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; } th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th { color: var(--mute); font-weight: 500; font-size: 12px; } th:first-child, td:first-child, td.l, th.l { text-align: left; }
+  .scroll { overflow-x: auto; } .scroll table { min-width: 520px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; } .cols section { margin-bottom: 0; min-width: 0; } .cols .scroll table { min-width: 0; } .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
+  .banner { padding: 8px 12px; margin-bottom: 10px; font-size: 13px; border-left: 4px solid; } .banner.WARNING { background: #fff7df; border-color: var(--acc); } .banner.CRITICAL { background: #fdecea; border-color: var(--dn); } .banner.info { background: var(--panel); border-color: var(--ink); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--mute); }
+  #error { display: none; margin: 10px 24px 0; } footer { color: var(--mute); font-size: 12px; padding: 0 24px; max-width: 1180px; margin: 0 auto; }
+  /* phone: bottom tabs, one column */
+  @media (max-width: 760px) {
+    .top { padding: 10px 16px; } nav.tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; background: var(--ink); gap: 0; }
+    nav.tabs a { flex: 1; justify-content: center; color: #cfd6d0; border-bottom: 0; border-top: 3px solid transparent; } nav.tabs a[aria-current="page"] { color: #fff; border-top-color: var(--acc); }
+    .wrap { grid-template-columns: minmax(0,1fr); } .rail { order: 2; border-right: 0; border-top: 1px solid var(--line); padding: 14px 16px 0; margin-top: 8px; }
+    .tl { display: flex; gap: 18px; overflow-x: auto; border-left: 0; border-top: 2px solid var(--ink); padding: 12px 0 6px; margin-bottom: 8px; } .tl li { flex: 0 0 auto; padding: 0; } .tl li::before { display: none; }
+    main { padding: 16px; } .tiles .tile:first-child .v { font-size: 32px; } #error { margin: 10px 16px 0; } footer { padding: 0 16px; }
+    .rows .hd { display: none; } .r { grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; } .r .g { grid-column: 1 / -1; order: 3; }
+    .board { grid-template-columns: repeat(2, minmax(0,1fr)); }
   }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>運用ダッシュボード <span id="env" class="badge">…</span></h1>
-  <div class="toggle" role="group" aria-label="表示の切り替え"><button id="bSimple" class="on" type="button">かんたん</button><button id="bFull" type="button">くわしい</button></div>
-</header>
+<div class="top"><h1>運用ダッシュボード<span id="env" class="badge">…</span></h1>
+  <nav class="tabs" aria-label="画面の切り替え"><a id="tHome" href="#home">今日</a><a id="tAll" href="#all">銘柄</a><a id="tFull" href="#full">詳細</a></nav>
+  <span class="lamp" id="lamp"><i></i><span id="lampText">…</span></span></div>
 <div id="error" class="banner CRITICAL"></div>
-<div id="viewHome">
-<div id="hero"></div>
-<div id="findings"></div>
-<div class="tiles" id="tiles"></div>
-
-<section><h2>気にしてほしい銘柄</h2><div id="holdings"></div></section>
-
-<div class="card"><h2>資産の推移</h2><canvas id="chart" width="800" height="150"></canvas>
-  <div class="note" style="display:flex;justify-content:space-between"><span id="d0"></span><span id="d1"></span></div>
-  <div class="bar"><i id="progress" style="width:0"></i></div><div class="note" id="perfWarn"></div></div>
-
-<div class="card"><h2 id="didTitle">直近のセッションでしたこと</h2><div id="did"></div></div>
-
-<div class="detail">
+<div class="wrap"><aside class="rail view-home"><h2>今日の流れ</h2><ul class="tl" id="tl"></ul><h2>状態</h2><div class="kv" id="stt"></div></aside>
+<main>
+<div class="view-home">
+  <div class="tiles" id="tiles"></div>
+  <div id="hero"></div><div id="findings"></div>
+  <h2>気にしてほしい銘柄　<span style="font-weight:400;letter-spacing:0">損切り ─ 現在 ─ 目標 の位置</span></h2>
+  <div id="holdings"></div>
+  <div class="card" style="margin-top:22px"><h2>資産の推移</h2><canvas id="chart" width="800" height="150" role="img" aria-label="資産の推移の折れ線グラフ"></canvas>
+    <div class="note" style="display:flex;justify-content:space-between"><span id="d0"></span><span id="d1"></span></div>
+    <div class="bar"><i id="progress" style="width:0"></i></div><div class="note" id="perfWarn"></div></div>
+  <div class="card"><h2 id="didTitle">直近のセッションでしたこと</h2><div id="did"></div></div>
+</div>
+<div class="view-all">
+  <h2 id="allTitle">持っている全ての銘柄</h2><div id="allHead" class="note"></div>
+  <div class="controls"><div class="seg" role="group" aria-label="表示の形"><button id="mBoard" type="button" aria-pressed="true">盤</button><button id="mList" type="button" aria-pressed="false">表</button></div>
+    <label class="note">並べ方 <select id="sortSel"><option value="attention">気にしてほしい順</option><option value="pnl_pct">損益％の高い順</option><option value="pnl_pct_asc">損益％の低い順</option><option value="value">評価額の大きい順</option><option value="symbol">ティッカー順</option></select></label></div>
+  <div class="controls" id="catChips" role="group" aria-label="系統で絞る"></div>
+  <div id="allBody"></div>
+</div>
+<div class="view-full">
 <div class="grid" id="runnerCards"></div>
 <section><h2>成績</h2><div class="grid" id="perfCards"></div></section>
 <section><h2>セッション（新しい順）</h2><div class="scroll"><table id="sessions"></table></div></section>
@@ -148,16 +153,7 @@
 <section><h2>人の意図</h2><div id="intents"></div></section>
 <section><h2>通知の履歴</h2><div id="alerts"></div></section>
 </div>
-</div>
-<div id="viewAll">
-  <button class="back" id="backBtn" type="button">← もどる</button>
-  <section><h2 id="allTitle">持っている全ての銘柄</h2><div id="allHead"></div>
-    <div class="controls"><label class="note">並べ方 <select id="sortSel">
-      <option value="attention">気にしてほしい順</option><option value="pnl_pct">損益％の高い順</option><option value="pnl_pct_asc">損益％の低い順</option>
-      <option value="value">評価額の大きい順</option><option value="symbol">ティッカー順</option></select></label>
-      <span id="catChips" class="controls" style="margin:0"></span></div>
-    <div class="boxes" id="allBoxes"></div></section>
-</div>
+</main></div>
 <div id="sheetHost"></div>
 <footer id="footer"></footer>
 
@@ -211,9 +207,9 @@ function drawChart(series) {
   const ys = series.map((s) => s.equity), lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.15 || 1;
   const T = 10, B = 6, x = (i) => 6 + (w - 12) * i / (series.length - 1);
   const y = (v) => T + (h - T - B) * (1 - (v - (lo - pad)) / (hi - lo + 2 * pad));
-  const blue = css.getPropertyValue("--blue").trim();
+  const blue = css.getPropertyValue("--ink").trim();
   g.beginPath(); series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity)));
-  g.lineTo(x(series.length - 1), h - B); g.lineTo(x(0), h - B); g.closePath(); g.fillStyle = blue + "1f"; g.fill();
+  g.lineTo(x(series.length - 1), h - B); g.lineTo(x(0), h - B); g.closePath(); g.fillStyle = blue + "18"; g.fill();
   g.strokeStyle = blue; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
   series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity))); g.stroke();
   g.fillStyle = blue; g.beginPath(); g.arc(x(series.length - 1), y(ys[ys.length - 1]), 4, 0, 7); g.fill();
@@ -240,6 +236,7 @@ function renderStatus(s) {
   const r = s.runner, h = heroOf(s);
   const env = document.getElementById("env");
   env.textContent = r ? r.environment : "—"; env.className = "badge" + (r && r.environment === "LIVE" ? " live" : "");
+  document.getElementById("lamp").className = "lamp " + h.level; document.getElementById("lampText").textContent = h.word;
   setChildren("hero", el("div", { class: "hero " + h.level }, el("div", { class: "w", text: h.word }),
     el("h2", { text: h.head }), h.text ? el("p", { text: h.text }) : null));
   const notes = s.findings.filter((f) => f.level !== "OK");
@@ -287,28 +284,50 @@ function renderPerf(p) {
   ] : []);
 }
 
-// ---- holdings: boxes. The home page shows the few a human should look at; "all" shows every one; tap = why + plan ----
+// ---- holdings: 方向3 gauge rows (home, "表") and 方向2 equal windows ("盤"); tap = why + plan ----
+const NEAR_STOP = 0.06;                    // a position this close above its stop is shown as "損切り近い" (display only)
 const qtyText = (q) => Number(q).toLocaleString("en-US", { maximumFractionDigits: 4 });
 const dist = (from, to) => from > 0 ? to / from - 1 : null;
-let holdData = null, catFilter = null;
+const arrow = (x) => x > 0 ? "▲" : x < 0 ? "▼" : "－";
+let holdData = null, catFilter = null, allMode = "board";
 function planBox(label, value, sub) { return el("div", {}, el("span", { text: label }), el("b", { text: value }), sub ? el("span", { text: sub }) : null); }
+const pctPos = (v, lo, hi) => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
 
-function holdingBox(x) {
-  const tone = x.pnl > 0 ? "up" : x.pnl < 0 ? "down" : "flat";
-  const b = el("button", { type: "button", class: "box " + tone, "aria-label": x.symbol + " " + (x.company || "") + " の理由と計画を開く" },
-    el("div", { class: "sym", text: x.symbol }),
-    el("div", { class: "co", text: x.company || "（会社名は未登録）" }),
-    x.category ? el("span", { class: "cat", text: x.category }) : null,
-    el("div", { class: "pct " + cls(x.pnl), text: signed(x.pnl_pct, pct) }),
-    el("div", { class: "amt " + cls(x.pnl), text: signed(x.pnl, money) }),
-    el("div", { class: "sub", text: "評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) }),
-    x.attention_reasons.length ? el("div", { class: "why1", text: x.attention_reasons[0] }) : null);
+// one row: name | where the price sits between stop and target | P&L
+function holdingRow(x) {
+  const pl = x.plan, near = !!pl && dist(pl.stop_price, x.price) < NEAR_STOP;
+  let gauge = el("div", { class: "g" });
+  if (pl) {
+    const lo = pl.stop_price, hi = pl.profit_target;
+    gauge.append(el("div", { class: "tr" }), el("div", { class: "sf", style: "width:" + pctPos(x.price, lo, hi) + "%" }),
+      el("div", { class: "e", style: "left:" + pctPos(x.avg_cost, lo, hi) + "%" }), el("div", { class: "p", style: "left:" + pctPos(x.price, lo, hi) + "%" }),
+      el("span", { class: "l", style: "left:0", text: money(lo) }), el("span", { class: "l", style: "right:0", text: money(hi) }));
+  } else gauge.append(el("span", { class: "warn note", text: "計画の記録がありません" }));
+  const b = el("button", { type: "button", class: "r" + (near ? " near" : ""), "aria-label": x.symbol + " " + (x.company || "") + " " + signed(x.pnl_pct, pct) + (near ? " 損切りに近い" : "") + " 理由と計画を開く" },
+    el("div", {}, el("span", { class: "s", text: x.symbol }), near ? el("span", { class: "tag", text: "損切り近い" }) : null,
+      el("div", { class: "c", text: (x.company || "会社名は未登録") + (x.category ? "・" + x.category : "") })),
+    gauge,
+    el("div", { class: "v pl " + cls(x.pnl) }, arrow(x.pnl) + " " + signed(x.pnl_pct, pct), el("small", { text: signed(x.pnl, money) })));
+  b.addEventListener("click", () => openSheet(x));
+  return b;
+}
+const rowsHead = () => el("div", { class: "hd" }, el("span", { text: "銘柄" }), el("span", { text: "損切りライン ← → 目標" }), el("span", { style: "text-align:right", text: "損益" }));
+const rowsKey = () => el("p", { class: "key", text: "黒い縦線＝いまの価格 / 灰色の縦線＝買値 / 赤みの帯＝損切りまでの距離。損切りに近いと黒線が赤になります。" });
+
+// one equal-size window: green = profit, red = loss
+function holdingWindow(x) {
+  const t = x.pnl > 0 ? "up" : x.pnl < 0 ? "dn" : "fl";
+  const b = el("button", { type: "button", class: "win " + t, "aria-label": x.symbol + " " + (x.company || "") + "、" + (x.pnl > 0 ? "利益" : x.pnl < 0 ? "損失" : "損益なし") + " " + signed(x.pnl_pct, pct) + "、資産の" + pct(x.weight, 0) + "。理由と計画を開く" },
+    el("div", { class: "wt" }, el("span", { text: x.symbol }), el("span", { "aria-hidden": "true", text: arrow(x.pnl) })),
+    el("div", { class: "wb" }, el("div", { class: "box-pct", text: signed(x.pnl_pct, pct) }), el("div", { class: "a num", text: signed(x.pnl, money) })),
+    el("div", { class: "wf", text: (x.company || "会社名は未登録") + " · " + pct(x.weight, 0) }));
   b.addEventListener("click", () => openSheet(x));
   return b;
 }
 
 function openSheet(x) {
-  const close = () => { setChildren("sheetHost"); document.removeEventListener("keydown", onKey); };
+  const opener = document.activeElement;
+  const close = () => { setChildren("sheetHost"); document.removeEventListener("keydown", onKey); if (opener && opener.focus) opener.focus(); };
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   const pl = x.plan, why = el("div", { class: "why" });
@@ -326,13 +345,13 @@ function openSheet(x) {
     el("p", { class: "note", style: "margin-top:10px", text: "損切りは取引所に置いた注文で自動的に働きます。計画は買う前に作られたものです。" }));
   const closeBtn = el("button", { class: "x", type: "button", "aria-label": "閉じる", text: "×" });
   closeBtn.addEventListener("click", close);
-  const bg = el("div", { class: "sheet-bg" }, el("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": x.symbol },
+  const bg = el("div", { class: "sheet-bg" }, el("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": x.symbol + " の理由と計画" },
     el("div", { class: "sheet-top" },
       el("div", {}, el("div", { class: "sym big", text: x.symbol }), el("div", { class: "co", text: (x.company || "") + (x.category ? " · " + x.category : "") })),
       closeBtn),
-    el("div", { style: "margin:8px 0 2px" }, el("span", { class: "big " + cls(x.pnl), text: signed(x.pnl_pct, pct) }), "  ", el("b", { class: cls(x.pnl), text: signed(x.pnl, money) })),
+    el("div", { style: "margin:8px 0 2px" }, el("span", { class: "big num " + cls(x.pnl), text: arrow(x.pnl) + " " + signed(x.pnl_pct, pct) }), "  ", el("b", { class: "num " + cls(x.pnl), text: signed(x.pnl, money) })),
     el("div", { class: "note", text: qtyText(x.qty) + " 株 · 買値 " + money(x.avg_cost) + " → いま " + money(x.price) + " · 評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) }),
-    x.attention_reasons.length ? el("div", { class: "why1", style: "margin-top:8px;display:inline-block", text: x.attention_reasons.join(" / ") }) : null,
+    x.attention_reasons.length ? el("div", { class: "why1", style: "margin-top:8px", text: x.attention_reasons.join(" / ") }) : null,
     why));
   bg.addEventListener("click", (e) => { if (e.target === bg) close(); });
   setChildren("sheetHost", bg); closeBtn.focus();
@@ -348,24 +367,22 @@ function renderHoldings(h) {
   const picks = h.attention.map((k) => byS.get(k)).filter(Boolean);
   if (!h.holdings.length) return holdMsg("holdings", "いまは何も持っていません（現金 " + money(h.cash) + "）。");
   const pnl = h.holdings.reduce((t, x) => t + x.pnl, 0), cost = h.holdings.reduce((t, x) => t + x.qty * x.avg_cost, 0);
-  const more = el("button", { class: "more-link", type: "button", text: "持っている全ての銘柄を見る（" + h.holdings.length + "）→" });
+  const more = el("button", { class: "more-link", type: "button", text: "全 " + h.holdings.length + " 銘柄を見る →" });
   more.addEventListener("click", () => { location.hash = "all"; });
   setChildren("holdings",
-    el("div", { class: "hold-head" },
-      el("div", { class: "hold-total" }, "全 " + h.holdings.length + " 銘柄の合計 ", el("b", { class: cls(pnl), text: signed(pnl, money) + "（" + signed(cost > 0 ? pnl / cost : 0, pct) + "）" })),
-      el("div", { class: "note", text: "現金 " + money(h.cash) })),
-    el("div", { class: "note", style: "margin-bottom:8px", text: "損切りに近い・大きく動いた・割合が大きい順に最大 " + picks.length + " 件。タップで理由と計画。" }),
-    el("div", { class: "boxes" }, picks.map(holdingBox)), more,
-    el("div", { class: "note", style: "margin-top:8px", text: h.session_date + " のセッション時点の値です（リアルタイムではありません）。" }));
+    el("div", { class: "note", style: "margin-bottom:8px" }, "全 " + h.holdings.length + " 銘柄の合計 ", el("b", { class: "num " + cls(pnl), text: signed(pnl, money) + "（" + signed(cost > 0 ? pnl / cost : 0, pct) + "）" }),
+      "　現金 " + money(h.cash) + "　損切りに近い順など、最大 " + picks.length + " 件"),
+    el("div", { class: "rows" }, rowsHead(), picks.map(holdingRow)), rowsKey(), more,
+    el("div", { class: "note", style: "margin-top:6px", text: h.session_date + " のセッション時点の値です（リアルタイムではありません）。" }));
   renderAll();
 }
 
 function renderAll() {
-  const h = holdData;
-  if (!h || !h.recorded) return setChildren("allBoxes");
+  const h = holdData, host = document.getElementById("allBody");
+  if (!h || !h.recorded) { host.replaceChildren(); return; }
   const sort = document.getElementById("sortSel").value;
   const cats = [...new Set(h.holdings.map((x) => x.category || "未分類"))].sort();
-  const chip = (label, val) => { const c = el("button", { class: "fchip" + (catFilter === val ? " on" : ""), type: "button", text: label });
+  const chip = (label, val) => { const c = el("button", { class: "fchip", type: "button", "aria-pressed": String(catFilter === val), text: label });
     c.addEventListener("click", () => { catFilter = val; renderAll(); }); return c; };
   setChildren("catChips", chip("すべて", null), cats.map((c) => chip(c, c)));
   let items = h.holdings.filter((x) => catFilter === null || (x.category || "未分類") === catFilter);
@@ -374,19 +391,41 @@ function renderAll() {
     value: (a, b) => b.value - a.value, symbol: (a, b) => a.symbol.localeCompare(b.symbol) }[sort];
   items = [...items].sort(cmp);
   const pnl = items.reduce((t, x) => t + x.pnl, 0);
-  setChildren("allHead", el("div", { class: "note", text: items.length + " 銘柄 · 合計 " + signed(pnl, money) + " · " + h.session_date + " のセッション時点" }));
-  setChildren("allBoxes", items.map(holdingBox));
+  setChildren("allHead", items.length + " 銘柄 · 合計 " + signed(pnl, money) + " · " + h.session_date + " のセッション時点。緑＝利益、赤＝損失。大きさは全て同じです。");
+  document.getElementById("mBoard").setAttribute("aria-pressed", String(allMode === "board"));
+  document.getElementById("mList").setAttribute("aria-pressed", String(allMode === "list"));
+  host.replaceChildren(allMode === "board" ? el("div", { class: "board" }, items.map(holdingWindow)) : el("div", { class: "rows" }, rowsHead(), items.map(holdingRow), rowsKey()));
 }
 
 function route() {
-  const all = location.hash === "#all";
-  document.body.classList.toggle("all", all);
-  if (all) window.scrollTo(0, 0);
-  if (location.hash === "#full") setFull(true);
+  const view = location.hash === "#all" ? "all" : location.hash === "#full" ? "full" : "home";
+  document.body.className = "v-" + view;
+  for (const [id, v] of [["tHome", "home"], ["tAll", "all"], ["tFull", "full"]]) {
+    const a = document.getElementById(id); if (v === view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+  if (view === "home") drawChart(lastSeries);
+  window.scrollTo(0, 0);
 }
-document.getElementById("backBtn").addEventListener("click", () => { location.hash = ""; });
+document.getElementById("mBoard").addEventListener("click", () => { allMode = "board"; renderAll(); });
+document.getElementById("mList").addEventListener("click", () => { allMode = "list"; renderAll(); });
 document.getElementById("sortSel").addEventListener("change", renderAll);
 window.addEventListener("hashchange", route);
+
+// the day's flow, from what the system recorded (nothing is invented)
+const riskWord = (r) => r === "NORMAL" ? "通常" : r === "HALT_NEW_ENTRIES" ? "買い停止中" : r || "—";
+function renderRail(s, ss) {
+  const r = s.runner, last = (ss.sessions || [])[0], items = [];
+  if (last) {
+    items.push([jstShort(last.recorded_at), "セッション実行（" + last.session_date + "）", ""]);
+    items.push(["", "候補 " + last.candidates + " → 約定 " + last.orders_filled + (last.stops_triggered ? "・損切り " + last.stops_triggered : ""), ""]);
+  }
+  if (s.checkpoint && s.checkpoint.at) items.push([jstShort(s.checkpoint.at), "口座を保存", "now"]);
+  if (r && r.next_session_at) items.push([jstShort(r.next_session_at), "次のセッション", "future"]);
+  setChildren("tl", items.length ? items.map((x) => el("li", { class: x[2] }, x[0] ? el("time", { text: x[0] }) : null, x[1])) : el("li", { text: "まだ記録がありません" }));
+  setChildren("stt", el("div", {}, "安全装置　", el("b", { text: r ? riskWord(r.risk_state) : "—" })),
+    el("div", {}, "緊急停止　", el("b", { text: s.kill_switch.engaged ? "作動中" : "解除中" })),
+    el("div", {}, "次の取引　", el("b", { text: r && r.next_session_at ? jstShort(r.next_session_at) : "—" })));
+}
 
 function renderDid(o, sessions) {
   const last = (sessions.sessions || [])[0];
@@ -477,20 +516,13 @@ async function refresh() {
   try {
     const [s, p, ss, o, inc, intents, al, hold] = await Promise.all([get("/api/status"), get("/api/performance"), get("/api/sessions?limit=60"),
       get("/api/observers"), get("/api/incidents"), get("/api/intents"), get("/api/alerts?limit=50"), get("/api/holdings")]);
-    renderStatus(s); renderPerf(p); renderHoldings(hold); renderDid(o, ss); renderSessions(ss); renderObservers(o); renderIncidents(inc); renderIntents(intents); renderAlerts(al);
+    renderStatus(s); renderRail(s, ss); renderPerf(p); renderHoldings(hold); renderDid(o, ss); renderSessions(ss); renderObservers(o); renderIncidents(inc); renderIntents(intents); renderAlerts(al);
     document.getElementById("error").style.display = "none";
     document.getElementById("footer").textContent = "更新 " + jst(s.now) + " · 30秒ごとに自動更新 · 表示のみ（操作は CLI）。数字は直近のセッション時点で、リアルタイムではありません。";
   } catch (e) {
     const b = document.getElementById("error"); b.style.display = "block"; b.textContent = "取得に失敗しました: " + e.message;
   }
 }
-function setFull(full) {
-  document.body.classList.toggle("full", full);
-  document.getElementById("bSimple").classList.toggle("on", !full); document.getElementById("bFull").classList.toggle("on", full);
-  try { history.replaceState(null, "", full ? "#full" : location.pathname + location.search); } catch (e) { /* a view preference only */ }
-}
-document.getElementById("bSimple").addEventListener("click", () => setFull(false));
-document.getElementById("bFull").addEventListener("click", () => setFull(true));
 route();
 refresh(); setInterval(refresh, 30000); window.addEventListener("resize", () => drawChart(lastSeries));
 </script>
