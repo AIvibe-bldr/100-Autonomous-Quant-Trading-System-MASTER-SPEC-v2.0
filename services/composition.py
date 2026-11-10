@@ -98,6 +98,7 @@ class RealDataSources:
     news_source: Optional[Any] = None
     event_source: Optional[Any] = None
     flow_filings_source: Optional[Any] = None          # SEC 13D/13G, when EDGAR is configured
+    company_lookup: Optional[Any] = None               # symbol -> SymbolProfile from the SEC record (display only)
     notices: list[str] = field(default_factory=list)       # e.g. "EDGAR disabled: ..."
 
 
@@ -137,7 +138,9 @@ def build_real_data_sources() -> RealDataSources:
     out.event_source = CompositeEventSource(
         [x for x in (out.event_source, EdgarEarningsEstimator(edgar)) if x is not None])
     from services.institutional.sources import EdgarOwnershipFilingsSource
+    from services.market_data.edgar_company import edgar_company_profile
     out.flow_filings_source = EdgarOwnershipFilingsSource(edgar)
+    out.company_lookup = lambda symbol: edgar_company_profile(edgar, symbol)
     return out
 
 

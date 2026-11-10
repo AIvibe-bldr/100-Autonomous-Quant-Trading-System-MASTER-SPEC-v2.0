@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"nothing to resume in {state}: no orders, sessions or checkpoints.", file=sys.stderr)
         return 2
 
-    provider = news = events = flow_filings = None
+    provider = news = events = flow_filings = company_lookup = None
     if args.real_data:
         try:
             src = build_real_data_sources()
@@ -133,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         provider, news, events = src.provider, src.news_source, src.event_source
         flow_filings = src.flow_filings_source
+        company_lookup = src.company_lookup
         for note in src.notices:
             print(f"({note})")
 
@@ -186,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     stop = threading.Event()            # set by SIGINT/SIGTERM; its wait() is the tick sleep, so a
     for sig in (signal.SIGINT, signal.SIGTERM):      # stop request ends the wait at once
         signal.signal(sig, lambda *_: stop.set())
-    recorder = SessionRecorder(pipeline, session_store, args.model_tag)
+    recorder = SessionRecorder(pipeline, session_store, args.model_tag, company_lookup=company_lookup)
     resumed_last_run = None
     if resumed is not None:
         if last_sessions:

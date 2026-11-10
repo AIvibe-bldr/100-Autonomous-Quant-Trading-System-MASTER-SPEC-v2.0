@@ -100,6 +100,13 @@ def _urllib_get_text(url: str, headers: dict[str, str]) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+@dataclass(frozen=True)
+class CompanyInfo:
+    name: str
+    sic: Optional[int]
+    sic_description: str
+
+
 class EdgarClient:
     def __init__(self, user_agent: str, *, http_get: Optional[HttpGet] = None,
                  http_get_text: Optional[HttpGetText] = None,
@@ -122,6 +129,7 @@ class EdgarClient:
         self._last = 0.0
         self._cik: Optional[dict[str, int]] = None
         self._filings: dict[str, list[Filing]] = {}
+        self._submissions_by_cik: dict[int, dict[str, Any]] = {}
 
     @classmethod
     def from_env(cls, **kw: Any) -> "EdgarClient":
@@ -139,6 +147,26 @@ class EdgarClient:
             body = self._fetch(TICKERS_URL)
             self._cik = {str(r["ticker"]).upper(): int(r["cik_str"]) for r in body.values()}
         return self._cik.get(ticker.upper())
+
+    def _submissions(self, cik: int) -> dict[str, Any]:
+        """The company record (name, industry, filings), fetched once per CIK."""
+        if cik not in self._submissions_by_cik:
+            self._submissions_by_cik[cik] = self._fetch(SUBMISSIONS_URL.format(cik=cik))
+        return self._submissions_by_cik[cik]
+
+    def company_info(self, ticker: str) -> Optional["CompanyInfo"]:
+        """Who the ticker is, from the SEC's own record: name and industry class. None for an unknown ticker; a
+        failure raises (never reads as 'unknown')."""
+        cik = self._cik_for(ticker.upper())
+        if cik is None:
+            return None
+        body = self._submissions(cik)
+        try:
+            sic = int(body["sic"]) if str(body.get("sic") or "").strip() else None
+        except (TypeError, ValueError):
+            sic = None
+        return CompanyInfo(name=str(body.get("name") or "").strip(), sic=sic,
+                           sic_description=str(body.get("sicDescription") or "").strip())
 
     def recent_filings(self, ticker: str) -> list[Filing]:
         """The company's recent filings, newest first. Includes the filings of any reviewed
@@ -177,7 +205,7 @@ class EdgarClient:
         from the dated `files` shards, but only those overlapping the needed period."""
         if cik in self._by_cik:
             return self._by_cik[cik]
-        body = self._fetch(SUBMISSIONS_URL.format(cik=cik))["filings"]
+        body = self._submissions(cik)["filings"]
         out = self._parse_filings(cik, body["recent"])
         cutoff = self._today() - timedelta(days=self._history_days)
         if out and min(f.filing_date for f in out) > cutoff:

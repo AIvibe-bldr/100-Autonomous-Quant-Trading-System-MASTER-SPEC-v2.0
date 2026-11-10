@@ -144,10 +144,14 @@ class OpsState:
         items = detail.get("holdings")
         out = []
         for h in items or []:
-            prof = profile_of(h["symbol"])
+            prof, auto = profile_of(h["symbol"]), h.get("profile_auto")
             score, reasons = attention_of(h)
-            out.append({**h, "company": prof.company if prof else None, "company_ja": prof.company_ja if prof else None,
-                        "category": prof.category if prof else None, "business": prof.business if prof else None,
+            names = ({"company": prof.company, "company_ja": prof.company_ja, "category": prof.category,
+                      "business": prof.business, "profile_source": "table"} if prof else
+                     {"company": auto["company"], "company_ja": None, "category": auto["category"],
+                      "business": auto["business"], "profile_source": "sec"} if auto else
+                     {"company": None, "company_ja": None, "category": None, "business": None, "profile_source": None})
+            out.append({**h, **names,
                         "attention_score": round(score, 4), "attention_reasons": reasons})
         order = sorted(out, key=lambda x: (-x["attention_score"], -abs(x["pnl_pct"]), x["symbol"]))
         top = [x["symbol"] for x in order[:ATTENTION_COUNT]]

@@ -7,18 +7,36 @@ changes no trading state. Equity is marked at session time (after the session's 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from packages.common.calendar import ET
 from packages.common.clock import ensure_utc
 from packages.common.durable_store import DurableSessionStore, SessionRecord
+from packages.common.symbol_profiles import SymbolProfile, profile_of
 from services.pipeline import PipelineResult, TradingPipeline
 
 _MAX_DETAIL_ITEMS = 10
+log = logging.getLogger("quant.session_record")
+CompanyLookup = Callable[[str], Optional[SymbolProfile]]
 
 
-def holdings_view(pipeline: TradingPipeline, prices: dict[str, float]) -> list[dict]:
+def _auto_profile(symbol: str, lookup: Optional[CompanyLookup]) -> Optional[dict]:
+    """Who a held ticker is, when the hand-written table does not know it. Best effort and display only: a failed
+    lookup is logged and the holding is shown by its symbol — it never stops the session record."""
+    if lookup is None or profile_of(symbol) is not None:
+        return None
+    try:
+        prof = lookup(symbol)
+    except Exception as e:  # noqa: BLE001
+        log.warning("company lookup for %s failed: %s: %s", symbol, type(e).__name__, e)
+        return None
+    return None if prof is None else {"company": prof.company, "category": prof.category, "business": prof.business}
+
+
+def holdings_view(pipeline: TradingPipeline, prices: dict[str, float],
+                  company_lookup: Optional[CompanyLookup] = None) -> list[dict]:
     """What is held at the end of the session, valued at `prices`, with the plan made before entry (§33).
     Plain data for the dashboard: it reads the books and the stop registry, and changes neither. The plan is the
     one stored with the protective stop — a position bought in several lots shows the latest lot's plan."""
@@ -39,17 +57,20 @@ def holdings_view(pipeline: TradingPipeline, prices: dict[str, float]) -> list[d
                     "risk_amount": entry[3]}
         out.append({"symbol": sym, "qty": lot.qty, "avg_cost": lot.avg_cost, "price": price, "value": value,
                     "pnl": value - cost, "pnl_pct": (value / cost - 1.0) if cost > 0 else 0.0,
-                    "weight": value / equity if equity > 0 else 0.0, "plan": plan})
+                    "weight": value / equity if equity > 0 else 0.0, "plan": plan,
+                    "profile_auto": _auto_profile(sym, company_lookup)})
     return out
 
 
 class SessionRecorder:
-    def __init__(self, pipeline: TradingPipeline, store: DurableSessionStore, model_tag: str) -> None:
+    def __init__(self, pipeline: TradingPipeline, store: DurableSessionStore, model_tag: str,
+                 company_lookup: Optional[CompanyLookup] = None) -> None:
         if not model_tag.strip():
             raise ValueError("a model_tag is needed so runs can be compared")
         self._pipeline = pipeline
         self._store = store
         self._tag = model_tag.strip()
+        self._company_lookup = company_lookup
 
     def __call__(self, at: datetime, result: PipelineResult,
                  llm_cost_usd: Optional[float] = None) -> SessionRecord:
@@ -64,7 +85,7 @@ class SessionRecorder:
             "fills": [{"symbol": f.symbol, "side": f.side.value, "qty": f.qty, "price": f.price}
                       for f in result.fills[:_MAX_DETAIL_ITEMS]],
             "disagreement_multipliers": result.disagreement_multipliers,
-            "holdings": holdings_view(p, prices),
+            "holdings": holdings_view(p, prices, self._company_lookup),
             # cumulative state of the pipeline's observers (forecast calibration, ...)
             "observers": {o.name: o.summary() for o in p.observers},
         }
