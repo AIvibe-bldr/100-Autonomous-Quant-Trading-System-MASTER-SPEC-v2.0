@@ -185,7 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     broker = pipeline.execution.broker
 
     stop = threading.Event()            # set by SIGINT/SIGTERM; its wait() is the tick sleep, so a
-    for sig in (signal.SIGINT, signal.SIGTERM):      # stop request ends the wait at once
+    stop_signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGBREAK"):                  # Windows: Ctrl+Break (and what a test can send to a child)
+        stop_signals.append(signal.SIGBREAK)
+    for sig in stop_signals:                         # stop request ends the wait at once
         signal.signal(sig, lambda *_: stop.set())
     recorder = SessionRecorder(pipeline, session_store, args.model_tag, company_lookup=company_lookup)
     resumed_last_run = None
