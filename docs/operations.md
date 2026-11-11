@@ -2,8 +2,8 @@
 
 > 対象: `scripts/run_paper_runner.py` による長期ペーパー運用。**実注文は送れない**（模擬ブローカーのみ）。
 > 設計の背景は `docs/MASTER_SPEC.md`（「実行基盤」「セッション成績の記録」「学習・観測ループ」）、安全装置は
-> `docs/invariants.md` / `docs/SAFETY_AUDIT.md`。**この手順書の systemd / cron の設定例は、このリポジトリのテスト環境では
-> 動かして確認していない（書式の例）。** 初回は手元で動作確認してから本番に置くこと。
+> `docs/invariants.md` / `docs/SAFETY_AUDIT.md`。**この手順書の systemd の設定例は書式を `systemd-analyze verify` で確認した
+> が、実機では動かしていない。cron の例は未検証。** 初回は手元で動作確認してから本番に置くこと。
 
 ## 1. 全体像
 
@@ -72,29 +72,57 @@ python3 scripts/run_ops_dashboard.py --state-dir var/runner-20261110
 - 復元されないもの: 観測者の**累積統計**（予測の較正・シャドー・損益分解などは再開時に0から）、資本セルの「AI／人」の内訳
   （再開時点の保有は AI セルに入る）、サーキットブレーカーの窓（空から）。口座そのものは完全に復元される。
 
-### systemd の例（未検証の書式例）
+### systemd の例（書式は `systemd-analyze verify` で確認済み。実機への導入は未実施）
+**systemd は行末コメントを使えない**（`Restart=on-failure   # 説明` は値が壊れて**無視される**）。コメントは必ず別の行に書く。
+`StartLimitIntervalSec` / `StartLimitBurst` は `[Unit]` 節に置く（`[Service]` 節では無視される）。
 ```ini
 # /etc/systemd/system/quant-runner.service
-[Service]
-WorkingDirectory=/opt/quant
-EnvironmentFile=/etc/quant/runner.env          # 秘密はここ（権限 600）
-ExecStart=/usr/bin/python3 scripts/run_paper_runner.py --real-data --state-dir /var/lib/quant/runner-20261110 --resume-if-exists
-Restart=on-failure                             # 落ちたら保存から再開（検証に失敗・未解決の重大障害なら起動しない）
-RestartSec=30
-RestartPreventExitStatus=2                     # 「起動を拒否」(終了コード2)は再試行しても無駄なので止める（watchdog が通知）
+[Unit]
+Description=Quant paper runner
+After=network-online.target
+Wants=network-online.target
+# 10分に5回までの再起動で打ち切る
 StartLimitIntervalSec=600
 StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/quant
+# 秘密はここ（権限 600）
+EnvironmentFile=/etc/quant/runner.env
+ExecStart=/usr/bin/python3 scripts/run_paper_runner.py --real-data --state-dir /var/lib/quant/runner-20261110 --resume-if-exists
+# 異常終了（終了コード1）なら保存から再開する。SIGTERM（systemctl stop）は終了コード0で再起動しない。
+# 検証に失敗・未解決の重大障害なら runner が起動を拒否する
+Restart=on-failure
+RestartSec=30
+# 「起動を拒否」（終了コード2）は再試行しても無駄なので止める（watchdog が通知）
+RestartPreventExitStatus=2
 KillSignal=SIGTERM
 TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
 ```
 ```ini
 # /etc/systemd/system/quant-watchdog.service  （常駐。cron なら * * * * * でも可）
+[Unit]
+Description=Quant watchdog
+After=network-online.target
+
 [Service]
+Type=simple
 WorkingDirectory=/opt/quant
 EnvironmentFile=/etc/quant/runner.env
 ExecStart=/usr/bin/python3 scripts/watchdog.py --state-dir /var/lib/quant/runner-20261110 --loop
 Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
+確認済み（2026-11-11、模擬AI・キー無し）: SIGTERM で終了コード0・状態 `STOPPED`／口座のある `--state-dir` を `--resume` 無しで起動すると
+終了コード2で拒否／`--resume-if-exists` で保存から再開／口座のない `--state-dir` に `--resume` は終了コード2で拒否。
+**未確認**: 実機の systemd での起動・自動再起動、`EnvironmentFile` の権限、実ブローカー用の復元。
 
 ## 4. 平常運用（毎日の確認 — ダッシュボード）
 - ランプが **OK**、ランナーが **WAITING**（セッション中は **RUNNING**）、心拍が数十秒前。
