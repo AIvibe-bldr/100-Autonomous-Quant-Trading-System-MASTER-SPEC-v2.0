@@ -1,13 +1,13 @@
 # 引継ぎ指示書（次のセッション用）
 
-作成: 2026-11-11（2回目の更新）/ 基準: `main`（PR #4 をマージ済み。マージコミット `22eebbf`）
+作成: 2026-11-11（2回目の更新）/ 基準: `main`（PR #4・#5 をマージ済み。最新のマージコミット `dc1df08`）
 対象: 自律型クオンツ売買システム（**ペーパー専用**）。ユーザーは日本語。1回の「進めて」＝実装・テスト・コミット・push。
 
 ## 0. 守ること（常時）
 - 発注は **PaperBroker のみ**。実ブローカーへは何も送らない。LIVE ゲートの承認ファイルは無い。
 - **LLM の実行は、ユーザーが明示的に指示したときだけ**。上限は既定 $1.00/実行（`QUANT_LLM_BUDGET_USD` は未設定のまま。自分で上げない）。
   - 注意: `scripts/run_llm_paper_demo.py` は環境に Anthropic のキーがあると、`--real-data` なしでも**実LLMを呼ぶ**。確認用に動かすときは `env -u MY_ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY HOME=/nonexistent …` でキーを外す。`scripts/run_paper_runner.py` も同様にキーを外して試す。
-- **PR はユーザーの指示があるまで作らない・マージしない**。PR #4 はマージ済みなので、今後の変更は**新しい PR** になる。作業ブランチ `claude/confident-planck-uiiidk` は `main` から作り直した（マージ済みの履歴に積み足さない。ブランチを変えるときも指定の許可を確認する）。
+- **PR はユーザーの指示があるまで作らない・マージしない**。PR #4・#5 はマージ済みなので、今後の変更は**新しい PR** になる。作業ブランチ `claude/confident-planck-uiiidk` は `main` から作り直した（マージ済みの履歴に積み足さない。ブランチを変えるときも指定の許可を確認する）。
 - 秘密の値は出力しない（有無だけ確認: `[ -n "${VAR}" ] && echo set`）。キーをチャットに貼らせない。
 - `CLAUDE.md` に従う（§23 実装前報告、§24 実装後報告、§29 設計変更の説明、§32 UI/UX、1コミット1責務）。
 - コミットは「テスト全件通過」を確認してから（`pytest -q` が約15秒）。`;` でなく `&&` で繋ぐ。
@@ -38,8 +38,8 @@
 - **Paper→Live 基準の草案**（`docs/paper_live_gate.md`）: 判断項目ごとに推奨と理由を付けた。**運用者が確定したのは2項目だけ**: 許容ドローダウン＝資本の10%、現金口座・無レバレッジ。
 - **21st.dev の探索**: ゲージ・ヒートマップ（treemap）・シート系の部品を検索した。どれも React/Tailwind で、このダッシュボードの制約（1ファイル・外部読み込みなし・`textContent` のみ）に合わないため**コードは取り込んでいない**（既存の部品が `DESIGN_SYSTEM.md` を満たしている）。
 
-- **通知の不具合の修正**（`packages/common/alert_sinks.py`）: Discord への最初の実送信が HTTP 403（Cloudflare エラー 1010）で失敗した。原因は、Python 標準の識別名（`Python-urllib/x.y`）を Discord が拒否すること（ダミーの Webhook で再現: 既定の識別名は 403、独自の識別名は 404 Unknown Webhook）。`User-Agent: quant-alerts/1.0`（連絡先を含まない一般的な名前）を付けて修正、回帰テストあり。**ローカルの模擬サーバーでは見つからず、本物の宛先で初めて分かった**。**この修正は `claude/confident-planck-uiiidk` のみ（`5c3bd9a`）で、`main` にはまだ入っていない**（新しい PR が要る。指示があるまで作らない）。
-- **Windows 対応**: 運用者の PC は Windows（PowerShell）で、`git` は未導入、リポジトリは ZIP で展開した。**CI に Windows（Python 3.12）を追加**し、Windows 固有の不具合を2件直した: ①`tzdata` が無く `ZoneInfo("America/New_York")` が import で失敗（pyproject に Windows 限定の依存を追加）②UTF-8 のファイルを既定の cp1252 で読み書きして失敗（本体18か所に `encoding="utf-8"`。ダッシュボードの配信・緊急停止・状態ファイル・障害ログ・人の意図の受付箱・通知の履歴が対象）。AST のテストで、文字コードなしのファイル入出力を今後は拒否する。両 OS の CI が通る。**runner の Windows での Ctrl+C 停止・自動起動・長時間稼働は未確認**（`docs/operations.md` の「Windows で動かす場合」）。Linux の常時稼働機が向く。
+- **通知の不具合の修正**（`packages/common/alert_sinks.py`）: Discord への最初の実送信が HTTP 403（Cloudflare エラー 1010）で失敗した。原因は、Python 標準の識別名（`Python-urllib/x.y`）を Discord が拒否すること（ダミーの Webhook で再現: 既定の識別名は 403、独自の識別名は 404 Unknown Webhook）。`User-Agent: quant-alerts/1.0`（連絡先を含まない一般的な名前）を付けて修正、回帰テストあり。**ローカルの模擬サーバーでは見つからず、本物の宛先で初めて分かった**。この修正は PR #5 で `main` に入っている。**運用者の PC の ZIP は修正前のコードなので、`main` の ZIP を取り直す必要がある**。
+- **Windows 対応**: 運用者の PC は Windows（PowerShell）で、`git` は未導入、リポジトリは ZIP で展開した。**CI に Windows（Python 3.12）を追加**し、Windows 固有の不具合を2件直した: ①`tzdata` が無く `ZoneInfo("America/New_York")` が import で失敗（pyproject に Windows 限定の依存を追加）②UTF-8 のファイルを既定の cp1252 で読み書きして失敗（本体18か所に `encoding="utf-8"`。ダッシュボードの配信・緊急停止・状態ファイル・障害ログ・人の意図の受付箱・通知の履歴が対象）。AST のテストで、文字コードなしのファイル入出力を今後は拒否する。両 OS の CI が通る。**runner の Windows での停止は実プロセスで確認済み**（Windows の CI が、起動したランナーに Ctrl+Break を送り、1秒ほどで終了コード0・`STOPPED` になることを確認。修正前は `Event.wait(60)` が信号で起こされず58秒かかった → 待ちを1秒ごとに区切って直した。`tests/unit/test_runner_process_stop.py`）。**キーボードの Ctrl+C そのもの、タスクスケジューラでの自動起動、長時間稼働は未確認**（`docs/operations.md` の「Windows で動かす場合」）。外部の死活監視の登録手順は同じ手順書に書いた（あなたのアカウントでの登録と、通知の到達は未確認）。**この Windows の停止修正と手順書の追記は `main` にまだ入っていない（新しい PR が要る。指示があるまで作らない）**。Linux の常時稼働機が向く。
 
 ### 実LLM実行（月曜 2026-11-09、1回のみ）
 - スキャン20 → 候補4 → Decision 1（PFE を BUY）→ Skeptic が拒否 → **発注なし**。費用 $0.133（上限 $1.00）。

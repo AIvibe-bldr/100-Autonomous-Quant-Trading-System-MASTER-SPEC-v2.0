@@ -131,9 +131,30 @@ WantedBy=multi-user.target
 pip install -e .
 python scripts/run_paper_runner.py --state-dir C:\quant-state\runner-20261112 --resume-if-exists
 ```
-- **止め方**: ウィンドウで Ctrl+C。ウィンドウを閉じると止まる（再開は同じコマンド。保存から続きになる）。
+- **止め方**: ウィンドウで **Ctrl+C**（または Ctrl+Break）。約1秒で止まり、状態は `STOPPED`・終了コード0になる（CI で、実際のプロセスに停止の合図を送って確認。Windows では待ち時間が1回分（60秒）かかっていたため、1秒ごとに区切る修正を入れた）。ウィンドウを閉じると、記録なしで止まる（再開は同じコマンド。保存から続きになるが、止めるときは Ctrl+C を使う）。watchdog も Ctrl+C で静かに終わる。
 - **systemd が無い**ので、落ちたときの自動再開はない。PC のスリープでも止まる（電源設定でスリープを無効にする）。取引時間は日本時間 23:30〜06:00。常時稼働は Linux の機械が向いている。
-- **未確認**: Windows での Ctrl+C による正常停止（状態 `STOPPED`・終了コード0になるか）、タスクスケジューラでの自動起動、長時間の連続稼働。
+- **未確認**: 実際のコンソールでキーボードから押す Ctrl+C（CI は同じ停止処理を、プログラムから送る Ctrl+Break で確認している）、タスクスケジューラでの自動起動、長時間の連続稼働。
+
+### 外部の死活監視の設定（マシンごと止まったときの備え。healthchecks.io の例）
+watchdog は runner と同じマシンで動くので、**マシンが止まる・スリープする・ネットが切れると、Discord にも何も届かない**。そこで watchdog が
+健全なときだけ（CRITICAL でないとき）毎回、外部のサービスへ ping を送り、**ping が途絶えたら外部のサービスが通知する**（沈黙が警報になる）。
+1. https://healthchecks.io でアカウントを作り、「Add Check」でチェックを1つ作る。名前は `quant-paper` など。
+2. **Period = 1 分、Grace Time = 5 分**にする（watchdog の `--interval` の既定が60秒。心拍の古さの上限も5分）。
+3. チェックの **Ping URL**（`https://hc-ping.com/…`）をコピーする。これは秘密（知っていれば誰でも「正常」を偽装できる）。
+4. 通知先を付ける: 「Integrations」から Discord（または Slack 互換の Webhook）を足し、チェックに紐付ける。通知専用のチャンネルを使う。
+5. watchdog を起動するウィンドウで、URL を**画面に出さずに**入れる（PowerShell）:
+```powershell
+$s = Read-Host "Ping URL" -AsSecureString
+$env:QUANT_WATCHDOG_PING_URL = [System.Net.NetworkCredential]::new("", $s).Password
+python scripts/watchdog.py --state-dir C:\quant-state\runner-20261112 --loop
+```
+   Linux では `/etc/quant/runner.env` に `QUANT_WATCHDOG_PING_URL=…`（権限 600）を書く。runner とは別のプロセス（別のウィンドウ／別の systemd ユニット）で動かす。
+6. ping が届くか1回だけ確かめる（URL は表示されない。`200` と出て、healthchecks.io のチェックが緑になる）:
+```powershell
+(Invoke-WebRequest -Uri $env:QUANT_WATCHDOG_PING_URL -UseBasicParsing).StatusCode
+```
+7. **本当に通知が来るか確かめる**: watchdog を止めて（Ctrl+C）6分待つ。Discord に「down」の通知が来れば成功。その後、watchdog を起動し直すと「up」に戻る。
+- 確認済み（2026-11-11）: 4つの主要サービスは、識別名の有無で ping の応答が変わらない（Discord のような拒否は無い）。**あなたのアカウントでの登録と、手順7の通知の到達は未確認**。
 
 ## 4. 平常運用（毎日の確認 — ダッシュボード）
 - ランプが **OK**、ランナーが **WAITING**（セッション中は **RUNNING**）、心拍が数十秒前。

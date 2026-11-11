@@ -21,6 +21,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -60,6 +61,18 @@ from services.supervisor.runner import RunnerConfig, SessionRunner, next_session
 from services.supervisor.session_record import SessionRecorder
 
 JST = ZoneInfo("Asia/Tokyo")
+
+
+def _wait_unless_stopped(stop: threading.Event, seconds: float, slice_seconds: float = 1.0) -> None:
+    """Sleep up to `seconds`, ending as soon as `stop` is set. The wait is cut into short slices because on
+    Windows a single Event.wait(60) is not interrupted by a console signal: the handler only runs when the wait
+    returns, so a stop request would take up to a whole heartbeat (60 s) to act."""
+    end = time.monotonic() + seconds
+    while not stop.is_set():
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        stop.wait(min(slice_seconds, left))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -185,7 +198,10 @@ def main(argv: list[str] | None = None) -> int:
     broker = pipeline.execution.broker
 
     stop = threading.Event()            # set by SIGINT/SIGTERM; its wait() is the tick sleep, so a
-    for sig in (signal.SIGINT, signal.SIGTERM):      # stop request ends the wait at once
+    stop_signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGBREAK"):                  # Windows: Ctrl+Break (and what a test can send to a child)
+        stop_signals.append(signal.SIGBREAK)
+    for sig in stop_signals:                         # stop request ends the wait at once
         signal.signal(sig, lambda *_: stop.set())
     recorder = SessionRecorder(pipeline, session_store, args.model_tag, company_lookup=company_lookup)
     resumed_last_run = None
@@ -200,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         broker.settle()                  # paper T+1 tick
 
     runner = SessionRunner(pipeline, cal, clock, HeartbeatRegistry(clock), sink, cfg,
-                           sleep=stop.wait, after_session=after_session,
+                           sleep=lambda seconds: _wait_unless_stopped(stop, seconds), after_session=after_session,
                            recovery=RecoveryManager(clock, start_seq=incidents.next_seq()),
                            incident_log=incidents,
                            market_open_hook=pipeline.analyze_human_intents,
