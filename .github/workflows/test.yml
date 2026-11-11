@@ -8,14 +8,25 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # Linux is the intended host; Windows (the operator's PC, Python 3.12) is checked so "it runs on Windows" is
+    # a fact, not a guess. A failure on one OS must not hide the result on the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: "pip"
 
       - name: Install dependencies
