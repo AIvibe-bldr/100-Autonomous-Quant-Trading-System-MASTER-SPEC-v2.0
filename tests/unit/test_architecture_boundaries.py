@@ -30,7 +30,7 @@ def _imported_module_names(py_file: Path) -> list[str]:
     that import style whenever the forbidden word is the imported symbol
     rather than part of the module path — reproduced and fixed here by
     also yielding `f"{module}.{alias.name}"` for each imported name."""
-    tree = ast.parse(py_file.read_text())
+    tree = ast.parse(py_file.read_text(encoding="utf-8"))
     names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -93,7 +93,7 @@ def test_llm_usage_ledger_is_service_independent():
     """packages/common/llm_usage.py is shared infra: it must not import services/* or apps/*."""
     import ast
     from pathlib import Path
-    tree = ast.parse((Path(__file__).resolve().parents[2] / "packages/common/llm_usage.py").read_text())
+    tree = ast.parse((Path(__file__).resolve().parents[2] / "packages/common/llm_usage.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         mods = ([node.module or ""] + [f"{node.module}.{a.name}" for a in node.names]
                 if isinstance(node, ast.ImportFrom) else

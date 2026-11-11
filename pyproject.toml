@@ -5,6 +5,9 @@ description = "100x Autonomous Quant Trading System (MASTER SPEC v2.0) — V1 pa
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
+    # Windows has no system time-zone database, so zoneinfo (packages/common/calendar.py: America/New_York) fails
+    # at import there without this package. Linux/macOS use the system's.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

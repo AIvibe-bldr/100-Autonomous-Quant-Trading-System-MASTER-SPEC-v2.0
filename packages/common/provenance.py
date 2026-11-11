@@ -78,4 +78,4 @@ class ProvenanceStore:
             return str(o)
 
         payload = [vars(r) for r in self._records.values()]
-        path.write_text(json.dumps(payload, default=default, indent=2))
+        path.write_text(json.dumps(payload, default=default, indent=2), encoding="utf-8")

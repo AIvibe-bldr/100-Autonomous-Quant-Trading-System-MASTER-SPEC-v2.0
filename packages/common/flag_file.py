@@ -15,10 +15,10 @@ from typing import Any
 def write_with_audit(path: Path, entry: dict[str, Any]) -> None:
     log_path = path.with_name(path.name + ".log")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a") as log:
+    with log_path.open("a", encoding="utf-8") as log:
         log.write(json.dumps(entry) + "\n")
         log.flush()
         os.fsync(log.fileno())
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(entry))
+    tmp.write_text(json.dumps(entry), encoding="utf-8")
     os.replace(tmp, path)

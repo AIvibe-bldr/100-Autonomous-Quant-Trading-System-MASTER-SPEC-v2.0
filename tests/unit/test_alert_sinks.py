@@ -23,11 +23,12 @@ class _Hook:
     """A local HTTP server standing in for Slack/Discord/Teams."""
 
     def __init__(self, status=200):
-        self.received, self.status = [], status
+        self.received, self.status, self.user_agents = [], status, []
         outer = self
 
         class H(BaseHTTPRequestHandler):
             def do_POST(self):
+                outer.user_agents.append(self.headers.get("User-Agent", ""))
                 outer.received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 self.send_response(outer.status)
                 self.end_headers()
@@ -56,6 +57,15 @@ def test_webhook_posts_json_that_slack_discord_and_teams_all_read(hook):
     (body,) = hook.received
     assert body["text"] == body["content"] == "paper-1 [CRITICAL] risk state -> HALT_NEW_ENTRIES: broker down"
     assert body["severity"] == "CRITICAL" and body["at"]
+
+
+def test_webhook_sends_its_own_user_agent_because_discord_rejects_the_python_default(hook):
+    """Real Discord answered HTTP 403 (Cloudflare error 1010) to urllib's default 'Python-urllib/x.y' agent, so no
+    alert ever arrived. A local server cannot reproduce that; the header it receives can be checked."""
+    WebhookAlertSink(hook.url).send(AlertSeverity.WARNING, "ua check")
+    (agent,) = hook.user_agents
+    assert agent and not agent.lower().startswith("python-urllib")
+    assert "@" not in agent and "http" not in agent.lower()      # a generic client name: no contact details
 
 
 @pytest.mark.parametrize("url", ["http://example.com/hook", "ftp://x/y", "https://", "not a url"])
@@ -150,7 +160,7 @@ def test_history_file_records_everything_and_reads_back_newest_first(tmp_path):
     for i in range(5):
         f.send(AlertSeverity.WARNING, f"m{i}")
     assert [a["message"] for a in read_alert_history(f.path, limit=3)] == ["m4", "m3", "m2"]
-    f.path.write_text(f.path.read_text() + "{garbage\n")
+    f.path.write_text(f.path.read_text(encoding="utf-8") + "{garbage\n")
     assert read_alert_history(f.path)[0]["message"] == "m4"                     # a bad line is skipped
     assert read_alert_history(tmp_path / "none.jsonl") == []
 

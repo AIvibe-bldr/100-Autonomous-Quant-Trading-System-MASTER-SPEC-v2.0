@@ -1,80 +1,95 @@
 # 引継ぎ指示書（次のセッション用）
 
-作成: 2026-11-11 / ブランチ: `claude/trusting-allen-7wp8ha`（最新コミットは `git log -1` で確認）
+作成: 2026-11-11（2回目の更新）/ 基準: `main`（PR #4 をマージ済み。マージコミット `22eebbf`）
 対象: 自律型クオンツ売買システム（**ペーパー専用**）。ユーザーは日本語。1回の「進めて」＝実装・テスト・コミット・push。
 
 ## 0. 守ること（常時）
-- 発注は **PaperBroker のみ**。実ブローカーへは何も送らない。
+- 発注は **PaperBroker のみ**。実ブローカーへは何も送らない。LIVE ゲートの承認ファイルは無い。
 - **LLM の実行は、ユーザーが明示的に指示したときだけ**。上限は既定 $1.00/実行（`QUANT_LLM_BUDGET_USD` は未設定のまま。自分で上げない）。
-  - 注意: `scripts/run_llm_paper_demo.py` は環境に Anthropic のキーがあると、`--real-data` なしでも**実LLMを呼ぶ**。確認用に動かすときは `env -u MY_ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY HOME=/nonexistent …` でキーを外す（前回、これを忘れて意図せず実LLMが起動した。費用は未確認）。
-- **PR はユーザーの指示があるまで作らない**（PR #4 が `main` 向けに開いている。本文は永続化・UI・データ品質の追加分が未反映）。
+  - 注意: `scripts/run_llm_paper_demo.py` は環境に Anthropic のキーがあると、`--real-data` なしでも**実LLMを呼ぶ**。確認用に動かすときは `env -u MY_ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY HOME=/nonexistent …` でキーを外す。`scripts/run_paper_runner.py` も同様にキーを外して試す。
+- **PR はユーザーの指示があるまで作らない・マージしない**。PR #4 はマージ済みなので、今後の変更は**新しい PR** になる。作業ブランチ `claude/confident-planck-uiiidk` は `main` から作り直した（マージ済みの履歴に積み足さない。ブランチを変えるときも指定の許可を確認する）。
 - 秘密の値は出力しない（有無だけ確認: `[ -n "${VAR}" ] && echo set`）。キーをチャットに貼らせない。
-- `CLAUDE.md` に従う（§23 実装前報告、§24 実装後報告、§29 設計変更の説明、1コミット1責務）。python は `/usr/bin/python3`。
+- `CLAUDE.md` に従う（§23 実装前報告、§24 実装後報告、§29 設計変更の説明、§32 UI/UX、1コミット1責務）。
 - コミットは「テスト全件通過」を確認してから（`pytest -q` が約15秒）。`;` でなく `&&` で繋ぐ。
+- **運用者が決めていない数値・方針を、自分で確定しない**（§3）。推奨を出して判断を仰ぐ。
 
 ## 1. 最初にやること
-1. `git status -sb` と `/usr/bin/python3 -m pytest -q`（全件通過を確認）。
-2. **21st.dev の MCP が見えるか確認**（ユーザーが `API_KEY_21ST` を登録済み。UI UX Pro Max のスキルは取り込み済み）。
-   - 見えれば: コンポーネント探索を開始（対象: ゲージ行・盤のウィンドウ・詳細シート）。外部部品は**そのままコピーせず** `docs/DESIGN_SYSTEM.md` に合わせて作り直す。
-   - 見えなければ: ①`.mcp.json` のヘッダー（今は `x-api-key: ${API_KEY_21ST}`。以前は Bearer だった）②環境変数が入っているか（値は出さず有無だけ）③`curl` で `https://21st.dev/api/mcp` の到達性、の順で切り分ける。キー発行先は https://21st.dev/mcp（旧Magicの鍵は失効済み）。
-3. ユーザーに「21st.dev のツールは見えます」と報告してから、次の作業を確認する。
+1. `git status -sb` と、テストの実行。環境に pytest が無ければ `pip install -e '.[dev,api]'` のあと `python -m pytest -q`（全件通過を確認）。
+2. **21st.dev の MCP が見えるか確認**（`API_KEY_21ST` は登録済み。`.mcp.json` はリポジトリにある）。
+   - 前回は、`.mcp.json` の無いブランチで始めたときは見えず、取り込んだ後に `mcp__21st__search` などが見えるようになった（原因の切り分けはしていない）。
+   - 見えなければ: ①`.mcp.json` のヘッダー（`x-api-key: ${API_KEY_21ST}`）②環境変数の有無（値は出さない）③`curl` で `https://21st.dev/api/mcp` の到達性（前回は HTTP 405 ＝到達はできる）、の順で切り分ける。キー発行先は https://21st.dev/mcp。
+   - 見えても、コード取得（`get_component`）は**有料枠を消費する**。必要な1件に絞る。
+3. ユーザーに結果を報告してから、次の作業を確認する。
 
 ## 2. 現在の状態（要点）
-### 実装済み・push済み
+### main に入っているもの（PR #4）
 - **永続化（A-1）**: 口座と台帳を整合点で保存し、検証つきで復元（`--resume` / `--resume-if-exists` / `--clear-halt --operator --reason`）。HALT は再起動後も残る。
-- **運用基盤（A-3/A-4）**: 通知（Webhook/メール/履歴ファイル）、ランナー状態ファイル、外部ウォッチドッグ、読み取り専用の運用ダッシュボード（別プロセス）。手順は `docs/operations.md`。
-- **ダッシュボードの再設計**: 方向2＋3の併用。タブ＝今日／銘柄（`#all`）／詳細（`#full`）。
-  - 今日: 資産・状態の一文・「気にしてほしい銘柄」（損切り〜目標のゲージ行）・推移・直近にしたこと・今日の流れ。
-  - 銘柄: 全銘柄を**同じ大きさのウィンドウ**で並べる「盤」（緑＝利益、赤＝損失）と、ゲージ付きの「表」を切替。並べ替え・系統フィルタ。
-  - 銘柄を押すと詳細シート（なぜ持っているか・損切り・目標・保有の目安・やめる条件）。
-  - 表示は `textContent` のみ、外部読み込みなし、読み取り専用（`tests/unit/test_ops_dashboard.py` が機械的に確認）。
-  - 設計は `docs/DESIGN_SYSTEM.md`、比較検討は `docs/ui_directions/`。画面見本は `docs/ui_mockups/`。
-- **銘柄の会社名・系統・事業説明**: 手書きの表 `packages/common/symbol_profiles.py`（20銘柄、日本語名つき）→ 表にない銘柄は SEC の会社記録から英語名＋業種を**自動取得**（`services/market_data/edgar_company.py`、`--real-data` のときのみ）。自動取得は「事業内容の説明ではありません」と明記。AIによる翻訳・要約は費用が出るので入れていない。
-- **データの質**: 日足を SIP（全取引所合算）に変更（`QUANT_ALPACA_BARS_FEED`、既定 `sip`、拒否されたら IEX に自動で戻り注意書き）。取得範囲の終わりを前日にしている（当日を含むと無料プランは403）。**気配は無料プランでは IEX のみ**で、見かけのスプレッドが広く出る（JPM 6〜10%など）→ スプレッド上限は緩めていない。
-- `scripts/run_llm_paper_demo.py`: データ・安全状態・各観測者の初回出力を表示するようにした。
-- UI UX Pro Max スキル（`.claude/skills/ui-ux-pro-max/`）と `.mcp.json`（21st.dev）を `brave-carson` ブランチから取り込み済み。`CLAUDE.md` に §32 UI/UX ルールを追記。
+- **運用基盤**: 通知（Webhook/メール/履歴ファイル）、ランナー状態ファイル、外部ウォッチドッグ、読み取り専用の運用ダッシュボード（別プロセス）。手順は `docs/operations.md`。
+- **ダッシュボード**（`apps/web/ops.html`）: タブ＝今日／銘柄（`#all`）／詳細（`#full`）。銘柄の盤（同じ大きさのウィンドウ）と表の切替、ゲージ行、詳細シート。表示は `textContent` のみ・外部読み込みなし・読み取り専用（`tests/unit/test_ops_dashboard.py` が機械的に確認）。設計は `docs/DESIGN_SYSTEM.md`。
+- **銘柄の会社名・系統・事業説明**: `packages/common/symbol_profiles.py`（20銘柄）。表にない銘柄は `--real-data` のときだけ SEC から英語名＋業種を自動取得（`services/market_data/edgar_company.py`）。
+- **データの質**: 日足は SIP（`QUANT_ALPACA_BARS_FEED`、拒否されたら IEX に自動で戻る）。**気配は無料プランでは IEX のみ**で、見かけのスプレッドが広く出る（JPM 6〜10%）→ スプレッド上限は緩めていない。
+- UI UX Pro Max スキル（`.claude/skills/ui-ux-pro-max/`、外部由来・約6.9万行）、`.mcp.json`（21st.dev）、`CLAUDE.md` §32。
+
+### この回（2026-11-11）に追加して main に入ったもの
+- **詳細シートのフォーカス**: Tab がシートの外に出ないようにした（Esc で閉じて元の位置へ戻る）。`--muted`（未定義のトークン）を直し、使うトークンが全て定義済みであることをテストで確認。
+- **画面の磨き込み**: スマホの「今日の流れ」の切れ、状態文と所見の重複、観測者パネルの余白、約定表の桁。
+- **日本語表示**: サービスが英語で書く文（監視の所見・見送り理由・データ警告・日次レビュー・注記）を、表示側の純粋関数 `ja()` で日本語にする。**元の文（通知・CLI・テスト）は変えない**。ルールのない文、AI や例外が書いた自由文はそのまま表示（意味を推測しない）。新しい英語の文がバックエンドに増えたら、`ops.html` の `JA_RULES`（`<ja-translator>` ブロック）にルールを足す。テストは `node` でページ自身の翻訳器を動かす（`node` が無ければスキップ）。
+- **systemd の設定例の修正**（`docs/operations.md`）: 行末コメントのせいで `Restart=on-failure` と `RestartPreventExitStatus=2` が無視されていた（`StartLimitIntervalSec` も置き場所違い）。`systemd-analyze verify` が警告なしで通る。runner の SIGTERM 停止（終了コード0）・`--resume-if-exists` での再開・起動拒否（終了コード2）は実際に動かして確認済み。
+- **Paper→Live 基準の草案**（`docs/paper_live_gate.md`）: 判断項目ごとに推奨と理由を付けた。**運用者が確定したのは2項目だけ**: 許容ドローダウン＝資本の10%、現金口座・無レバレッジ。
+- **21st.dev の探索**: ゲージ・ヒートマップ（treemap）・シート系の部品を検索した。どれも React/Tailwind で、このダッシュボードの制約（1ファイル・外部読み込みなし・`textContent` のみ）に合わないため**コードは取り込んでいない**（既存の部品が `DESIGN_SYSTEM.md` を満たしている）。
+
+- **通知の不具合の修正**（`packages/common/alert_sinks.py`）: Discord への最初の実送信が HTTP 403（Cloudflare エラー 1010）で失敗した。原因は、Python 標準の識別名（`Python-urllib/x.y`）を Discord が拒否すること（ダミーの Webhook で再現: 既定の識別名は 403、独自の識別名は 404 Unknown Webhook）。`User-Agent: quant-alerts/1.0`（連絡先を含まない一般的な名前）を付けて修正、回帰テストあり。**ローカルの模擬サーバーでは見つからず、本物の宛先で初めて分かった**。**この修正は `claude/confident-planck-uiiidk` のみ（`5c3bd9a`）で、`main` にはまだ入っていない**（新しい PR が要る。指示があるまで作らない）。
+- **Windows 対応**: 運用者の PC は Windows（PowerShell）で、`git` は未導入、リポジトリは ZIP で展開した。**CI に Windows（Python 3.12）を追加**し、Windows 固有の不具合を2件直した: ①`tzdata` が無く `ZoneInfo("America/New_York")` が import で失敗（pyproject に Windows 限定の依存を追加）②UTF-8 のファイルを既定の cp1252 で読み書きして失敗（本体18か所に `encoding="utf-8"`。ダッシュボードの配信・緊急停止・状態ファイル・障害ログ・人の意図の受付箱・通知の履歴が対象）。AST のテストで、文字コードなしのファイル入出力を今後は拒否する。両 OS の CI が通る。**runner の Windows での Ctrl+C 停止・自動起動・長時間稼働は未確認**（`docs/operations.md` の「Windows で動かす場合」）。Linux の常時稼働機が向く。
 
 ### 実LLM実行（月曜 2026-11-09、1回のみ）
-- 結果: スキャン20 → 候補4 → Decision 1（PFE を BUY）→ Skeptic が拒否 → **発注なし**。費用 $0.133（上限 $1.00）。
-- スプレッド除外: AAPL 1.15% / CVX 1.04% / JPM 6.73%（IEX 気配の見かけの広がりの可能性）。
-- Skeptic はニュース・13G・決算カレンダー・時刻を踏まえて拒否。決算日の扱いは課題として残る。
-- 1日分では優劣・利益の根拠にならない。旧予約 `trig_0111…` は無効化済み。残っている予約はない。
+- スキャン20 → 候補4 → Decision 1（PFE を BUY）→ Skeptic が拒否 → **発注なし**。費用 $0.133（上限 $1.00）。
+- スプレッド除外: AAPL 1.15% / CVX 1.04% / JPM 6.73%（IEX 気配の見かけの広がりの可能性）。決算日の扱いは課題として残る。1日分では優劣・利益の根拠にならない。残っている予約はない。
 
 ## 3. 未決・待ち（ユーザーの判断／外部）
 | 項目 | 状態 |
 |---|---|
 | Alpaca サポートの返答 | 待ち（口座の適格性・現金口座）。返答後に本物のブローカー・アダプタ（既定は dry-run）へ |
+| 証券会社の選定 | 未承認。推奨は Alpaca（返答が否なら仕様の IBKR に戻る）。実接続の実装前に決める |
+| Paper→Live 基準の残り | 期間・約定件数（推奨: 60営業日・30件以上）、資本ランプ（0.05→0.10→0.25→0.50→1.00、各20営業日）が**未承認**。`docs/paper_live_gate.md` は草案のまま |
+| ~~許容ドローダウン／口座の前提~~ | **確定（2026-11-11）**: 資本の10%、現金口座・無レバレッジ（Alpaca での適格性は返答待ち） |
 | 有料のデータプラン | 未判断（最新の SIP 気配が取れる＝スプレッド判定が正確になる）。費用の判断 |
-| Paper→Live の基準数値 | `docs/paper_live_gate.md` は**草案** |
-| 現金口座の前提 | 未確認 |
-| 通知の宛先 | 未指定 |
-| 資本セル B/C（サイジング・配分に効く） | 未承認（A は観測のみで稼働中） |
+| ~~通知の宛先~~ | **確定・実送信確認済み（2026-11-11）**: Discord の Webhook。運用者の Windows PC から送信し、チャンネルに届いた。残り: ①テスト中に Webhook の URL をチャンネルへ投稿してしまったため、**Webhook の作り直しを推奨**（URL が変わる。環境変数を入れ直す）②通知専用のチャンネルを分ける（今は `一般`）③外部の死活監視（`QUANT_WATCHDOG_PING_URL`）は未設定 |
+| 実機の systemd での起動・自動再起動 | 未確認（書式検証と runner 単体の動作確認までは済み）。実機が要る |
+| 資本セル B/C（サイジング・配分に効く） | 未承認（A は観測のみで稼働中）。`docs/capital_cell_architecture.md` |
 | Audit の drift しきい値 / CalibrationTracker のフィードバック（サイジングに効く） | 未判断 |
 | LLM の1日あたり予算（A-2） | 未判断（上限は現在プロセス単位） |
-| PR #4 の本文更新・マージ | 指示待ち。差分が大きい（スキルのデータ約5万行を含む。レビューでは `.claude/skills/ui-ux-pro-max/` を外部由来として除外して見る） |
 
 ## 4. 既知の限界（報告を続けること）
-- 実LLMの効果は1日分しか見ていない（検証不足）。通知の到達はローカルサーバーでしか試していない。systemd ユニットは未検証。
-- 観測者の累積統計は再開すると初期化される。永続化は PaperBroker のみ。
+- 実LLMの効果は1日分しか見ていない（検証不足）。通知は **Discord への実送信は確認済み**（Slack・Teams・メールは未確認）。外部の死活監視への ping は、4つのサービス（healthchecks.io・Dead Man's Snitch・Cronitor・Better Stack）にダミーのトークンで試し、識別名の有無で応答が変わらないことを確認した（Discord のような識別名の拒否は無い）。実際の監視の登録と、相手先を選んだ後の実送信は未確認。
+- 観測者の累積統計は再開すると初期化される。永続化は PaperBroker のみ。実ブローカー用の復元（照合）は未実装。
 - ダッシュボードの値は**直近セッション時点**でリアルタイムではない。
-- 変換表（業種→日本語の系統）は主要な約100コード。足りないものは大分類か英語になる。
+- 日本語表示は既知の文型のみ。識別子（`STOPPED`・`NORMAL`・`BUY`・日次レビューの評価項目名）と AI の自由文は英語のまま。変換表（業種→日本語の系統）は主要な約100コードで、足りないものは大分類か英語になる。
+- スマホの盤で長い会社名は2行で切れる（詳細シートで全文が読める）。
 - 取引カレンダーは 2025〜2028 のみ（2029 以降は失敗側＝停止）。
-- 意図せず1回起動した実LLMの費用は未確認（数セント程度の見込み）。
+- 画面の見た目の確認は**模擬データ**で行った。実データ状態での見た目は未確認。
 
-## 5. よく使うコマンド
+## 5. 次にできること（運用者の判断が要らないもの）
+- 識別子ラベル（リスク状態・runner の状態・評価項目名）の日本語化（表示側のみ、`JA_RULES` と同様に）。
+- 実データ状態（`--real-data` を使った状態ディレクトリ）でのダッシュボードの見た目確認。※実LLMは使わない。モック AI で十分。
+- 取引カレンダーの 2029 以降（公式発表が出てから）。
+- 上記以外（§3）は、運用者の判断を待つ。
+
+## 6. よく使うコマンド
 ```bash
-/usr/bin/python3 -m pytest -q                               # 全テスト（約15秒）
-/usr/bin/python3 scripts/run_paper_runner.py --show-schedule  # 次のセッション予定
+pip install -e '.[dev,api]'                                  # 環境に pytest が無いとき
+python -m pytest -q                                          # 全テスト（約15秒）
+python scripts/run_paper_runner.py --show-schedule           # 次のセッション予定
 env -u MY_ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY HOME=/nonexistent \
-  /usr/bin/python3 scripts/run_llm_paper_demo.py --days 1   # モックAIでの確認（LLM費用ゼロ）
+  python scripts/run_llm_paper_demo.py --days 1              # モックAIでの確認（LLM費用ゼロ）
 # 実LLM: ユーザーが明示したときだけ（--real-data、市場が開いている時間 = 日本時間 23:30〜06:00）
+systemd-analyze verify ./quant-runner.service ./quant-watchdog.service   # 設定例の書式検証
 ```
-ダッシュボードの見た目確認は、Playwright（導入済み）でスクリーンショットを撮る。実データ状態で見たいときは `scripts/run_ops_dashboard.py --state-dir <dir>`。
+ダッシュボードの見た目確認は、Playwright（導入済み）でスクリーンショットを撮る。状態ディレクトリは `scripts/run_ops_dashboard.py --state-dir <dir> --port 8765` で読む。模擬データの状態ディレクトリは、`tests/unit/test_ops_dashboard.py` の `state` fixture と同じ手順（`build_pipeline` → `SessionRunner.run_forever`）で作れる。
 
-## 6. 主なファイル
-- 画面: `apps/web/ops.html`、API: `apps/api/ops.py`、状態: `services/supervisor/ops_state.py`（`holdings()`、注目順位 `attention_of()`）
+## 7. 主なファイル
+- 画面: `apps/web/ops.html`（日本語表示は `<ja-translator>` ブロック）、API: `apps/api/ops.py`、状態: `services/supervisor/ops_state.py`（`holdings()`、注目順位 `attention_of()`）
 - 保有の記録: `services/supervisor/session_record.py`（`holdings_view`、自動プロフィール）
 - 会社情報: `packages/common/symbol_profiles.py`、`services/market_data/edgar_company.py`、`edgar_client.py`（`company_info`）
 - データ: `services/market_data/alpaca_provider.py`
 - 永続化: `services/checkpoint.py`、`packages/common/durable_store.py`
-- 規約: `CLAUDE.md`、設計: `docs/DESIGN_SYSTEM.md`、運用: `docs/operations.md`、安全: `docs/invariants.md` / `docs/SAFETY_AUDIT.md`
+- 規約: `CLAUDE.md`、設計: `docs/DESIGN_SYSTEM.md`、運用: `docs/operations.md`、安全: `docs/invariants.md` / `docs/SAFETY_AUDIT.md`、LIVE の基準: `docs/paper_live_gate.md`（草案）

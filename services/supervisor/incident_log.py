@@ -32,7 +32,7 @@ class IncidentLog:
     # -- writing ---------------------------------------------------------------
     def _append(self, event: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a") as f:
+        with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, default=str) + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -56,7 +56,7 @@ class IncidentLog:
     # -- reading ---------------------------------------------------------------
     def _events(self) -> list[dict[str, Any]]:
         try:
-            lines = self.path.read_text().splitlines()
+            lines = self.path.read_text(encoding="utf-8").splitlines()
         except FileNotFoundError:
             return []
         out = []

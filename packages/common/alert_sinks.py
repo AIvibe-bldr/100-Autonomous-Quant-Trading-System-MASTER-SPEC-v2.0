@@ -46,6 +46,9 @@ class AlertDeliveryError(RuntimeError):
     """An alert could not be delivered. Never carries a URL or a credential."""
 
 
+_USER_AGENT = "quant-alerts/1.0"
+
+
 def _clip(text: str) -> str:
     return text if len(text) <= _MAX_MESSAGE else text[:_MAX_MESSAGE - 1] + "…"
 
@@ -83,7 +86,10 @@ class WebhookAlertSink:
         text = _clip(f"{self._prefix}[{severity.value}] {message}".strip())
         body = json.dumps({"text": text, "content": text, "severity": severity.value, "message": _clip(message),
                            "at": datetime.now(timezone.utc).isoformat()}).encode()
-        req = urllib.request.Request(self._url, data=body, headers={"Content-Type": "application/json"})
+        # Discord (behind Cloudflare) answers 403 / error 1010 to urllib's default "Python-urllib/x.y" agent, so a
+        # generic client name is sent. It carries no contact details (SEC EDGAR is the one place that needs those).
+        req = urllib.request.Request(self._url, data=body,
+                                     headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 resp.read(256)
@@ -137,14 +143,14 @@ class FileAlertSink:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps({"at": datetime.now(timezone.utc).isoformat(), "severity": severity.value,
                            "message": _clip(message)})
-        with self.path.open("a") as f:
+        with self.path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
 
 def read_alert_history(path: Path | str, limit: int = 50) -> list[dict]:
     """The newest `limit` alerts, newest first. A missing file is an empty history; bad lines are skipped."""
     try:
-        lines = Path(path).read_text().splitlines()
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return []
     out = []

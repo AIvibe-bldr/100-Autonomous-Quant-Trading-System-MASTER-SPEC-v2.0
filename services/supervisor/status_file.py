@@ -40,7 +40,7 @@ def write_status(path: Path | str, status: RunnerStatus) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(asdict(status)))
+    tmp.write_text(json.dumps(asdict(status)), encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -52,7 +52,7 @@ def read_status(path: Path | str) -> Optional[RunnerStatus]:
     """None if the runner has never written one. A file that exists but cannot be understood raises
     (it must not read as 'no runner')."""
     try:
-        raw = Path(path).read_text()
+        raw = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except OSError as e:

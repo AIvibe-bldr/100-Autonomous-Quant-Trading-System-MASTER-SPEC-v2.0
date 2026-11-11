@@ -50,7 +50,7 @@ def create_ops_app(ops: OpsState, token: Optional[str] = None,
 
     @app.get("/", response_class=HTMLResponse, dependencies=[Depends(authorize)])
     def page() -> str:
-        return OPS_HTML.read_text()
+        return OPS_HTML.read_text(encoding="utf-8")
 
     @app.get("/api/status", dependencies=[Depends(authorize)])
     def status() -> dict[str, Any]:

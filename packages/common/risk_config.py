@@ -80,7 +80,7 @@ class RiskConfig:
 
     @classmethod
     def load(cls, path: Path) -> "RiskConfig":
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         return cls(**data)
 
 
