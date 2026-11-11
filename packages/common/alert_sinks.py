@@ -143,14 +143,14 @@ class FileAlertSink:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps({"at": datetime.now(timezone.utc).isoformat(), "severity": severity.value,
                            "message": _clip(message)})
-        with self.path.open("a") as f:
+        with self.path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
 
 def read_alert_history(path: Path | str, limit: int = 50) -> list[dict]:
     """The newest `limit` alerts, newest first. A missing file is an empty history; bad lines are skipped."""
     try:
-        lines = Path(path).read_text().splitlines()
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return []
     out = []

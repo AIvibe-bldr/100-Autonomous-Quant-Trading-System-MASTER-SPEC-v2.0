@@ -204,7 +204,7 @@ def test_cli_ok_then_a_dead_runner_is_critical_alerted_once_and_recorded(tmp_pat
     out = capsys.readouterr().out
     assert "heartbeat_stale" in out and "CRITICAL" in out
     assert cli.check_once(tmp_path, True, True, now=dead + timedelta(minutes=1)) == 2     # still critical ...
-    history = [json.loads(l) for l in (tmp_path / "alerts.jsonl").read_text().splitlines()]
+    history = [json.loads(l) for l in (tmp_path / "alerts.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [h["severity"] for h in history].count("CRITICAL") == 1                        # ... but alerted once
     assert "heartbeat_stale" in history[0]["message"]
 

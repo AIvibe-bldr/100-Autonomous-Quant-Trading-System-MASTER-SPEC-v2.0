@@ -138,7 +138,7 @@ def alert_on_change(findings: list[Finding], state_path: Path, sink: AlertSink, 
     """Alert for new/escalated findings and send recovery notes; returns what was sent (for logs/tests)."""
     prev: dict[str, dict] = {}
     try:
-        prev = json.loads(state_path.read_text())
+        prev = json.loads(state_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         pass
     now = ensure_utc(now)
@@ -161,7 +161,7 @@ def alert_on_change(findings: list[Finding], state_path: Path, sink: AlertSink, 
         notify(sink, AlertSeverity.WARNING, f"watchdog: recovered — {code}")
         sent.append(f"recovered:{code}")
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(keep))
+    state_path.write_text(json.dumps(keep), encoding="utf-8")
     return sent
 
 

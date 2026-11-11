@@ -52,7 +52,7 @@ class KillSwitch:
 
     def status(self) -> KillSwitchStatus:
         try:
-            raw = self.path.read_text()
+            raw = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return KillSwitchStatus(engaged=False)
         except OSError as e:

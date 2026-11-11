@@ -160,7 +160,7 @@ def test_history_file_records_everything_and_reads_back_newest_first(tmp_path):
     for i in range(5):
         f.send(AlertSeverity.WARNING, f"m{i}")
     assert [a["message"] for a in read_alert_history(f.path, limit=3)] == ["m4", "m3", "m2"]
-    f.path.write_text(f.path.read_text() + "{garbage\n")
+    f.path.write_text(f.path.read_text(encoding="utf-8") + "{garbage\n")
     assert read_alert_history(f.path)[0]["message"] == "m4"                     # a bad line is skipped
     assert read_alert_history(tmp_path / "none.jsonl") == []
 

@@ -104,7 +104,7 @@ def test_order_value_within_settled_cash(pipeline):
 def test_ai_cannot_reach_broker_imports():
     decision_dir = REPO / "services" / "decision"
     for py in decision_dir.rglob("*.py"):
-        tree = ast.parse(py.read_text())
+        tree = ast.parse(py.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             names = []
             if isinstance(node, ast.Import):

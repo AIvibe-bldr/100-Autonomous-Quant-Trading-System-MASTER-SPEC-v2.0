@@ -41,7 +41,7 @@ def test_every_change_is_appended_to_an_audit_log(tmp_path):
     ks = KillSwitch(tmp_path / "ks.json")
     ks.engage(operator="alice", reason="r1", at=AT)
     ks.clear(operator="bob", reason="r2", at=AT)
-    lines = [json.loads(l) for l in ks.log_path.read_text().splitlines()]
+    lines = [json.loads(l) for l in ks.log_path.read_text(encoding="utf-8").splitlines()]
     assert [(l["action"], l["operator"]) for l in lines] == [("engage", "alice"), ("clear", "bob")]
 
 

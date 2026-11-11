@@ -77,7 +77,7 @@ def test_revoke_closes_and_every_change_is_logged(tmp_path):
     _approve(g)
     g.revoke("bob", "incident", T0)
     assert not g.status(T0).is_open and "revoked" in g.status(T0).detail
-    log = [json.loads(l) for l in g.path.with_name(g.path.name + ".log").read_text().splitlines()]
+    log = [json.loads(l) for l in g.path.with_name(g.path.name + ".log").read_text(encoding="utf-8").splitlines()]
     assert [(e["action"], e["operator"]) for e in log] == [("approve", "alice"), ("revoke", "bob")]
 
 

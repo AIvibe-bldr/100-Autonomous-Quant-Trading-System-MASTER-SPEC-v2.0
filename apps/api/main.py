@@ -71,7 +71,7 @@ def create_app(pipeline: TradingPipeline,
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
         """Self-contained dashboard UI (§86-97). Read-only like every route."""
-        return DASHBOARD_HTML.read_text()
+        return DASHBOARD_HTML.read_text(encoding="utf-8")
 
     @app.get("/kill-switch")
     def kill_switch_status() -> dict[str, Any]:

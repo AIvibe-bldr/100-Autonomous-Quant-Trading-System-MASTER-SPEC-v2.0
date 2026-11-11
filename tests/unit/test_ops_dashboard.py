@@ -248,7 +248,7 @@ def test_token_protects_every_route_and_accepts_bearer_or_query(state, tmp_path)
 # ---- the page and the script ----
 
 def test_the_page_never_puts_data_into_html():
-    html = OPS_HTML.read_text()
+    html = OPS_HTML.read_text(encoding="utf-8")
     for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
         assert banned not in html, banned
     assert len(re.findall(r"<script", html)) == 1 and "http://" not in html and "https://" not in html   # no external loads
@@ -267,10 +267,10 @@ def test_the_script_refuses_a_public_bind_without_a_token_and_a_missing_director
 
 def test_the_runbook_only_names_scripts_and_variables_that_exist():
     root = Path(__file__).resolve().parents[2]
-    doc = (root / "docs" / "operations.md").read_text()
+    doc = (root / "docs" / "operations.md").read_text(encoding="utf-8")
     for name in set(re.findall(r"scripts/([a-z_]+\.py)", doc)):
         assert (root / "scripts" / name).exists(), name
-    sources = "\n".join(p.read_text() for d in ("packages", "services", "scripts", "apps")
+    sources = "\n".join(p.read_text(encoding="utf-8") for d in ("packages", "services", "scripts", "apps")
                         for p in (root / d).rglob("*.py"))
     for var in set(re.findall(r"`(QUANT_[A-Z_]+)`", doc)):
         assert var in sources, var                      # every variable the runbook names is read by some code
@@ -291,7 +291,7 @@ def test_a_ticker_without_a_profile_is_shown_by_its_symbol_alone():
 
 def test_every_design_token_the_page_reads_is_defined():
     """A misspelled token (e.g. --muted for --mute) silently resolves to nothing; docs/DESIGN_SYSTEM.md §2 is the list."""
-    html = OPS_HTML.read_text()
+    html = OPS_HTML.read_text(encoding="utf-8")
     defined = set(re.findall(r"(--[a-z]+)\s*:", html.split("</style>")[0]))
     used = set(re.findall(r"var\((--[a-z]+)", html)) | set(re.findall(r'getPropertyValue\("(--[a-z]+)"\)', html))
     assert used and used <= defined, f"undefined tokens: {sorted(used - defined)}"
@@ -305,10 +305,10 @@ def _ja(samples: list[str]) -> list[str]:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
-    html = OPS_HTML.read_text()
+    html = OPS_HTML.read_text(encoding="utf-8")
     block = html.split("// <ja-translator>")[1].split("// </ja-translator>")[0]
     out = subprocess.run([node, "-e", block + f"; console.log(JSON.stringify({json.dumps(samples)}.map(ja)))"],
-                         capture_output=True, text=True, check=True, timeout=30)
+                         capture_output=True, text=True, encoding="utf-8", check=True, timeout=30)
     return json.loads(out.stdout)
 
 
