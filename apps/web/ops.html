@@ -102,7 +102,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; } th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
   th { color: var(--mute); font-weight: 500; font-size: 12px; } th:first-child, td:first-child, td.l, th.l { text-align: left; }
   .scroll { overflow-x: auto; } .scroll table { min-width: 520px; }
-  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; } .cols section { margin-bottom: 0; min-width: 0; } .cols .scroll table { min-width: 0; } .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; } .cols { align-items: start; } .cols section { margin-bottom: 0; min-width: 0; } .cols .scroll table { min-width: 0; } .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
   .banner { padding: 8px 12px; margin-bottom: 10px; font-size: 13px; border-left: 4px solid; } .banner.WARNING { background: #fff7df; border-color: var(--acc); } .banner.CRITICAL { background: #fdecea; border-color: var(--dn); } .banner.info { background: var(--panel); border-color: var(--ink); }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--mute); }
   #error { display: none; margin: 10px 24px 0; } footer { color: var(--mute); font-size: 12px; padding: 0 24px; max-width: 1180px; margin: 0 auto; }
@@ -111,7 +111,7 @@
     .top { padding: 10px 16px; } nav.tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; background: var(--ink); gap: 0; }
     nav.tabs a { flex: 1; justify-content: center; color: #cfd6d0; border-bottom: 0; border-top: 3px solid transparent; } nav.tabs a[aria-current="page"] { color: #fff; border-top-color: var(--acc); }
     .wrap { grid-template-columns: minmax(0,1fr); } .rail { order: 2; border-right: 0; border-top: 1px solid var(--line); padding: 14px 16px 0; margin-top: 8px; }
-    .tl { display: flex; gap: 18px; overflow-x: auto; border-left: 0; border-top: 2px solid var(--ink); padding: 12px 0 6px; margin-bottom: 8px; } .tl li { flex: 0 0 auto; padding: 0; } .tl li::before { display: none; }
+    .tl { display: flex; flex-wrap: wrap; gap: 6px 22px; border-left: 0; border-top: 2px solid var(--ink); padding: 12px 0 6px; margin-bottom: 8px; } .tl li { flex: 0 0 auto; padding: 0; } .tl li::before { display: none; }
     main { padding: 16px; } .tiles .tile:first-child .v { font-size: 32px; } #error { margin: 10px 16px 0; } footer { padding: 0 16px; }
     .rows .hd { display: none; } .r { grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; } .r .g { grid-column: 1 / -1; order: 3; }
     .board { grid-template-columns: repeat(2, minmax(0,1fr)); } .box-pct { font-size: 24px; }
@@ -239,7 +239,7 @@ function renderStatus(s) {
   document.getElementById("lamp").className = "lamp " + h.level; document.getElementById("lampText").textContent = h.word;
   setChildren("hero", el("div", { class: "hero " + h.level }, el("div", { class: "w", text: h.word }),
     el("h2", { text: h.head }), h.text ? el("p", { text: h.text }) : null));
-  const notes = s.findings.filter((f) => f.level !== "OK");
+  const notes = s.findings.filter((f) => f.level !== "OK" && f.message !== h.text);
   setChildren("findings", notes.length ? el("div", { class: "alerts" + (s.overall === "CRITICAL" ? " bad" : "") },
     el("b", { text: "確認してほしいこと" }), el("ul", {}, notes.map((f) => el("li", { text: f.message })))) : null);
   const age = r ? Math.max(0, Math.round((new Date(s.now) - new Date(r.updated_at)) / 1000)) : null;
@@ -469,7 +469,7 @@ function renderObservers(o) {
     el("ul", { class: "plain" }, (o.no_trade_reasons || []).slice(0, 10).map((x) => el("li", { text: x }))),
     (o.data_warnings || []).length ? [el("h3", { text: "データ警告" }), el("ul", { class: "plain" }, o.data_warnings.map((x) => el("li", { class: "warn", text: x })))] : null,
     el("h3", { text: "約定" }),
-    (o.fills || []).length ? table(["銘柄", "売買", "数量", "価格"], o.fills.map((f) => [f.symbol, f.side, f.qty, f.price])) : el("div", { class: "muted", text: "なし" }),
+    (o.fills || []).length ? table(["銘柄", "売買", "数量", "価格"], o.fills.map((f) => [f.symbol, f.side, qtyText(f.qty), money(f.price)])) : el("div", { class: "muted", text: "なし" }),
     Object.keys(o.disagreement_multipliers || {}).length ? [el("h3", { text: "モデル不一致によるサイズ係数（1.0=縮小なし）" }),
       table(["銘柄", "係数"], Object.entries(o.disagreement_multipliers).map(([k, v]) => [k, { t: v.toFixed(3), c: v < 0.9 ? "warn" : "" }]))] : null,
   ] : el("div", { class: "muted", text: "まだありません" }));
