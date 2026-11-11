@@ -295,3 +295,47 @@ def test_every_design_token_the_page_reads_is_defined():
     defined = set(re.findall(r"(--[a-z]+)\s*:", html.split("</style>")[0]))
     used = set(re.findall(r"var\((--[a-z]+)", html)) | set(re.findall(r'getPropertyValue\("(--[a-z]+)"\)', html))
     assert used and used <= defined, f"undefined tokens: {sorted(used - defined)}"
+
+
+def _ja(samples: list[str]) -> list[str]:
+    """Run the page's own display translator (the block between the ja-translator markers) under node."""
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    html = OPS_HTML.read_text()
+    block = html.split("// <ja-translator>")[1].split("// </ja-translator>")[0]
+    out = subprocess.run([node, "-e", block + f"; console.log(JSON.stringify({json.dumps(samples)}.map(ja)))"],
+                         capture_output=True, text=True, check=True, timeout=30)
+    return json.loads(out.stdout)
+
+
+def test_english_sentences_from_our_services_are_shown_in_japanese():
+    english = [
+        "the runner was stopped on request",
+        "no heartbeat for 12 min (state RUNNING, limit 10 min)",
+        "risk state is HALT_NEW_ENTRIES",
+        "PLTR: sizing rejected — PLTR: size rounds to zero (caps/liquidity/cash too tight)",
+        "JPM: quote spread 6.73% exceeds cap 1.00% — no Decision call",
+        "AAPL: skeptic veto — earnings tomorrow",
+        "scanner produced no candidates",
+        "2.0x ATR(42.2986) below entry",
+        "WHY PROFIT: +10.28 — 2 fills; mark-to-market gains held.",
+        "WHY NO TRADE: PLTR: sizing rejected — PLTR: size rounds to zero (caps/liquidity/cash too tight)",
+        "shadow variants are hypothetical close-to-close holds without costs; FULL pays spreads, slippage and fees (not like-for-like)",
+        "3 news item(s) quarantined as directive-like text (§19)",
+        "REFERENCE: theoretical 100x pace equity 721.23 vs actual 672.81 (informational only — never raises risk §63)",
+    ]
+    for src, dst in zip(english, _ja(english)):
+        assert dst != src, src
+    got = dict(zip(english, _ja(english)))
+    assert got["PLTR: sizing rejected — PLTR: size rounds to zero (caps/liquidity/cash too tight)"].startswith("PLTR: 数量が決まらず見送り — 買える数が 0 株")
+    assert "6.73%" in got["JPM: quote spread 6.73% exceeds cap 1.00% — no Decision call"]       # the numbers survive
+    assert got["AAPL: skeptic veto — earnings tomorrow"].endswith("earnings tomorrow")           # AI free text is kept as written
+
+
+def test_text_without_a_rule_is_shown_exactly_as_written():
+    unknown = ["completely new sentence", "NVDA: something unforeseen", "", "ランナーは正常です"]
+    assert _ja(unknown) == unknown
