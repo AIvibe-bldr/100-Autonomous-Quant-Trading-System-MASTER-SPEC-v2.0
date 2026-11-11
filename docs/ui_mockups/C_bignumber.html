@@ -1,0 +1,34 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>案C ビッグナンバー型</title>
+<style>
+:root{--ink:#0b0b0c;--mute:#8e8e93;--line:#ececee;--ok:#30a46c;--warn:#f5a524;--bad:#e5484d;--blue:#0a84ff}
+*{box-sizing:border-box;margin:0}body{background:#fff;color:var(--ink);font:16px/1.6 -apple-system,"SF Pro Display","Hiragino Sans",system-ui,sans-serif;padding:18px 18px 60px}
+.wrap{max-width:720px;margin:0 auto}.bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:34px}
+.pill{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--mute)}.dot{width:10px;height:10px;border-radius:50%;background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+.hero{text-align:center}.hero .k{color:var(--mute);font-size:14px}.hero .n{font-size:68px;font-weight:700;letter-spacing:-.04em;line-height:1.1;font-variant-numeric:tabular-nums}
+.hero .d{font-size:18px;margin-top:2px}.up{color:var(--ok)}.down{color:var(--bad)}.spark{margin:22px -8px 8px}
+.range{display:flex;justify-content:space-between;color:var(--mute);font-size:12px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:28px 0}
+.stats div{padding:14px 6px;text-align:center;border-right:1px solid var(--line)}.stats div:last-child{border:0}.stats b{display:block;font-size:21px;letter-spacing:-.02em}.stats span{color:var(--mute);font-size:12px}
+.tabs{display:flex;gap:22px;border-bottom:1px solid var(--line);margin-bottom:16px}.tabs button{background:none;border:0;padding:8px 0;font:inherit;color:var(--mute);cursor:pointer;border-bottom:2px solid transparent}.tabs button.on{color:var(--ink);border-color:var(--ink);font-weight:600}
+.row{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line)}.row .s{color:var(--mute);font-size:13px}.row .r{text-align:right}
+.banner{background:#fff4e5;border-radius:12px;padding:12px 16px;margin-bottom:18px;font-size:14px}.banner.bad{background:#ffe9ea}
+.mock-switch{font-size:12px;color:var(--mute);margin-bottom:10px}.mock-switch a{margin:0 6px;color:var(--blue)}.mock-switch a.on{font-weight:700;color:var(--ink)}
+@media(max-width:520px){.hero .n{font-size:50px}.stats{grid-template-columns:1fr 1fr}.stats div:nth-child(2){border-right:0}.stats div:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+</style></head><body><div class="wrap"><div id="sw"></div>
+<div class="bar"><span style="font-weight:600">運用</span><span class="pill"><i class="dot" id="dot"></i><span id="st"></span></span></div>
+<div id="banner"></div>
+<div class="hero"><div class="k">いまの資産</div><div class="n">$672.85</div><div class="d up">+$2.85（+0.42%）<span style="color:var(--mute)"> はじめから</span></div></div>
+<div class="spark" id="spark"></div><div class="range"><span id="a"></span><span id="b"></span></div>
+<div class="stats"><div><b>1.12%</b><span>最大の落ち込み</span></div><div><b>9勝8敗</b><span>プラスの日／マイナスの日</span></div><div><b>18/60</b><span>検証日数</span></div><div><b>$0.06</b><span>手数料の合計</span></div></div>
+<div class="tabs" id="tabs"></div><div id="panel"></div></div>
+<script src="common.js"></script><script>
+$("sw").innerHTML=stateSwitcher();$("dot").className="dot "+(S.level==="ok"?"":S.level);$("st").textContent=S.word+" · "+S.runner;
+$("banner").innerHTML=S.alerts.length?`<div class="banner ${S.level==="bad"?"bad":""}">${S.alerts.join("<br>")}</div>`:"";
+const d=$("spark");d.innerHTML=chart(EQUITY,{h:120,stroke:"#0b0b0c",fill:"rgba(11,11,12,.04)"});$("a").textContent=DAYS[0];$("b").textContent=DAYS[DAYS.length-1];
+const rows=(a)=>a.map(r=>`<div class="row"><div><div>${r[0]}</div><div class="s">${r[1]}</div></div><div class="r">${r[2]}</div></div>`).join("");
+const TABS={概要:()=>rows([["昨日（8/14）","2件買い · 見送り8件",`<b class="up">+$10.33</b>`],["8/13","3件買い",`<b class="down">−$5.95</b>`],["8/12","5件買い",`<b class="down">−$1.37</b>`],["次の取引","11/10（火）23:45","待機中"]]),
+ 取引:()=>rows([["TSLA 買い","8/14 · 9.68株 @ $3.48","$33.7"],["PANW 買い","8/14 · 0.029株 @ $1,030.71","$30.0"],["保護ストップ","全保有に設置済み","7本"]]),
+ AI:()=>rows([["予測の答え合わせ","記録38件。結果が出るのは1週間後から","—"],["AIなしと比べて","機械的な買いより −1.07%（まだ少数日）","参考"],["見解が割れた銘柄","6銘柄で購入量を縮小","−13〜24%"]]),
+ 安全:()=>rows([["安全装置",S.safety,S.level==="ok"?"✓":"!"],["緊急停止スイッチ","解除中","✓"],["未解決の障害",S.level==="bad"?"INC-0001":"なし",S.level==="bad"?"!":"✓"],["最後の口座の保存","8/14 23:46 JST","✓"]])};
+let cur="概要";function draw(){$("tabs").innerHTML=Object.keys(TABS).map(k=>`<button class="${k===cur?"on":""}" data-k="${k}">${k}</button>`).join("");$("panel").innerHTML=TABS[cur]();document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{cur=b.dataset.k;draw()})}draw();
+</script></body></html>

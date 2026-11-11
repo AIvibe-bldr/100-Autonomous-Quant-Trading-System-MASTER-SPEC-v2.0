@@ -72,6 +72,46 @@ class Ledger:
         self.high_water_mark = initial_cash
         self.deposit(initial_cash, note="initial funding")
 
+    # -- persistence ------------------------------------------------------------
+    def export_state(self) -> dict:
+        """Everything needed to rebuild this ledger exactly, as JSON-safe data: the append-only entry log,
+        the open positions (with their average cost) and the high-water mark."""
+        return {
+            "currency": self.currency, "initial_cash": self.initial_cash,
+            "high_water_mark": self.high_water_mark,
+            "positions": {s: {"qty": l.qty, "avg_cost": l.avg_cost} for s, l in self._positions.items()},
+            "entries": [{"at": e.at.isoformat(), "kind": e.kind.value, "amount": e.amount, "symbol": e.symbol,
+                         "qty": e.qty, "price": e.price, "realized_pnl": e.realized_pnl, "note": e.note,
+                         "entry_id": e.entry_id} for e in self.entries]}
+
+    def restore_state(self, state: dict) -> None:
+        """Replace this ledger's content with an exported state — after CHECKING it. Cash, fees and realized
+        P&L are re-derived from the entries (never trusted from the file), and each position's quantity must
+        equal the sum of its entries' quantities; otherwise the state is corrupt and nothing is changed."""
+        entries = [LedgerEntry(at=ensure_utc(datetime.fromisoformat(e["at"])), kind=EntryKind(e["kind"]),
+                               amount=e["amount"], symbol=e["symbol"], qty=e["qty"], price=e["price"],
+                               realized_pnl=e["realized_pnl"], note=e["note"], entry_id=e["entry_id"])
+                   for e in state["entries"]]
+        cash = fees = realized = 0.0
+        held: dict[str, float] = {}
+        for e in entries:
+            cash += e.amount
+            fees += -e.amount if e.kind is EntryKind.FEE else 0.0
+            realized += e.realized_pnl
+            if e.symbol and e.qty:
+                held[e.symbol] = held.get(e.symbol, 0.0) + e.qty
+            if cash < -1e-9:
+                raise ValueError("corrupt ledger state: cash goes negative while replaying the entries")
+        positions = {s: PositionLot(symbol=s, qty=p["qty"], avg_cost=p["avg_cost"])
+                     for s, p in state["positions"].items()}
+        for sym in set(held) | set(positions):
+            if abs(held.get(sym, 0.0) - (positions[sym].qty if sym in positions else 0.0)) > 1e-6:
+                raise ValueError(f"corrupt ledger state: {sym} position does not match its entries")
+        self.currency, self.initial_cash = state["currency"], state["initial_cash"]
+        self.high_water_mark = state["high_water_mark"]
+        self.entries, self._cash, self._fees_paid, self._realized_pnl = entries, cash, fees, realized
+        self._positions = positions
+
     # -- mutations (append-only) -------------------------------------------
     def _append(self, entry: LedgerEntry) -> None:
         """Validate BEFORE mutating.

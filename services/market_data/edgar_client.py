@@ -1,0 +1,247 @@
+"""SEC EDGAR client (MASTER SPEC §18, tier 1 = primary source). Data only.
+
+SEC needs no API key but requires every request to identify the caller with a
+`User-Agent` of the form "<app name> <contact email>" and caps traffic at 10
+requests/second. So:
+
+- the identity comes from `QUANT_SEC_USER_AGENT` (set by the operator) — it is
+  never hard-coded, defaulted or invented; unset or malformed → EDGAR is simply
+  unavailable (fail closed, callers carry on without it);
+- requests are throttled well under the cap and results are cached per client.
+
+Failures raise `EdgarUnavailable` (status code only; no URL, no identity)."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Callable, Optional
+
+TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SUBMISSIONS_SHARD_URL = "https://data.sec.gov/submissions/{name}"
+# How far back a company's filing list must reach. The earnings estimator looks back 500 days
+# (edgar_earnings._LOOKBACK); the margin keeps the two from drifting apart silently.
+HISTORY_DAYS = 540
+ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
+ENV_VAR = "QUANT_SEC_USER_AGENT"
+_MIN_INTERVAL_SEC = 0.15          # ~6.6 req/s, under SEC's 10/s
+_UA_SHAPE = re.compile(r"^\S+(\s+\S+)*\s+\S+@\S+\.\S+$")      # a name, then an email
+
+# Successor-issuer reorganisations: a company that becomes a holding company is registered
+# under a NEW CIK, so its history before the change sits under the old one and SEC offers no
+# machine-readable link (formerNames is empty, the EIN differs). Links are therefore explicit,
+# reviewed DATA — never inferred — and each entry names its evidence.
+#   XOM: ExxonMobil Holdings Corp (CIK 2115436) succeeded Exxon Mobil Corp (CIK 34088);
+#        Form 8-K12B filed 2026-07-01, accession 0001193125-26-291990.
+KNOWN_PREDECESSORS: dict[str, tuple[int, ...]] = {"XOM": (34088,)}
+# forms a successor issuer files when it takes over a predecessor's registration
+SUCCESSOR_FORMS = ("8-K12B", "8-K12G3")
+
+HttpGet = Callable[[str, dict[str, str]], Any]
+HttpGetText = Callable[[str, dict[str, str]], str]
+_MAX_DOCUMENT_BYTES = 262_144       # a Form 4 is a few KB; refuse anything absurd
+
+
+class EdgarUnavailable(RuntimeError):
+    """EDGAR cannot be used (no/invalid identity, HTTP failure)."""
+
+
+@dataclass(frozen=True)
+class Filing:
+    cik: int
+    accession: str
+    form: str
+    filing_date: date
+    accepted_at: datetime
+    items: tuple[str, ...]          # 8-K item numbers, e.g. ("2.02", "9.01")
+    primary_document: str
+
+    @property
+    def url(self) -> str:
+        return ARCHIVE_URL.format(cik=self.cik, acc=self.accession.replace("-", ""),
+                                  doc=self.primary_document)
+
+    @property
+    def raw_url(self) -> str:
+        """The filing's raw document. SEC lists Form 3/4/5 under a rendering
+        folder (`xslF345X06/doc4.xml` = styled HTML); the raw XML is the bare name."""
+        return ARCHIVE_URL.format(cik=self.cik, acc=self.accession.replace("-", ""),
+                                  doc=self.primary_document.rsplit("/", 1)[-1])
+
+
+def _urllib_get(url: str, headers: dict[str, str]) -> Any:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise EdgarUnavailable(f"SEC HTTP {e.code}") from None
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
+        raise EdgarUnavailable(f"SEC request failed ({type(e).__name__})") from None
+
+
+def _urllib_get_text(url: str, headers: dict[str, str]) -> str:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read(_MAX_DOCUMENT_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        raise EdgarUnavailable(f"SEC HTTP {e.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise EdgarUnavailable(f"SEC request failed ({type(e).__name__})") from None
+    if len(raw) > _MAX_DOCUMENT_BYTES:
+        raise EdgarUnavailable("SEC document too large")
+    return raw.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class CompanyInfo:
+    name: str
+    sic: Optional[int]
+    sic_description: str
+
+
+class EdgarClient:
+    def __init__(self, user_agent: str, *, http_get: Optional[HttpGet] = None,
+                 http_get_text: Optional[HttpGetText] = None,
+                 predecessors: Optional[dict[str, tuple[int, ...]]] = None,
+                 history_days: int = HISTORY_DAYS,
+                 today: Callable[[], date] = lambda: datetime.now(timezone.utc).date(),
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        if not user_agent or not _UA_SHAPE.match(user_agent.strip()):
+            raise EdgarUnavailable(
+                f"{ENV_VAR} must be '<app name> <contact email>' (SEC fair-access policy)")
+        self._headers = {"User-Agent": user_agent.strip(), "Accept-Encoding": "identity"}
+        self._get = http_get or _urllib_get
+        self._get_text = http_get_text or _urllib_get_text
+        self._predecessors = KNOWN_PREDECESSORS if predecessors is None else predecessors
+        self._by_cik: dict[int, list[Filing]] = {}
+        self._history_days = history_days
+        self._today = today
+        self._documents: dict[str, str] = {}
+        self._sleep = sleep
+        self._last = 0.0
+        self._cik: Optional[dict[str, int]] = None
+        self._filings: dict[str, list[Filing]] = {}
+        self._submissions_by_cik: dict[int, dict[str, Any]] = {}
+
+    @classmethod
+    def from_env(cls, **kw: Any) -> "EdgarClient":
+        return cls(os.environ.get(ENV_VAR, ""), **kw)
+
+    def _fetch(self, url: str, getter: Optional[Callable[[str, dict[str, str]], Any]] = None) -> Any:
+        wait = _MIN_INTERVAL_SEC - (time.monotonic() - self._last)
+        if wait > 0:
+            self._sleep(wait)
+        self._last = time.monotonic()
+        return (getter or self._get)(url, self._headers)
+
+    def _cik_for(self, ticker: str) -> Optional[int]:
+        if self._cik is None:
+            body = self._fetch(TICKERS_URL)
+            self._cik = {str(r["ticker"]).upper(): int(r["cik_str"]) for r in body.values()}
+        return self._cik.get(ticker.upper())
+
+    def _submissions(self, cik: int) -> dict[str, Any]:
+        """The company record (name, industry, filings), fetched once per CIK."""
+        if cik not in self._submissions_by_cik:
+            self._submissions_by_cik[cik] = self._fetch(SUBMISSIONS_URL.format(cik=cik))
+        return self._submissions_by_cik[cik]
+
+    def company_info(self, ticker: str) -> Optional["CompanyInfo"]:
+        """Who the ticker is, from the SEC's own record: name and industry class. None for an unknown ticker; a
+        failure raises (never reads as 'unknown')."""
+        cik = self._cik_for(ticker.upper())
+        if cik is None:
+            return None
+        body = self._submissions(cik)
+        try:
+            sic = int(body["sic"]) if str(body.get("sic") or "").strip() else None
+        except (TypeError, ValueError):
+            sic = None
+        return CompanyInfo(name=str(body.get("name") or "").strip(), sic=sic,
+                           sic_description=str(body.get("sicDescription") or "").strip())
+
+    def recent_filings(self, ticker: str) -> list[Filing]:
+        """The company's recent filings, newest first. Includes the filings of any reviewed
+        predecessor registrant (see KNOWN_PREDECESSORS), de-duplicated by accession number
+        (joint filings appear under both CIKs). An unknown ticker has none ([]); a failure
+        raises (never reads as 'none')."""
+        key = ticker.upper()
+        if key in self._filings:
+            return self._filings[key]
+        cik = self._cik_for(key)
+        merged: dict[str, Filing] = {}
+        if cik is not None:
+            for c in (cik, *self._predecessors.get(key, ())):
+                for f in self._filings_of(c):
+                    merged.setdefault(f.accession, f)          # the ticker's own CIK wins a tie
+        out = sorted(merged.values(), key=lambda f: f.accepted_at, reverse=True)
+        self._filings[key] = out
+        return out
+
+    def unlinked_reorganisation(self, ticker: str) -> Optional[Filing]:
+        """A successor-issuer filing (8-K12B/8-K12G3) for a ticker that has NO reviewed
+        predecessor link: its earlier history is probably under another CIK that we are not
+        using. Returned so the caller can warn instead of silently under-using history."""
+        key = ticker.upper()
+        if key in self._predecessors:
+            return None
+        cik = self._cik_for(key)
+        if cik is None:
+            return None
+        return next((f for f in self._filings_of(cik) if f.form in SUCCESSOR_FORMS), None)
+
+    def _filings_of(self, cik: int) -> list[Filing]:
+        """All filings of one CIK reaching back `history_days`. SEC's `recent` list holds the
+        newest ~1000 filings or one year, whichever is more — a prolific filer (JPM: ~26,000
+        structured-note filings a year) is cut off at about a year, so the older ones are read
+        from the dated `files` shards, but only those overlapping the needed period."""
+        if cik in self._by_cik:
+            return self._by_cik[cik]
+        body = self._submissions(cik)["filings"]
+        out = self._parse_filings(cik, body["recent"])
+        cutoff = self._today() - timedelta(days=self._history_days)
+        if out and min(f.filing_date for f in out) > cutoff:
+            for shard in body.get("files", []):
+                try:
+                    needed = date.fromisoformat(shard["filingTo"]) >= cutoff
+                    name = shard["name"]
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if needed:
+                    out += [f for f in self._parse_filings(
+                        cik, self._fetch(SUBMISSIONS_SHARD_URL.format(name=name)))
+                        if f.filing_date >= cutoff]
+        self._by_cik[cik] = out
+        return out
+
+    @staticmethod
+    def _parse_filings(cik: int, recent: dict[str, Any]) -> list[Filing]:
+        out: list[Filing] = []
+        for i, acc in enumerate(recent["accessionNumber"]):
+            try:
+                out.append(Filing(
+                    cik=cik, accession=acc, form=recent["form"][i],
+                    filing_date=date.fromisoformat(recent["filingDate"][i]),
+                    accepted_at=datetime.fromisoformat(
+                        recent["acceptanceDateTime"][i].replace("Z", "+00:00")
+                    ).astimezone(timezone.utc),
+                    items=tuple(x.strip() for x in str(recent["items"][i]).split(",") if x.strip()),
+                    primary_document=recent["primaryDocument"][i]))
+            except (KeyError, IndexError, ValueError, TypeError):
+                continue                                       # one bad row must not hide the rest
+        return out
+
+    def document_text(self, filing: Filing) -> str:
+        """The filing's raw document text (cached). Failure raises, never reads as empty."""
+        url = filing.raw_url
+        if url not in self._documents:
+            self._documents[url] = self._fetch(url, self._get_text)
+        return self._documents[url]

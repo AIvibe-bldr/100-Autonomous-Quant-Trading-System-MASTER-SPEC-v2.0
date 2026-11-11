@@ -43,6 +43,16 @@ class PositionSizingEngine:
     _last_trade_was_loss: bool = False
     history: list[dict] = field(default_factory=list)
 
+    def export_state(self) -> dict:
+        """The anti-martingale memory (§37): without it a restart forgets that the last trade lost."""
+        return {"last_risk_amount": self._last_risk_amount, "last_trade_was_loss": self._last_trade_was_loss,
+                "history": list(self.history)}
+
+    def restore_state(self, state: dict) -> None:
+        self._last_risk_amount = state["last_risk_amount"]
+        self._last_trade_was_loss = state["last_trade_was_loss"]
+        self.history = list(state["history"])
+
     def record_trade_result(self, realized_pnl: float, risk_amount: float) -> None:
         self._last_trade_was_loss = realized_pnl < 0
         self._last_risk_amount = risk_amount

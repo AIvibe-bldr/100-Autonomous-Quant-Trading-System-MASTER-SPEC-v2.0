@@ -21,6 +21,8 @@
 | SAFETY（安全設計） | `docs/invariants.md`（Safety Invariants）＋ `docs/risk.md`（Risk Pipeline）＋ `docs/execution.md`（Order State Machine） |
 | INVARIANTS（絶対に破ってはいけない条件） | `docs/invariants.md`（INV-1〜21）＋ `docs/MASTER_SPEC.md`（Requirement Map） |
 | 監査結果・既知のGap | `docs/SAFETY_AUDIT.md`（P0〜P3、2026-09時点の未解決事項） |
+| 運用手順（起動・監視・障害対応・緊急停止） | `docs/operations.md` |
+| 画面のデザイン（色・書体・余白・部品・アクセシビリティ） | `docs/DESIGN_SYSTEM.md` |
 
 新しい安全設計・構造ドキュメントが必要になった場合も、まずこれらへの追記を優先し、本当に別文書が
 必要な場合のみ新規作成し、ここに追記する。
@@ -233,6 +235,15 @@ Architecture Rule（本ファイル）／Safety Rule（`docs/invariants.md`）�
 依頼を最短距離でコードへ接続するのではなく、次を必ず踏む：①既存Architectureを理解する
 ②適切な実装位置を決定する③既存Moduleを再利用する④最小変更で実装する⑤Testする
 ⑥Architecture整合性を確認する。
+
+## 32. UI/UX開発ルール
+
+* UI/UX開発時は `ui-ux-pro-max`（`.claude/skills/ui-ux-pro-max/`）を優先して使用する。バックエンドのみの作業では無理に使わない。
+* 新規UIではデザインシステムを先に検討する。既存の `docs/DESIGN_SYSTEM.md` を尊重し、変える場合は理由を示す。
+* レスポンシブ・アクセシビリティ・UXを確認する（スクリーンショットで監査する）。
+* デザインシステムの生成ファイルはプロジェクト内に保存する。既存機能・API・データ処理を壊さない。
+* 21st.dev のコンポーネント探索は `.mcp.json` の MCP（認証は環境変数 `API_KEY_21ST`。値はリポジトリにもチャットにも書かない）を使う。外部の部品は**そのままコピーせず**、`DESIGN_SYSTEM.md` に合わせて作り直す。
+* このダッシュボードの制約は維持する: 読み取り専用、外部読み込みなし（CSP）、データは `textContent` のみで描画（`innerHTML` 禁止）。外部フォントや外部スクリプトを足す部品は採用しない。
 
 ## 最重要原則
 

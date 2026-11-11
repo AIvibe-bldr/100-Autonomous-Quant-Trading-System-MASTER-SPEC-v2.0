@@ -133,11 +133,13 @@ class ApprovedOrderSnapshot(StrictModel):
                       at: Optional[datetime] = None) -> "ApprovedOrderSnapshot":
         i = order.intent
         h = cls.compute_hash(i.symbol, i.side, i.qty, i.order_type, i.limit_price,
-                             i.stop_price, take_profit, "DAY", i.client_order_id)
+                             i.stop_price, take_profit, i.time_in_force.value,
+                             i.client_order_id)
         return cls(client_order_id=i.client_order_id, order_intent_id=i.proposal_id,
                    symbol=i.symbol, side=i.side,
                    qty=i.qty, order_type=i.order_type, limit_price=i.limit_price,
                    stop_price=i.stop_price, take_profit=take_profit,
+                   time_in_force=i.time_in_force.value,
                    strategy_id=strategy_id, decision_id=decision_id,
                    skeptic_id=skeptic_id,
                    risk_approval_id=order.approval.approval_id, audit_id=audit_id,
@@ -148,5 +150,5 @@ class ApprovedOrderSnapshot(StrictModel):
         recomputed = self.compute_hash(intent.symbol, intent.side, intent.qty,
                                        intent.order_type, intent.limit_price,
                                        intent.stop_price, self.take_profit,
-                                       self.time_in_force, intent.client_order_id)
+                                       intent.time_in_force.value, intent.client_order_id)
         return recomputed == self.hash

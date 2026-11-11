@@ -230,3 +230,28 @@ class MonitorModel(Protocol):
 - 「この株を買いたい」→ 即注文禁止 → Manual Analysis（分析UI表示）→ 提案化
 - Human Override は可能だが Master Risk Controller は突破不可（INV-8）
 - Override結果は追跡され、Human vs AI analytics に入る（§79）
+
+## AI別 LLM使用量（§80-83）
+
+`packages/common/llm_usage.py` の `LLMUsageLedger` / `MeteredClient` が、`build_llm_stack(usage=...)` /
+`build_monitor(usage=...)` 経由で各AIのSDKクライアントを包み、`agent_id` 単位で呼び出し数・失敗数・
+トークン数を記録する（SkepticとAuditが同一モデルでも別行）。単価は組み込まず環境変数
+`QUANT_LLM_PRICES`（JSON `{"model":[入力$/1M, 出力$/1M]}`）で与える。未設定ならコストは `None`
+（0ではない）。`on_cost` コールバックで `OperatingCostEngine` の AI カテゴリへ計上できる。
+表示: `GET /llm-usage`（read-only）とダッシュボードの「AI別 使用量」表、
+`scripts/run_llm_paper_demo.py` の末尾サマリ。
+
+**費用の自動上限**: `MeteredClient` が全LLM呼び出しの直前に累計コストを確認し、`QUANT_LLM_BUDGET_USD`
+（既定 $1.00 / 1台帳＝1実行。不正値・0以下・無限大は既定に戻る）に達したら `LLMBudgetExceeded` で
+呼び出しを拒否する。Decision は取引なし、Skeptic は拒否、Audit は監査不能として、既存どおり
+安全側に倒れる。呼び出し開始時点で上限未満なら完了でき、超過は最大1回分。単価未設定のモデルは
+上限を守れないため、上限有効中は拒否する。上限は実行（プロセス）単位で、日次・永続の上限は未実装。
+
+## Decision AI に渡す事実（コンテキスト）
+
+すべて Python が計算した事実で、AIの文章は混ざらない（`services/decision/prompts.py`）。
+- 判断時刻（`DecisionContext.as_of`）と最終バーの日時・出どころ・経過日数。AIは「今日」を自分で推測しない。
+- クオンツスコアの定義（20日モメンタム ÷ 日次ボラ、未校正）。
+- 市場局面: `RegimeEngine` を **ユニバースの等加重合成**に適用した推定値
+  （`universe_composite_bars`）。公式指数ではなく、プロンプトにも「ESTIMATE」と明記する。
+  銘柄・バーが不足すれば `UNKNOWN`（推測しない）。実データ接続時は指数銘柄へ置換する。

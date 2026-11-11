@@ -1,0 +1,40 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>案A ひとこと型</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14213d;--mute:#6b7280;--line:#e5e7eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--blue:#2563eb}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);color:var(--ink);font:16px/1.7 -apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;padding:20px 16px 48px}
+.wrap{max-width:760px;margin:0 auto}.top{display:flex;justify-content:space-between;color:var(--mute);font-size:13px;margin-bottom:14px}
+.hero{border-radius:20px;padding:28px 28px 24px;color:#fff;margin-bottom:16px}
+.hero.ok{background:linear-gradient(135deg,#16a34a,#22c55e)}.hero.warn{background:linear-gradient(135deg,#d97706,#f59e0b)}.hero.bad{background:linear-gradient(135deg,#dc2626,#ef4444)}
+.hero .w{font-size:13px;letter-spacing:.2em;opacity:.9}.hero h1{font-size:28px;line-height:1.4;margin:4px 0 6px}.hero p{opacity:.95}
+.alerts{background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:14px 18px;margin-bottom:16px}.alerts.bad{background:#fef2f2;border-color:#fecaca}
+.alerts b{display:block;margin-bottom:4px}.alerts li{margin-left:1.2em}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.tile{background:var(--card);border-radius:16px;padding:18px;border:1px solid var(--line)}.tile .l{color:var(--mute);font-size:13px}.tile .v{font-size:28px;font-weight:700;letter-spacing:-.02em}.tile .s{color:var(--mute);font-size:12px;line-height:1.4}
+.up{color:var(--ok)}.down{color:var(--bad)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px}.card h2{font-size:15px;margin-bottom:10px}
+.bar{height:10px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin:8px 0 4px}.bar i{display:block;height:100%;background:var(--blue)}
+.note{color:var(--mute);font-size:13px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}.chip{background:#eef2ff;color:#3730a3;border-radius:999px;padding:2px 12px;font-size:14px}
+details{margin-top:8px}summary{cursor:pointer;color:var(--blue);font-size:14px}details ul{margin:6px 0 0 1.2em;color:#374151;font-size:14px}
+.more{display:flex;gap:10px;flex-wrap:wrap}.more a{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 16px;text-decoration:none;color:var(--ink);font-size:14px}
+.mock-switch{font-size:12px;color:var(--mute);margin-bottom:12px}.mock-switch a{margin:0 6px;color:var(--blue)}.mock-switch a.on{font-weight:700;color:var(--ink)}
+@media(max-width:560px){.tiles{grid-template-columns:1fr 1fr}.tiles .tile:first-child{grid-column:1/-1}.hero h1{font-size:23px}}
+</style></head><body><div class="wrap"><div id="sw"></div><div class="top"><span>運用ダッシュボード</span><span id="upd"></span></div><div id="root"></div></div>
+<script src="common.js"></script><script>
+$("sw").innerHTML=stateSwitcher();$("upd").textContent="更新 "+BASE.lastSession+" · 心拍 "+(STATE==="bad"?"12分前":BASE.heartbeat);
+const t=BASE.today;
+$("root").innerHTML=`
+<div class="hero ${S.level}"><div class="w">${S.word}</div><h1>${S.sentence}</h1><p>${S.detail}</p></div>
+${S.alerts.length?`<div class="alerts ${S.level==="bad"?"bad":""}"><b>確認してほしいこと</b><ul>${S.alerts.map(a=>`<li>${a}</li>`).join("")}</ul></div>`:""}
+<div class="tiles">
+ <div class="tile"><div class="l">いまの資産</div><div class="v">${money(BASE.equity)}</div><div class="s">はじめは ${money(BASE.start)}。${money(BASE.equity-BASE.start,true)}（${pct(BASE.ret)}）</div></div>
+ <div class="tile"><div class="l">昨日の増減</div><div class="v ${tone(t.pnl)}">${money(t.pnl,true)}</div><div class="s">${BASE.lastSession} のセッション</div></div>
+ <div class="tile"><div class="l">いちばん減った幅</div><div class="v">${pct(BASE.maxDD,2,false)}</div><div class="s">高値からの落ち込み。10%を超えたら要注意</div></div>
+</div>
+<div class="card"><h2>資産の推移</h2>${chart(EQUITY,{h:150})}
+ <div class="note" style="display:flex;justify-content:space-between"><span>${DAYS[0]}</span><span>${DAYS[DAYS.length-1]}</span></div>
+ <div class="bar"><i style="width:${BASE.sessions/BASE.needSessions*100}%"></i></div>
+ <div class="note">検証期間 ${BASE.sessions} / ${BASE.needSessions} 営業日。<b>まだ短いので、増えた・減ったで良し悪しは判断できません。</b></div></div>
+<div class="card"><h2>${BASE.lastSession} にしたこと</h2><div class="chips">${t.bought.map(s=>`<span class="chip">買い ${s}</span>`).join("")}<span class="chip" style="background:#f3f4f6;color:#374151">見送り ${t.skipped} 件</span></div>
+ <details><summary>見送った理由を見る</summary><ul>${BASE.reasons.map(r=>`<li>${r}</li>`).join("")}</ul></details></div>
+<div class="more"><a href="#">成績をくわしく →</a><a href="#">AIの判断を見る →</a><a href="#">障害・通知の履歴 →</a></div>`;
+</script></body></html>

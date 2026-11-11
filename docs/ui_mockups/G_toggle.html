@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>案G かんたん／くわしい切替型</title>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--ink:#1b2430;--mute:#6a7686;--line:#e4e9f0;--ok:#168a4d;--warn:#c77d00;--bad:#d03a3a;--blue:#2563eb}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;padding:20px 16px 56px}
+.wrap{max-width:900px;margin:0 auto}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px}.top h1{font-size:17px}
+.toggle{display:inline-flex;background:#e6ebf2;border-radius:999px;padding:3px}.toggle button{border:0;background:none;padding:6px 18px;border-radius:999px;font:inherit;color:var(--mute);cursor:pointer}.toggle button.on{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.status{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-left:6px solid var(--ok);border-radius:12px;padding:14px 18px;margin-bottom:14px}.status.warn{border-left-color:var(--warn)}.status.bad{border-left-color:var(--bad)}.status b{font-size:18px}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}.tile .k{color:var(--mute);font-size:12px}.tile .v{font-size:22px;font-weight:700}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}.card h2{font-size:14px;margin-bottom:8px}
+.detail{display:none}body.full .detail{display:block}body.full .only-simple{display:none}
+table{width:100%;border-collapse:collapse;font-size:13.5px}th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right}th:first-child,td:first-child{text-align:left}th{color:var(--mute);font-weight:500}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}.kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:13.5px}.kv span:first-child{color:var(--mute)}
+.up{color:var(--ok)}.down{color:var(--bad)}.mock-switch{font-size:12px;color:var(--mute);margin-bottom:10px}.mock-switch a{margin:0 6px;color:var(--blue)}.mock-switch a.on{font-weight:700;color:var(--ink)}
+@media(max-width:720px){.tiles{grid-template-columns:1fr 1fr}.cols{grid-template-columns:1fr}}
+</style></head><body><div class="wrap"><div id="sw"></div>
+<div class="top"><h1>運用ダッシュボード</h1><div class="toggle"><button id="b1" class="on">かんたん</button><button id="b2">くわしい</button></div></div>
+<div id="st"></div><div class="tiles" id="tiles"></div>
+<div class="card"><h2>資産の推移</h2><div id="chart"></div></div>
+<div class="card only-simple"><h2>昨日にしたこと</h2><p>2銘柄を買い、見送りは8件。損益 <b class="up">+$10.33</b>。理由は「くわしい」で見られます。</p></div>
+<div class="detail"><div class="card"><h2>セッション一覧</h2><table><tr><th>日付</th><th>資産</th><th>増減</th><th>買い</th><th>見送り</th><th>損切り</th><th>安全装置</th></tr>
+<tbody id="rows"></tbody></table></div>
+<div class="cols"><div class="card"><h2>見送りの理由</h2><div id="rs"></div></div><div class="card"><h2>AIの検証</h2><div id="ai"></div></div></div>
+<div class="cols"><div class="card"><h2>安全と運用</h2><div id="ops"></div></div><div class="card"><h2>障害・通知</h2><div id="al"></div></div></div></div></div>
+<script src="common.js"></script><script>
+$("sw").innerHTML=stateSwitcher();
+$("st").innerHTML=`<div class="status ${S.level}"><b>${S.word}</b><span>${S.sentence}${S.detail}</span></div>`;
+$("tiles").innerHTML=[["いまの資産",money(BASE.equity),""],["増減（はじめから）",pct(BASE.ret),"up"],["最大の落ち込み",pct(BASE.maxDD,2,false),""],["検証日数",BASE.sessions+" / "+BASE.needSessions,""]].map(t=>`<div class="tile"><div class="k">${t[0]}</div><div class="v ${t[2]}">${t[1]}</div></div>`).join("");
+$("chart").innerHTML=chart(EQUITY,{h:130});
+$("rows").innerHTML=BASE.sessionsList.map((s,i)=>`<tr><td>${s.d}</td><td>${money(EQUITY[17-i])}</td><td class="${tone(s.pnl)}">${money(s.pnl,true)}</td><td>${[2,3,5,5][i]}</td><td>${[8,7,5,5][i]}</td><td>0</td><td>通常</td></tr>`).join("");
+$("rs").innerHTML=BASE.reasons.map(r=>`<div class="kv"><span>${r}</span></div>`).join("");
+$("ai").innerHTML=Object.values(BASE.ai).map(r=>`<div class="kv"><span>${r}</span></div>`).join("");
+$("ops").innerHTML=[["実行器",S.runner],["安全装置",S.safety],["緊急停止","解除中"],["口座の保存","8/14 23:46"],["次の取引",BASE.nextSession]].map(r=>`<div class="kv"><span>${r[0]}</span><span>${r[1]}</span></div>`).join("");
+$("al").innerHTML=S.alerts.length?S.alerts.map(a=>`<div class="kv"><span>${a}</span></div>`).join(""):`<div class="kv"><span>いま、確認が必要なことはありません</span></div>`;
+const set=(f)=>{document.body.classList.toggle("full",f);$("b1").classList.toggle("on",!f);$("b2").classList.toggle("on",f)};
+$("b1").onclick=()=>set(false);$("b2").onclick=()=>set(true);if(location.hash==="#full")set(true);
+</script></body></html>

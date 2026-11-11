@@ -23,6 +23,10 @@ risk in §1 of the instruction ("誤ってProduction Brokerへ注文") is
 therefore **structurally impossible in the current codebase**, not because
 of a `LIVE_TRADING=false` flag, but because there is nothing to flip it to.
 
+*(Update 2026-11-07: still true. In addition, a LIVE gate now exists in code — `packages/common/live_gate.py`,
+see `docs/paper_live_gate.md` — so that once a real adapter exists, LIVE entries need a named, expiring human
+approval, and a broker's own environment must match the engine's.)*
+
 This does not make the audit moot — it changes what "P0" means. The real
 P0 risk here is **that this fact stops being true without anyone deciding
 it should**: the day someone adds a real broker adapter, every gap below
@@ -410,7 +414,27 @@ that already call `reconcile()` post-session are unaffected.
 
 ### P1 — needed before Live, not urgent for continued Paper development
 
-#### F5. No operator-facing Kill Switch — DEFERRED, analysis recorded
+#### F5. No operator-facing Kill Switch — RESOLVED (file-based; 2026-11-07)
+
+**Resolution (2026-11-07).** Implemented as the audit's path 2 with the IPC it said was missing:
+a flag **file** (`QUANT_KILL_SWITCH_FILE`, default `var/kill_switch.json`) read by the runner, so no
+write endpoint is added and `apps/api` stays read-only (it only gains `GET /kill-switch`).
+
+- `packages/common/kill_switch.py`: atomic write, append-only audit log (`<flag>.log`, who/when/why),
+  operator and reason mandatory, **unreadable/corrupt flag = engaged** (fail closed).
+- `scripts/kill_switch.py status|engage|clear` (CLI). There is no auto-resume: `clear` removes the
+  flag, and a runner that already halted stays in `HALT_NEW_ENTRIES` until it is restarted.
+- Enforcement: `ExecutionEngine.entries_blocked_by_kill_switch()` — checked at the start of each
+  `run_session` (after exit management, before reconciliation and any LLM call), before each entry's
+  risk review, and inside `ExecutionEngine.submit` for BUY orders (last line of defence). Protective
+  stops and exits (SELL) are never blocked (MASTER SPEC §43). The state change goes through
+  `set_state`, so the F10 alert fires.
+- **Limits:** it halts new entries only (no forced liquidation — `SAFE_EXIT` is not exposed); it acts at
+  the next check, not inside an in-flight broker call; the flag file is only as protected as the
+  filesystem permissions of the host. If a continuously-running authenticated runner is built later,
+  revisit an authenticated endpoint under §23/§29.
+
+**Original analysis (deferred before this resolution):**
 
 **Deferred, not fixed.** Investigated during the P1 pass after F1-F4/F7/F9,
 and deliberately not implemented for a structural reason found while
@@ -487,7 +511,7 @@ first write endpoint the system would ever have.
 
 ---
 
-#### F6. No Circuit Breaker for consecutive failures — trips on the first occurrence, never on a rate
+#### F6. No Circuit Breaker for consecutive failures — trips on the first occurrence, never on a rate — RESOLVED
 
 **Evidence.** Grepped `services/risk`, `services/supervisor`,
 `services/execution` for `consecutive|circuit_breaker|fail_count`: no
@@ -504,6 +528,25 @@ centralizes thresholds — this fits the same pattern) that trips
 `HALT_NEW_ENTRIES` after N rejections or M abnormal-slippage fills within
 a rolling window; reuses the existing `RiskState` machinery, so no new
 state model is needed.
+
+**Resolution.** `services/risk/circuit_breaker.py` (`RejectionCircuitBreaker`, rolling
+window, thresholds `circuit_breaker_max_rejections` / `circuit_breaker_window_sec` in `RiskConfig`)
+is consulted from `ExecutionEngine.submit` on every broker rejection and trips
+`HALT_NEW_ENTRIES` via `set_state`. **Abnormal slippage (2026-11-07):** the reference price is NOT put in the approved
+snapshot (that would change the signed/hashed order identity); `ExecutionEngine.submit(...,
+reference_price=)` takes it as an observation (the pipeline passes the planned entry = the ask at
+decision time). Each fill is compared once (`adverse_slippage_bps`, side-aware); worse than
+`max_slippage_bps` (75) sends a WARNING alert, and `circuit_breaker_max_slippage_fills` (2) such fills in
+`circuit_breaker_window_sec` trip `HALT_NEW_ENTRIES` (only from NORMAL — it never downgrades
+SAFE_EXIT/disconnect). Protective stops carry no reference (gap fills are expected). **Limits:** the
+75 bps/2-fill thresholds are untuned defaults (paper fills are simulated, so real slippage is unmeasured);
+only entries are checked. **Fixed (2026-11-07):** `MasterRiskController.set_state` used to overwrite the state unconditionally, so a
+milder automatic trigger (rejection/timeout breaker, reconciliation mismatch) could relax a stricter stop —
+e.g. `FULL_BROKER_DISCONNECT` (the only state that also blocks exits) → `HALT_NEW_ENTRIES`. It now only escalates
+(NORMAL < HALT_NEW_ENTRIES < SAFE_EXIT < FULL_BROKER_DISCONNECT); a milder request is ignored (logged, no alert),
+and only an explicit `NORMAL` resets. `SAFE_EXIT` is never set by production code today, so the realistic
+path was the disconnect case. Side effect: after a reconnect the state stays `FULL_BROKER_DISCONNECT` until an
+explicit reset to `NORMAL` (no auto-recovery exists, as before).
 
 **Scope.** New small module, likely `services/risk/circuit_breaker.py`,
 consulted from `services/execution/engine.py`'s fill/reject handling.
@@ -559,7 +602,7 @@ symbol/side/qty, risk checks, rejection reasons, etc.) — this is largely
 
 ---
 
-#### F8. `broker_connected` RiskCheck is permanently green regardless of actual connectivity
+#### F8. `broker_connected` RiskCheck is permanently green regardless of actual connectivity — RESOLVED
 
 **Evidence.** `services/pipeline.py:256,657`: `broker_connected=True` is a
 literal at both `PortfolioRiskView` construction sites.
@@ -592,7 +635,7 @@ prefers — recommend the former since it costs one line and keeps the
 
 ### P2 — improvement, not blocking
 
-#### F9. No persistence layer at all (root cause of F3/F4/F7) — RESOLVED
+#### F9. No persistence layer at all (root cause of F3/F4/F7) — RESOLVED (account persistence added 2026-11-10)
 
 Already covered above as the shared root cause; listed separately here
 because it is itself the single highest-leverage fix in this report.
@@ -604,7 +647,7 @@ three original consumers of this finding are closed; the full 15-table V1
 schema in `docs/database.md` (decision provenance, fills, ledger, etc.)
 remains future work beyond what any P0/P1 finding here requires.
 
-#### F10. No external alerting sink
+#### F10. No external alerting sink — RESOLVED (sink interface; risk-state and heartbeat alerts)
 
 **Evidence.** `services/supervisor/heartbeat.py`'s `HeartbeatRegistry` is
 real and correctly computes `ServiceStatus` (including "silent service =
@@ -624,6 +667,16 @@ other findings).
 integration (Slack, email, PagerDuty) is a deployment-time config choice,
 not a code change.
 
+**Resolution.** `packages/common/alerts.py` (`AlertSink`, `NullAlertSink` default,
+`LoggingAlertSink`, guarded `notify`). `MasterRiskController.set_state` alerts CRITICAL once per
+transition into `HALT_NEW_ENTRIES`/`SAFE_EXIT`/`FULL_BROKER_DISCONNECT` (so the circuit breaker is
+covered). **Heartbeat (2026-11-07):** `services/supervisor/heartbeat_alerts.py` (`HeartbeatAlerter`) sends one
+CRITICAL when a service ENTERS ERROR (missing, stale or self-reported), stays silent while it remains
+there, and a WARNING on recovery; an empty registry is not alerted. `TradingPipeline.heartbeat_alerter`
+(optional) checks at each session start. **Update 2026-11-08:** the session runner (`services/supervisor/runner.py`) now produces the heartbeats and drives
+the alerter. **Still not done:** a real destination (Slack/e-mail), and an external watcher for a dead runner
+(it cannot alert about itself).
+
 **Scope.** New small interface in `services/supervisor/`.
 
 **Regression risk.** None if additive with a no-op default.
@@ -632,7 +685,7 @@ not a code change.
 
 ### P3 — forward-looking, document now rather than fix now
 
-#### F11. Single-threaded safety is implicit, not enforced or documented as an invariant
+#### F11. Single-threaded safety is implicit, not enforced or documented as an invariant — DOCUMENTED (docs/invariants.md)
 
 Covered in §1 above. Not an active gap (nothing concurrent exists to
 race), but nothing currently documents this as a *load-bearing*
@@ -648,7 +701,7 @@ implements exactly the atomic-reservation pattern this would need if
 concurrency is ever introduced — worth reusing rather than re-designing
 from scratch when that day comes.
 
-#### F12. RiskConfig doesn't reject NaN/Infinity in its own fields
+#### F12. RiskConfig doesn't reject NaN/Infinity in its own fields — RESOLVED
 
 Lower severity than F1: `RiskConfig` loads from a human-edited file, not
 network/AI input. Worth the same one-line-per-field fix as F1 for
@@ -741,3 +794,9 @@ sound; what's missing is durability and a few dead/unwired checks.
 **Live Trading readiness (instruction §35): not ready.** F1, F2, F3, F4
 are unresolved P0s. This audit report itself does not change that
 determination — no code has been modified.
+
+**Update 2026-11-10 (account persistence).** The paper broker, ledger and stop registry were still in memory, so a restart
+meant a new account. `services/checkpoint.py` now saves them at consistent points and restores them with verification
+(ledger re-derived from its entries, ledger-vs-broker reconciliation, every held position has a live protective stop);
+a failed verification refuses to trade. See `docs/MASTER_SPEC.md` "ペーパー口座の永続化". Found by the crash/restore
+equivalence test: the flow engine's observations never expired and tilted position sizing across sessions (fixed).

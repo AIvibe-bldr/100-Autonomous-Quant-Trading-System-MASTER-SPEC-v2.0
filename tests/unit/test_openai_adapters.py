@@ -115,7 +115,11 @@ class _FakeParsedDecision:
         self._payload = payload
 
     def model_dump(self, mode: str = "python") -> dict:
-        return dict(self._payload)
+        # the model emits the WIRE shape (scalar low/high), not a tuple
+        d = dict(self._payload)
+        lo, hi = d.pop("expected_return_range")
+        d["expected_return_low"], d["expected_return_high"] = lo, hi
+        return d
 
 
 # --- OpenAIDecisionModel ------------------------------------------------------
@@ -137,6 +141,36 @@ def test_decision_parses_structured_output():
     assert raw["decision_version"].startswith("gpt-5.6-sol:")
     assert client.beta.chat.completions.parse.last_kwargs["model"] == "gpt-5.6-sol"
     assert "AAPL" in client.beta.chat.completions.parse.last_kwargs["messages"][1]["content"]
+
+
+def test_wire_schema_has_no_tuple_arrays_and_round_trips_range():
+    """Regression: OpenAI strict mode 400s on `prefixItems` without `items`
+    (found only by a live call). The adapter must send scalar low/high and
+    return the domain `expected_return_range` tuple."""
+    from services.decision.openai_adapters import _WIRE_SCHEMA
+    assert "prefixItems" not in str(_WIRE_SCHEMA.model_json_schema())
+    client = FakeOpenAIClient()
+    client.beta.chat.completions.parse.next_completion = _FakeCompletion(
+        choices=[_FakeChoice(message=_FakeMessage(parsed=_FakeParsedDecision(
+            _decision_payload("AAPL"))))])
+    agent = AgentModel(role=AgentRole.DECISION, provider=Provider.OPENAI, model="gpt-5.6-sol")
+    raw = OpenAIDecisionModel(agent=agent, client=client).decide(_ctx())
+    assert tuple(raw["expected_return_range"]) == (-0.05, 0.10)
+    assert "expected_return_low" not in raw
+
+
+def test_decision_uses_max_completion_tokens_not_max_tokens():
+    """Regression: the real gpt-5.x API rejects `max_tokens` with a 400
+    ("use max_completion_tokens"); only a live call exposed it."""
+    client = FakeOpenAIClient()
+    client.beta.chat.completions.parse.next_completion = _FakeCompletion(
+        choices=[_FakeChoice(message=_FakeMessage(parsed=_FakeParsedDecision(
+            _decision_payload("AAPL"))))])
+    agent = AgentModel(role=AgentRole.DECISION, provider=Provider.OPENAI, model="gpt-5.6-sol")
+    OpenAIDecisionModel(agent=agent, client=client).decide(_ctx())
+    kw = client.beta.chat.completions.parse.last_kwargs
+    assert "max_tokens" not in kw
+    assert kw["max_completion_tokens"] == agent.max_tokens
 
 
 def test_decision_and_claude_adapter_share_the_identical_system_prompt():

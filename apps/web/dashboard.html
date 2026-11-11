@@ -134,6 +134,15 @@
   <div id="costCategories" style="color:var(--muted);font-size:12px"></div>
 </section>
 
+<section><h2>AI別 使用量 (§80-83)</h2>
+  <table id="llmUsage"><thead><tr>
+    <th>Agent</th><th>呼出</th><th>失敗</th><th>入力tok</th><th>出力tok</th><th>費用</th>
+  </tr></thead><tbody></tbody></table>
+  <div style="color:var(--muted);font-size:11px;margin-top:6px">
+    費用「単価未設定」は環境変数 QUANT_LLM_PRICES が未設定のモデルです（0円ではありません）。
+  </div>
+</section>
+
 <section><h2>発注安全性 (ADDENDUM A7)</h2>
   <div class="grid">
     <div class="card"><div class="label">Pre-Trade Audits</div><div class="value" id="osAudits">—</div></div>
@@ -201,9 +210,9 @@ function recBadge(rec) {
 }
 
 async function refresh() {
-  const [health, p, chart, holdings, themes, session, dq, os, theses, mon] = await Promise.all([
+  const [health, p, chart, holdings, themes, session, dq, os, theses, mon, llm] = await Promise.all([
     j("/health"), j("/portfolio"), j("/chart"), j("/holdings"), j("/themes"), j("/session"),
-    j("/decision-quality"), j("/order-safety"), j("/final-trade-theses"), j("/monitor")]);
+    j("/decision-quality"), j("/order-safety"), j("/final-trade-theses"), j("/monitor"), j("/llm-usage")]);
 
   const env = $("env");
   env.textContent = health.environment;                     // §73: 常時表示
@@ -229,6 +238,14 @@ async function refresh() {
   $("costCategories").textContent = catEntries.length
     ? catEntries.map(([cat, v]) => `${cat} ${money(v)}`).join(" · ")
     : "コスト記録なし";
+
+  // AI別使用量
+  $("llmUsage").querySelector("tbody").innerHTML = llm.agents.map(a => `<tr>
+    <td>${a.agent_id}</td><td>${a.calls}</td>
+    <td class="${a.failures ? "neg" : ""}">${a.failures}</td>
+    <td>${a.input_tokens.toLocaleString()}</td><td>${a.output_tokens.toLocaleString()}</td>
+    <td>${a.cost_usd === null ? "単価未設定" : "$" + fmt(a.cost_usd, 4)}</td></tr>`).join("") ||
+    `<tr><td colspan="6" style="color:var(--muted)">実LLM未使用（Mock）</td></tr>`;
 
   drawChart(chart);
 

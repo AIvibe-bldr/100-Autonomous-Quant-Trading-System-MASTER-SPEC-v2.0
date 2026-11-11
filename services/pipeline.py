@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Callable, Optional
 
 from packages.common.clock import Clock
 from packages.common.durable_store import DurableAuditStore
 from packages.common.environment import Environment, require_same_environment
+from packages.common.llm_client import LLMCallError
 from packages.common.ledger import Ledger
 from packages.common.provenance import ProvenanceStore
 from packages.schemas.core import (
@@ -29,14 +31,18 @@ from packages.schemas.core import (
     OrderState,
     OrderType,
     ProposalSource,
+    Quote,
     RiskApproval,
     RiskApprovedOrder,
     RiskRejection,
     SizedProposal,
+    SkepticOutput,
     StopPlan,
+    TimeInForce,
     TradeProposal,
 )
 from packages.schemas.audit import ApprovedOrderSnapshot, AuditVerdict
+from services.supervisor.heartbeat_alerts import HeartbeatAlerter
 from services.capital_allocation.engine import CapitalAllocationEngine
 from services.cost_manager.engine import OperatingCostEngine
 from services.data_validation.integrity import DataIntegrityEngine
@@ -52,11 +58,35 @@ from services.decision.models import (
     MockDecisionModel,
     MockSkepticModel,
     validate_decision,
+    UntrustedText,
 )
 from services.decision.thesis import build_final_trade_thesis
 from packages.broker_adapters.base import BrokerDisconnectedError
 from services.execution.engine import ExecutionEngine, make_client_order_id
 from services.pdca.audit_log import NearMissKind, PreTradeAuditLog, Stage
+from services.decision.disagreement import (
+    ModelDisagreementEngine,
+    decision_lean,
+    news_lean,
+    quant_lean,
+    regime_lean,
+    skeptic_lean,
+)
+from services.decision.human_intent import HumanIntent, HumanIntentAnalyzer, IntentAction
+from services.decision.intent_inbox import IntentInbox, IntentInboxUnreadable, IntentRecord
+from services.institutional.engine import InstitutionalFlowEngine
+from services.institutional.sources import (
+    FlowUnavailable,
+    OwnershipFilingsSource,
+    describe_flow,
+)
+from services.pdca.observer import (
+    DecisionEvent,
+    FillEvent,
+    OverrideEvent,
+    SessionEndEvent,
+    SessionObserver,
+)
 from services.pdca.post_trade import PostTradeTracker
 from services.pdca.decision_quality import (
     DecisionKind,
@@ -64,14 +94,23 @@ from services.pdca.decision_quality import (
     DecisionSnapshot,
 )
 from services.loss_control.engine import LossControlEngine, NoStopPlanError
-from services.market_data.service import MarketDataService
+from services.market_data.service import MarketDataService, MarketDataUnavailable
 from services.market_data.universe import UniverseManager
+from services.market_data.event_calendar import EventCalendar, RiskEvent
+from services.market_data.event_source import EventSource, EventsUnavailable
+from services.news.engine import NewsEngine, NewsSignal
+from services.news.selection import select_for_symbol
+from services.news.source import NewsSource, NewsUnavailable
+from services.position_sizing.correlation import max_abs_correlation_to_book
 from services.position_sizing.engine import (
     PortfolioContext,
     PositionSizingEngine,
     SizingRejected,
 )
 from services.quant.scanner import QuantScanner
+from services.regime.engine import (RegimeEngine, describe_universe_regime,
+                                    universe_composite_bars)
+from services.reconciliation.engine import ReconciliationEngine
 from services.risk.gap_risk import gap_risk_score
 from services.risk.master_controller import (
     MasterRiskController,
@@ -80,6 +119,9 @@ from services.risk.master_controller import (
     throttle_factor,
     throttle_level,
 )
+
+
+log = logging.getLogger("quant.pipeline")
 
 
 @dataclass
@@ -93,6 +135,10 @@ class PipelineResult:
     stop_planned: int = 0
     protective_stops_placed: int = 0
     stops_triggered: int = 0
+    # §76-79: how each human intent offered this session ended (intent id -> outcome)
+    human_intents: dict[str, str] = field(default_factory=dict)
+    # §30: symbol -> size multiplier applied for model disagreement (1.0 = unanimous)
+    disagreement_multipliers: dict[str, float] = field(default_factory=dict)
     sized: int = 0
     allocated: int = 0
     audit_passed: int = 0
@@ -102,11 +148,17 @@ class PipelineResult:
     risk_rejected: int = 0
     orders_filled: int = 0
     no_trade_reasons: list[str] = field(default_factory=list)
+    # non-fatal data problems worth a human's attention (e.g. news fetch failed)
+    data_warnings: list[str] = field(default_factory=list)
     fills: list[BrokerFill] = field(default_factory=list)
 
     @property
     def traded(self) -> bool:
         return self.orders_filled > 0
+
+
+def _daily_returns(closes: list[float]) -> list[float]:
+    return [b / a - 1.0 for a, b in zip(closes, closes[1:]) if a > 0]
 
 
 @dataclass
@@ -150,11 +202,49 @@ class TradingPipeline:
     # need to inject a fake one (see test_security_review_regressions.py) to
     # assert staleness deterministically without a real sleep.
     wall_clock: Clock = field(default_factory=Clock)
+    # A live quote is fetched some seconds AFTER the session's `as_of` was fixed,
+    # so its own timestamp is slightly "later" than as_of. Up to this much is our
+    # sampling lag, not a data anomaly; anything beyond it is still flagged.
+    quote_sampling_lag: timedelta = timedelta(seconds=60)
+    # News → Decision AI (MASTER SPEC §17-19). None = not connected: Decision is told
+    # "news not available". The engine does dedup / reliability / injection screening.
+    news_source: Optional[NewsSource] = None
+    news_engine: NewsEngine = field(default_factory=NewsEngine)
+    news_lookback: timedelta = timedelta(days=3)
+    # Event Calendar → Decision AI and gap risk (§16, §40). None = not connected.
+    event_source: Optional[EventSource] = None
+    event_horizon_days: int = 7          # gap-risk window for scheduled events
+    event_display_days: int = 14         # how far ahead Decision is shown events
+    # F10: when set, checked at every session start (None = no heartbeat producers wired)
+    heartbeat_alerter: Optional[HeartbeatAlerter] = None
+    # Institutional flow (§20): a volume anomaly from our own bars is always computed; SEC 13D/13G
+    # ownership filings need a source (None = not connected, stated to the model as unavailable).
+    flow_filings_source: Optional[OwnershipFilingsSource] = None
+    flow_engine: InstitutionalFlowEngine = field(default_factory=InstitutionalFlowEngine)
+    disagreement: ModelDisagreementEngine = field(default_factory=ModelDisagreementEngine)
+    # Human intent (§76-79): None = no inbox connected. A confirmed WANT_BUY becomes a candidate that
+    # takes the SAME gates as an AI candidate (Audit AI, Master Risk Controller, ...) — INV-8.
+    human_inbox: Optional[IntentInbox] = None
+    human_analyzer: HumanIntentAnalyzer = field(default_factory=HumanIntentAnalyzer)
+    # Durability (services/checkpoint.py): called with a reason at the points where the books are consistent —
+    # after an order's fills AND its protective stop, after exit fills, and around each session. NOT swallowed:
+    # a system that cannot save its state must stop (the runner turns the exception into a halted failure).
+    checkpointer: Optional[Callable[[str], None]] = None
+    # Read-only listeners (services/pdca/observer.py): they record and grade, never decide.
+    observers: list[SessionObserver] = field(default_factory=list)
     # docs/SAFETY_AUDIT.md F7: when set, the pre-trade audit trail for every
     # order that reaches execution.submit() is durably persisted (default
     # None — fully additive, no behavior change for the many tests that
     # construct TradingPipeline without one).
     audit_store: Optional[DurableAuditStore] = None
+    # §26: market regime fed to Decision AI. Read from the universe composite
+    # (an estimate — see services/regime/engine.universe_composite_bars).
+    regime_engine: RegimeEngine = field(default_factory=RegimeEngine)
+    # short label (e.g. "BULL") stamped on decision snapshots for this session
+    _session_regime: str = field(default="UNKNOWN", repr=False)
+    # human intents offered to the session in progress: symbol -> record (reset each session)
+    _session_human: dict = field(default_factory=dict, repr=False)
+    _human_ai_view: dict = field(default_factory=dict, repr=False)   # symbol -> AI stance (str) or None
     _order_seq: int = 0
     # symbol -> (protective stop client_order_id, stop plan, entry price, risk amount)
     open_stops: dict[str, tuple[str, StopPlan, float, float]] = field(default_factory=dict)
@@ -166,6 +256,12 @@ class TradingPipeline:
     # proposal) was captured, for F2's signal_age_sec (services.pipeline
     # is the only writer/reader; not a durable audit trail — see F7).
     _signal_captured_at: dict[str, datetime] = field(default_factory=dict, repr=False)
+    # Result of the latest ledger-vs-broker reconciliation (§48). False until the
+    # first reconcile of a session has run: "not yet verified" is not "consistent".
+    _reconciliation_ok: bool = field(default=False, repr=False)
+    # symbol -> max |corr| against holdings, computed at the sizing step this session
+    _book_correlation: dict[str, float] = field(default_factory=dict, repr=False)
+    reconciliation: ReconciliationEngine = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """§73: reject a mixed-environment component graph at construction.
@@ -178,6 +274,26 @@ class TradingPipeline:
         """
         require_same_environment(self.environment, self.execution.environment,
                                  self.auditor.environment)
+        self.reconciliation = ReconciliationEngine(
+            broker=self.execution.broker, ledger=self.ledger,
+            risk_controller=self.risk_controller)
+
+    def _checkpoint(self, reason: str) -> None:
+        if self.checkpointer is not None:
+            self.checkpointer(reason)
+
+    def export_registry(self) -> dict:
+        """The pipeline's own memory that outlives a session: which protective stop belongs to which
+        position, and the order sequence number."""
+        return {"order_seq": self._order_seq,
+                "open_stops": {sym: {"order_id": cid, "stop": stop.model_dump(mode="json"),
+                                     "entry_price": entry_px, "risk_amount": risk}
+                               for sym, (cid, stop, entry_px, risk) in self.open_stops.items()}}
+
+    def restore_registry(self, state: dict) -> None:
+        self._order_seq = state["order_seq"]
+        self.open_stops = {sym: (v["order_id"], StopPlan.model_validate(v["stop"]), v["entry_price"],
+                                 v["risk_amount"]) for sym, v in state["open_stops"].items()}
 
     def final_theses(self) -> dict[str, FinalTradeThesis]:
         """Read-only view for callers outside the pipeline (the status API's
@@ -210,10 +326,23 @@ class TradingPipeline:
             self.cost_engine.record_transaction_fee(
                 at=ts, amount=fees, note=note or symbol)
 
+    def _read_regime(self, symbols: list[str], now: datetime) -> str:
+        """Classify the market from the universe composite. Any shortfall
+        (too few symbols/bars) degrades to "UNKNOWN" — never a guess."""
+        try:
+            bars = {sym: [b.bar for b in self.market_data.bars(sym, now, days=40, received_at=now)]
+                    for sym in symbols}
+            reading = self.regime_engine.classify(universe_composite_bars(bars))
+        except (ValueError, MarketDataUnavailable):
+            self._session_regime = "UNKNOWN"
+            return "UNKNOWN"
+        self._session_regime = reading.primary.value
+        return describe_universe_regime(reading, len(bars))
+
     def _record_decision(self, decision_id: str, symbol: str, kind: DecisionKind,
                          now, reference_price: float, decision=None,
                          had_stop_plan: bool = False, skeptic_consulted: bool = False,
-                         regime: str = "UNKNOWN") -> None:
+                         regime: Optional[str] = None) -> None:
         """A1-1: immutable decision snapshot for EVERY decision kind."""
         from services.data_validation.integrity import DataHealth
 
@@ -231,7 +360,7 @@ class TradingPipeline:
             thesis=decision.base_case.description if decision else "",
             invalidation_conditions=(tuple(decision.invalidation_conditions)
                                      if decision else ()),
-            regime=regime,
+            regime=regime or self._session_regime,
             model=self.decision_model.name, model_version=self.decision_model.version,
             rule_compliant=True, had_stop_plan=had_stop_plan,
             skeptic_consulted=skeptic_consulted,
@@ -284,7 +413,7 @@ class TradingPipeline:
         return self.risk_controller.state is not RiskState.FULL_BROKER_DISCONNECT
 
     def _exit_risk_view(self, symbol: str, qty: float, now: datetime) -> PortfolioRiskView:
-        prices = self._mark_prices({}, now)
+        prices = self.mark_prices({}, now)
         pos_notional = self._position_notional({}, now)
         snapshot = self.ledger.snapshot(prices)
         return PortfolioRiskView(
@@ -296,7 +425,8 @@ class TradingPipeline:
             symbol_themes=self.symbol_themes, drawdown=snapshot.drawdown,
             stop_plan_exists=True, gap_risk_score=0.0,
             adv_shares=self._adv_shares(symbol, now),
-            correlation_to_book=0.0, reconciliation_ok=True,
+            correlation_to_book=0.0,       # exit view: the correlation check is exempt for exits
+            reconciliation_ok=self._reconciliation_ok,
             data_health=self.integrity.health, broker_connected=self._broker_connected(),
             spread_pct=self._spread_pct(symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
@@ -319,6 +449,7 @@ class TradingPipeline:
                                                  self._order_seq),
             proposal_id=f"protective-{symbol}", symbol=symbol, side=Action.SELL,
             qty=qty, order_type=OrderType.STOP, stop_price=stop.stop_price,
+            time_in_force=TimeInForce.GTC,           # must outlive the session (INV-15)
             environment=self.environment, is_protective_exit=True, created_at=now)
         verdict = self.risk_controller.review(intent, self._exit_risk_view(symbol, qty, now))
         if isinstance(verdict, RiskRejection):
@@ -348,12 +479,21 @@ class TradingPipeline:
                                    prior_risk + qty * stop.stop_distance)
         return True
 
-    def manage_open_positions(self, now: datetime) -> tuple[int, int]:
+    def manage_open_positions(self, now: datetime,
+                              result: Optional["PipelineResult"] = None) -> tuple[int, int]:
         """Session-start exit management: let resting stops trigger, book the
         fills, and feed the learning loops.  Returns (stops_triggered, synced)."""
         fills = self.execution.sync_open_orders()
         triggered = 0
+        result = result if result is not None else PipelineResult()
         for f in fills:
+            stop_entry = self.open_stops.get(f.symbol)
+            self._emit("on_fill", FillEvent(
+                symbol=f.symbol, side=f.side, qty=f.qty, price=f.price, fees=f.fees, ts=f.ts,
+                client_order_id=f.client_order_id,
+                reference_price=(stop_entry[1].stop_price
+                                 if stop_entry is not None and f.side is Action.SELL else None)),
+                result)
             if f.side is not Action.SELL:
                 # a resting BUY (e.g. a limit entry) that fills later must still
                 # reach the ledger, or ledger and broker drift apart (§48)
@@ -388,9 +528,46 @@ class TradingPipeline:
                                   DecisionKind.SELL, now, f.price,
                                   had_stop_plan=True, skeptic_consulted=False)
             triggered += 1
+        if fills:
+            self._checkpoint("exits")
         return triggered, len(fills)
 
     def run_session(self, as_of: datetime) -> PipelineResult:
+        self._session_human = {}
+        result = self._run_session(as_of)
+        self._finish_human_intents(as_of, result)
+        equity = self.ledger.snapshot(self.mark_prices({}, as_of)).equity
+        self._emit("on_session_end", SessionEndEvent(as_of=as_of, result=result,
+                                                     price_on=self._close_on_or_before,
+                                                     equity=equity,
+                                                     ledger_cash=self.ledger.cash,
+                                                     ledger_positions={
+                                                         sym: lot.qty
+                                                         for sym, lot in self.ledger.positions.items()}),
+                   result)
+        return result
+
+    def _emit(self, hook: str, event, result: PipelineResult) -> None:
+        """Hand a fact to every observer. One that raises is reported, never allowed to
+        interrupt trading or hide the others."""
+        for obs in self.observers:
+            try:
+                getattr(obs, hook)(event)
+            except Exception as e:  # noqa: BLE001 — observers are best-effort by design
+                log.warning("observer %s failed in %s: %s", obs.name, hook, e)
+                result.data_warnings.append(f"observer {obs.name} failed: {type(e).__name__}")
+
+    def _close_on_or_before(self, symbol: str, at: datetime) -> Optional[float]:
+        """Last daily close at/before `at`, or None when it cannot be had (used to grade
+        forecasts/exits after the fact; never to open risk)."""
+        try:
+            bars = self.market_data.bars(symbol, at, days=5, received_at=at)
+        except MarketDataUnavailable:
+            return None
+        usable = [b.bar for b in bars if b.bar.ts.date() <= at.date()]
+        return usable[-1].close if usable else None
+
+    def _run_session(self, as_of: datetime) -> PipelineResult:
         result = PipelineResult()
         now = as_of
         # Per-session working state. Theses are only ever read back within the
@@ -400,30 +577,111 @@ class TradingPipeline:
         # while claiming to show "this session".
         self._final_theses.clear()
         self._signal_captured_at.clear()
+        self._book_correlation.clear()
+        # Flow observations are facts about THIS session's bars. The engine keeps the latest observation per
+        # feature forever, so a volume spike days ago kept tilting today's disagreement (and therefore the
+        # position size) — and it was the one piece of hidden cross-session state a restart would lose.
+        self.flow_engine = InstitutionalFlowEngine()
+
+        if self.heartbeat_alerter is not None:
+            self.heartbeat_alerter.check()
 
         # 0. Exit management first: resting protective stops may have triggered
         #    since the last session (§33-34, §43)
-        result.stops_triggered, _ = self.manage_open_positions(now)
+        result.stops_triggered, _ = self.manage_open_positions(now, result)
+
+        # 0a. Operator kill switch (F5): exits above already ran; stop before any
+        #     LLM spend. Mid-session engagement is caught again before each entry.
+        blocked = self.execution.entries_blocked()
+        if blocked:
+            result.no_trade_reasons.append(blocked)
+            return result
+
+        # 0b. Reconcile ledger vs broker every session (§48): a mismatch halts new
+        #     entries (the engine sets HALT_NEW_ENTRIES), so stop before spending
+        #     LLM calls on decisions that cannot become orders.
+        report = self.reconciliation.reconcile()
+        self._reconciliation_ok = report.consistent
+        if not report.consistent:
+            result.no_trade_reasons.append(
+                "reconciliation mismatch — new entries halted: "
+                + "; ".join(f"{m.kind} ({m.detail})" for m in report.mismatches[:3]))
+            return result
 
         # 1. Universe + Scanner (§12, §21)
         symbols = self.universe.symbols_as_of(now.date())
         scans = self.scanner.scan(symbols, now)
         result.scanned = self.scanner.last_funnel.scanned
         result.candidates = self.scanner.last_funnel.passed_advanced
+        scans = self._with_human_scans(scans, now, result)
         if not scans:
             result.no_trade_reasons.append("scanner produced no candidates")
             return result
 
         # data integrity gate (§11)
+        gated = []
+        quotes: dict[str, Quote] = {}
+        decision_times: dict[str, datetime] = {}
         for s in scans:
             self.integrity.validate_bars(s.symbol, list(s.bars))
-            self.integrity.validate_quote(self.market_data.quote(s.symbol, now), now)
+            try:
+                quote = self.market_data.quote(s.symbol, now)
+            except MarketDataUnavailable:
+                result.no_trade_reasons.append(f"{s.symbol}: no valid quote — skipped")
+                continue
+            decided_at = self._decision_time(now, quote)
+            self.integrity.validate_quote(quote, decided_at)
+            # Cost/quality pre-filter using the SAME cap the Master Risk Controller
+            # enforces (single source: RiskConfig.max_spread_pct) — a quote already
+            # too wide to trade must not buy an LLM call. The controller still
+            # decides for everything that passes.
+            spread_pct = quote.spread / quote.mid
+            cap = self.risk_controller.config.max_spread_pct
+            if spread_pct > cap:
+                note = (" (IEX-only quote: the exchange's own book, not the market-wide spread — it can look "
+                        "wider than the real one)" if "iex" in quote.source.lower() else "")
+                result.no_trade_reasons.append(
+                    f"{s.symbol}: quote spread {spread_pct:.2%} exceeds cap {cap:.2%} — "
+                    f"no Decision call{note}")
+                continue
+            quotes[s.symbol] = quote
+            decision_times[s.symbol] = decided_at
+            gated.append(s)
+        scans = gated
+        if not scans:
+            result.no_trade_reasons.append("no candidate has a valid quote")
+            return result
 
         # 2. Decision AI + Skeptic (§27-29) — proposals only, no broker access
         sized_candidates: list[SizedProposal] = []
         prices: dict[str, float] = {}
+        regime_text = self._read_regime(symbols, now)
+        news_signals, news_fetched = self._load_news([s.symbol for s in scans], now, result)
+        calendar, events_fetched = self._load_events([s.symbol for s in scans], now, result)
+        filings_by_symbol, filings_fetched = self._load_flow_filings(
+            [s.symbol for s in scans], now, result)
         for scan in scans[: self.max_new_positions * 3]:
-            ctx = DecisionContext(scan=scan, portfolio_summary={"cash": self.ledger.cash})
+            chosen = select_for_symbol(news_signals, scan.symbol) if news_fetched else []
+            flow_lines, flow_obs = describe_flow(
+                scan.symbol, scan.bars,
+                filings_by_symbol.get(scan.symbol, []) if filings_fetched else None)
+            if flow_obs is not None:
+                self.flow_engine.ingest(flow_obs)
+            ctx = DecisionContext(scan=scan, regime=regime_text,
+                                  flow_lines=flow_lines, flow_filings_fetched=filings_fetched,
+                                  as_of=decision_times.get(scan.symbol, now),
+                                  news=[self._untrusted(s) for s in chosen],
+                                  news_fetched=news_fetched,
+                                  upcoming_events=[
+                                      f"{e.on.isoformat()} {e.event_type.value}"
+                                      + (f" — {e.description}" if e.description else "")
+                                      for e in calendar.events_between(
+                                          now.date(), now.date() + timedelta(
+                                              days=self.event_display_days),
+                                          symbol=scan.symbol)] if events_fetched else [],
+                                  events_fetched=events_fetched,
+                                  quote=quotes.get(scan.symbol),
+                                  portfolio_summary={"cash": self.ledger.cash})
             rec = self.provenance.open(decision_id=f"{scan.symbol}-{now.date()}")
             rec.model = self.decision_model.name
             rec.model_version = self.decision_model.version
@@ -431,13 +689,47 @@ class TradingPipeline:
                                   "volatility": scan.volatility,
                                   "dollar_volume": scan.dollar_volume}
             rec.data_timestamps = {"last_bar": scan.bars[-1].ts.isoformat()}
-            try:
-                decision = validate_decision(self.decision_model.decide(ctx))
-            except MalformedDecisionError as e:
-                result.no_trade_reasons.append(f"{scan.symbol}: malformed decision rejected (§28)")
-                rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
-                continue
+            if chosen:
+                rec.input_features["news_urls"] = [u for s in chosen for u in s.urls[:1]]
+                rec.data_timestamps["latest_news"] = max(
+                    s.published_at for s in chosen if s.published_at).isoformat()
+            human = self._session_human.get(scan.symbol)
+            if human is not None:
+                # §76-78: the human decides; the AI's view is only recorded beside it (§79).
+                # Everything after this point is the same pipeline an AI candidate takes.
+                ai_action = self._ai_view(ctx)
+                rec.model, rec.model_version = "human-intent", human.intent_id
+                human_proposal = self.human_analyzer.to_proposal(
+                    HumanIntent(symbol=scan.symbol, action=IntentAction.WANT_BUY,
+                                stated_reason=human.stated_reason, at=now),
+                    self.human_analyzer.analyze(
+                        HumanIntent(symbol=scan.symbol, action=IntentAction.WANT_BUY,
+                                    stated_reason=human.stated_reason, at=now),
+                        scan, regime_text, [n.text[:160] for n in ctx.news],
+                        self._position_notional({}, now).get(scan.symbol, 0.0)), now)
+                decision = human_proposal.decision
+                self._human_ai_view[scan.symbol] = ai_action
+            else:
+                try:
+                    decision = validate_decision(self.decision_model.decide(ctx))
+                except MalformedDecisionError as e:
+                    result.no_trade_reasons.append(f"{scan.symbol}: malformed decision rejected (§28)")
+                    rec.result = {"rejected": "malformed decision", "error": str(e)[:200]}
+                    continue
+                except LLMCallError as e:
+                    # A provider outage / exhausted credit / refusal on ONE candidate
+                    # must not abort the whole session (and with it exit management
+                    # for open positions). No decision == no trade for this symbol.
+                    result.no_trade_reasons.append(
+                        f"{scan.symbol}: Decision AI unavailable — no trade ({type(e).__name__})")
+                    rec.result = {"rejected": "decision AI unavailable", "error": str(e)[:200]}
+                    continue
             rec.output = decision.model_dump(mode="json")
+            if human is None:                 # the learning loops grade the AI, not the human's template
+                self._emit("on_decision", DecisionEvent(
+                    decision_id=rec.decision_id, symbol=scan.symbol, as_of=now, decision=decision,
+                    price=quotes[scan.symbol].mid if scan.symbol in quotes else None, context=ctx),
+                    result)
             # §2: a SELL is only ever a reduction of an EXISTING long. A SELL
             # on an unheld symbol is a Decision AI error, not a trade — it is
             # rejected here and recorded, before any order can be built.
@@ -460,21 +752,30 @@ class TradingPipeline:
                 self._record_decision(rec.decision_id, scan.symbol, DecisionKind.NO_TRADE,
                                       now, scan.last_close, decision=decision)
                 continue
-            result.decision_candidates += 1
+            if human is None:
+                result.decision_candidates += 1
 
-            critique = self.skeptic.critique(decision, ctx)
-            rec.skeptic_output = critique.model_dump(mode="json")
-            if critique.recommends_veto:
-                result.skeptic_vetoes += 1
-                result.no_trade_reasons.append(
-                    f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
-                self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
-                                      now, scan.last_close, decision=decision,
-                                      skeptic_consulted=True)
-                continue
+                critique = self.skeptic.critique(decision, ctx)
+                rec.skeptic_output = critique.model_dump(mode="json")
+                if critique.recommends_veto:
+                    result.skeptic_vetoes += 1
+                    result.no_trade_reasons.append(
+                        f"{scan.symbol}: skeptic veto — {'; '.join(critique.objections)}")
+                    self._record_decision(rec.decision_id, scan.symbol, DecisionKind.AVOID,
+                                          now, scan.last_close, decision=decision,
+                                          skeptic_consulted=True)
+                    continue
+            else:
+                critique = SkepticOutput(
+                    proposal_symbol=scan.symbol, severity=0.0, recommends_veto=False,
+                    model_family="human-intent",
+                    objections=["human intent: the Skeptic AI is not consulted (§78); the Audit AI and "
+                                "the Master Risk Controller still decide"])
+                rec.skeptic_output = critique.model_dump(mode="json")
 
             proposal = TradeProposal(symbol=scan.symbol, side=Action.BUY,
-                                     source=ProposalSource.AI, decision=decision,
+                                     source=ProposalSource.HUMAN if human else ProposalSource.AI,
+                                     decision=decision,
                                      skeptic=critique, created_at=now)
             # F2: real time, not simulated `now` — this is the signal's actual
             # birth for staleness purposes (LLM latency, retries, a stuck
@@ -494,7 +795,9 @@ class TradingPipeline:
             quote = self.market_data.quote(scan.symbol, now)
             entry_price = quote.ask
             prices[scan.symbol] = quote.mid
-            gap = gap_risk_score(list(scan.bars))
+            has_event = events_fetched and calendar.has_event_before(
+                scan.symbol, now.date(), self.event_horizon_days)
+            gap = gap_risk_score(list(scan.bars), has_event_before_horizon=has_event)
             try:
                 stop = self.loss_control.plan(proposal, list(scan.bars), entry_price, gap)
             except NoStopPlanError as e:
@@ -507,16 +810,26 @@ class TradingPipeline:
             rec.stop_plan = stop.model_dump(mode="json")
 
             # 4. Position Sizing (§35)
-            snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
+            snapshot = self.ledger.snapshot(self.mark_prices(prices, now))
             level = throttle_level(snapshot.drawdown, self.risk_controller.config)
             pctx = PortfolioContext(
                 equity=snapshot.equity, settled_cash=self._settled_cash(),
                 existing_exposure=self._position_notional(prices, now),
                 theme_exposure=self._theme_exposure(prices, now),
                 symbol_themes=self.symbol_themes,
+                correlation_to_book=self._correlation_to_book(scan, now),
                 adv_shares=sum(b.volume for b in scan.bars[-20:]) / 20,
                 throttle_factor=throttle_factor(level, self.risk_controller.config))
             calibrated = self.calibration.calibrate(decision.confidence)
+            # §30: when the sources disagree, confidence — and with it the size — shrinks.
+            # The multiplier is in [0.5, 1.0]: this can only make a position smaller.
+            reading = self._measure_disagreement(scan, decision, critique, chosen)
+            if reading is not None:
+                calibrated *= reading.risk_multiplier
+                rec.disagreement = {"views": reading.views,
+                                    "disagreement": round(reading.disagreement, 4),
+                                    "size_multiplier": round(reading.risk_multiplier, 4)}
+                result.disagreement_multipliers[scan.symbol] = round(reading.risk_multiplier, 4)
             try:
                 sized = self.sizing.size(proposal, stop, quote, pctx, calibrated)
             except SizingRejected as e:
@@ -536,7 +849,7 @@ class TradingPipeline:
             return result
 
         # 5. Capital Allocation (§36)
-        snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
+        snapshot = self.ledger.snapshot(self.mark_prices(prices, now))
         alloc = self.allocation.allocate(sized_candidates, equity=snapshot.equity,
                                          settled_cash=self._settled_cash(),
                                          current_exposure_notional=snapshot.positions_value)
@@ -549,7 +862,14 @@ class TradingPipeline:
         result.allocated = len(alloc.accepted)
 
         # 6. Audit AI → Master Risk Controller → Snapshot → Execution (A3-A4, §42, §44)
-        for sized in alloc.accepted[: self.max_new_positions]:
+        # A human's confirmed choice goes first (stable sort keeps the allocator's order otherwise);
+        # whatever the per-session order limit cuts off is recorded with that reason, never dropped silently.
+        ordered = sorted(alloc.accepted, key=lambda sp: sp.proposal.source is not ProposalSource.HUMAN)
+        for cut in ordered[self.max_new_positions:]:
+            result.no_trade_reasons.append(
+                f"{cut.proposal.symbol}: allocated but not ordered — per-session limit of "
+                f"{self.max_new_positions} new positions reached")
+        for sized in ordered[: self.max_new_positions]:
             self._order_seq += 1
             symbol = sized.proposal.symbol
             intent = OrderIntent(
@@ -565,8 +885,15 @@ class TradingPipeline:
 
             # 6a. Independent Audit AI (A3) — semantic gate BEFORE deterministic risk
             try:
-                audit = self.auditor.audit(sized.proposal.decision, sized, intent,
-                                           AuditContext(now=now))
+                audit_quote: Optional[Quote] = self.market_data.quote(symbol, now)
+            except MarketDataUnavailable:
+                audit_quote = None            # the audit prompt says "not available"
+            try:
+                audit = self.auditor.audit(
+                    sized.proposal.decision, sized, intent,
+                    AuditContext(now=now, quote=audit_quote,
+                                 quote_as_of=(self._decision_time(now, audit_quote)
+                                              if audit_quote else None)))
             except AuditUnavailableError as e:
                 result.no_trade_reasons.append(f"{symbol}: audit unavailable — {e}")
                 self.audit_log.record_near_miss(Stage.AUDIT, NearMissKind.OTHER, now,
@@ -603,6 +930,11 @@ class TradingPipeline:
                                       had_stop_plan=True, skeptic_consulted=True)
                 continue
             result.audit_passed += 1
+
+            blocked = self.execution.entries_blocked()
+            if blocked:
+                result.no_trade_reasons.append(f"{symbol}: {blocked}")
+                continue
 
             # 6b. deterministic Master Risk Controller — the FINAL barrier (A3-4)
             view = self._risk_view(sized, prices, now)
@@ -642,20 +974,26 @@ class TradingPipeline:
                                   decision=sized.proposal.decision,
                                   had_stop_plan=True, skeptic_consulted=True)
 
-            state = self.execution.submit(approved, snapshot=snapshot)
+            state = self.execution.submit(
+                approved, snapshot=snapshot,
+                reference_price=sized.stop_plan.entry_price)   # planned entry (ask) -> F6 slippage
             log_rec.final_state = state.value
             rec.order_ref = intent.client_order_id
             if state in (OrderState.FILLED, OrderState.PARTIALLY_FILLED):
                 filled_qty = 0.0
-                for f in self.execution.broker.get_fills(since=now.replace(year=2000)):
-                    if f.client_order_id == intent.client_order_id:
-                        filled_qty += f.qty
-                        self._record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
-                                          f.price, f.fees, f.ts,
-                                          note=intent.client_order_id)
-                        rec.fill_refs.append(f.broker_fill_id)
-                        log_rec.fills.append(f.broker_fill_id)
-                        result.fills.append(f)
+                for f in self.execution.broker.get_order_fills(intent.client_order_id):
+                    filled_qty += f.qty
+                    self._record_fill(f.symbol, f.qty if f.side is Action.BUY else -f.qty,
+                                      f.price, f.fees, f.ts,
+                                      note=intent.client_order_id)
+                    rec.fill_refs.append(f.broker_fill_id)
+                    log_rec.fills.append(f.broker_fill_id)
+                    result.fills.append(f)
+                    self._emit("on_fill", FillEvent(
+                        symbol=f.symbol, side=f.side, qty=f.qty, price=f.price, fees=f.fees,
+                        ts=f.ts, client_order_id=f.client_order_id,
+                        reference_price=sized.stop_plan.entry_price,
+                        source=sized.proposal.source.value), result)
                 result.orders_filled += 1
                 rec.result = {"state": state.value}
                 self._persist_audit_record(log_rec, now)
@@ -673,18 +1011,32 @@ class TradingPipeline:
                 self._persist_audit_record(log_rec, now)
                 result.no_trade_reasons.append(
                     f"{sized.proposal.symbol}: order ended {state.value}")
+            self._checkpoint("order")        # fills, ledger and protective stop are now all in place
         return result
 
     # -- helpers -------------------------------------------------------------
-    def _mark_prices(self, known: dict[str, float], now: datetime) -> dict[str, float]:
+    def mark_prices(self, known: dict[str, float], now: datetime) -> dict[str, float]:
         prices = dict(known)
         for sym in self.ledger.positions:
             if sym not in prices:
-                prices[sym] = self.market_data.quote(sym, now).mid
+                prices[sym] = self._mark_price(sym, now)
         return prices
 
+    def _mark_price(self, symbol: str, now: datetime) -> float:
+        """Valuation price for a HELD symbol. A missing quote (market closed,
+        bid/ask 0) must not abort the session that manages the exits: fall back
+        to the last daily close, then to cost basis. Never used to open risk."""
+        try:
+            return self.market_data.quote(symbol, now).mid
+        except MarketDataUnavailable:
+            pass
+        try:
+            return self.market_data.bars(symbol, now, days=5, received_at=now)[-1].bar.close
+        except (MarketDataUnavailable, IndexError):
+            return self.ledger.positions[symbol].avg_cost
+
     def _position_notional(self, prices: dict[str, float], now: datetime) -> dict[str, float]:
-        marks = self._mark_prices(prices, now)
+        marks = self.mark_prices(prices, now)
         return {sym: lot.qty * marks[sym] for sym, lot in self.ledger.positions.items()}
 
     def _theme_exposure(self, prices: dict[str, float], now: datetime) -> dict[str, float]:
@@ -696,7 +1048,7 @@ class TradingPipeline:
 
     def _risk_view(self, sized: SizedProposal, prices: dict[str, float],
                    now: datetime) -> PortfolioRiskView:
-        snapshot = self.ledger.snapshot(self._mark_prices(prices, now))
+        snapshot = self.ledger.snapshot(self.mark_prices(prices, now))
         pos_notional = self._position_notional(prices, now)
         return PortfolioRiskView(
             equity=snapshot.equity, settled_cash=self._settled_cash(),
@@ -708,8 +1060,8 @@ class TradingPipeline:
             drawdown=snapshot.drawdown, stop_plan_exists=True,
             gap_risk_score=sized.stop_plan.gap_risk_score,
             adv_shares=self._adv_shares(sized.proposal.symbol, now),
-            correlation_to_book=0.0,
-            reconciliation_ok=True, data_health=self.integrity.health,
+            correlation_to_book=self._book_correlation.get(sized.proposal.symbol, 0.0),
+            reconciliation_ok=self._reconciliation_ok, data_health=self.integrity.health,
             broker_connected=self._broker_connected(),
             spread_pct=self._spread_pct(sized.proposal.symbol, now),
             known_client_order_ids=frozenset(self.execution._submitted),  # noqa: SLF001
@@ -722,6 +1074,211 @@ class TradingPipeline:
                             - self._signal_captured_at[sized.proposal.proposal_id]
                             ).total_seconds(),
             margin_requirement=0.0)
+
+    def _load_news(self, symbols: list[str], now: datetime,
+                   result: "PipelineResult") -> tuple[list[NewsSignal], bool]:
+        """One batched fetch for the session's candidates. (signals, fetched):
+        `fetched=False` (no source, or it failed) is reported to the model as
+        "news not available" — never as "no news". A failure does not stop the
+        session; news is advisory input, not a gate."""
+        if self.news_source is None or not symbols:
+            return [], False
+        try:
+            items = self.news_source.fetch(symbols, since=now - self.news_lookback, until=now)
+        except NewsUnavailable as e:
+            result.data_warnings.append(f"news unavailable — Decision runs without it ({e})")
+            return [], False
+        # one article at a time: the engine clusters by (tickers, day), which would
+        # merge distinct stories and let one directive-like item quarantine every
+        # legitimate story for the same symbol. Dedup state still carries across.
+        for err in getattr(self.news_source, "last_errors", []):
+            result.data_warnings.append(f"partial news failure — one source is down ({err})")
+        signals = [sig for item in items for sig in self.news_engine.process([item])]
+        quarantined = sum(1 for s in signals if s.injection_flagged)
+        if quarantined:
+            result.data_warnings.append(
+                f"{quarantined} news item(s) quarantined as directive-like text (§19)")
+        return signals, True
+
+    def _load_events(self, symbols: list[str], now: datetime,
+                     result: "PipelineResult") -> tuple[EventCalendar, bool]:
+        """Known upcoming events for the session's candidates (one fetch). Same
+        contract as news: `fetched=False` is stated to the model as "not
+        available", never as "no events"; the session carries on."""
+        calendar = EventCalendar()
+        if self.event_source is None or not symbols:
+            return calendar, False
+        try:
+            events = self.event_source.fetch(
+                symbols, now.date(), now.date() + timedelta(days=self.event_display_days))
+        except EventsUnavailable as e:
+            result.data_warnings.append(f"events unavailable — Decision runs without them ({e})")
+            return calendar, False
+        for err in getattr(self.event_source, "last_errors", []):
+            result.data_warnings.append(f"partial events failure — one source is down ({err})")
+        for ev in events:
+            calendar.add(ev)
+        return calendar, True
+
+    # -- human intent (§76-79) -----------------------------------------------------------
+    def analyze_human_intents(self, now: datetime) -> int:
+        """Attach the §77 analysis to every newly submitted intent so the human has something to read
+        before confirming. Read-only toward the market and the books: no order can come out of this.
+        Returns how many were analysed. An unreadable inbox analyses nothing."""
+        if self.human_inbox is None:
+            return 0
+        try:
+            self.human_inbox.expire_stale(now)
+            pending = self.human_inbox.pending_analysis()
+        except IntentInboxUnreadable as e:
+            log.warning("human intent inbox unreadable: %s", e)
+            return 0
+        done = 0
+        for rec in pending:
+            scans = self.scanner.scan([rec.symbol], now)
+            if not scans:
+                self.human_inbox.reject(
+                    rec.intent_id, "not tradeable here: the scanner's price / liquidity / momentum / "
+                    "volatility filters did not pass (no data, or the same limits the AI is held to)", now)
+                continue
+            intent = HumanIntent(symbol=rec.symbol, action=IntentAction.WANT_BUY,
+                                 stated_reason=rec.stated_reason, at=now)
+            regime = self._read_regime(self.universe.symbols_as_of(now.date()), now)
+            scratch = PipelineResult()
+            signals, fetched = self._load_news([rec.symbol], now, scratch)
+            headlines = [s.headline for s in select_for_symbol(signals, rec.symbol)] if fetched else []
+            analysis = self.human_analyzer.analyze(
+                intent, scans[0], regime, headlines, self._position_notional({}, now).get(rec.symbol, 0.0))
+            body = dataclasses.asdict(analysis)
+            body["forecast"] = {k: v.model_dump(mode="json") for k, v in analysis.forecast.items()}
+            self.human_inbox.record_analysis(rec.intent_id, json.loads(json.dumps(body, default=str)), now)
+            done += 1
+        return done
+
+    def _with_human_scans(self, scans: list, now: datetime, result: "PipelineResult") -> list:
+        """Offer the session's CONFIRMED human intents as candidates (first in line). They are scanned
+        by the same scanner, so an untradeable name is refused here with a recorded reason; from here
+        on they go through the same gates as an AI candidate."""
+        self._human_ai_view = {}
+        if self.human_inbox is None:
+            return scans
+        try:
+            self.human_inbox.expire_stale(now)
+            confirmed = self.human_inbox.confirmed()
+        except IntentInboxUnreadable as e:
+            result.data_warnings.append(f"human intent inbox unreadable — no human intent acted on ({e})")
+            return scans
+        front = []
+        for rec in confirmed:
+            found = self.scanner.scan([rec.symbol], now)
+            if not found:
+                self.human_inbox.reject(rec.intent_id, "refused at execution: the scanner's filters did not "
+                                        "pass (price / liquidity / momentum / volatility / data)", now)
+                result.human_intents[rec.intent_id] = "REJECTED: scanner filters"
+                result.no_trade_reasons.append(f"{rec.symbol}: human intent refused — scanner filters did not pass")
+                continue
+            self._session_human[rec.symbol] = rec
+            front.append(found[0])
+        symbols = {x.symbol for x in front}
+        return front + [x for x in scans if x.symbol not in symbols]
+
+    def _ai_view(self, ctx) -> Optional[str]:
+        """What the Decision AI says about a symbol a human wants (for §79 only; never decisive).
+        None when it cannot be asked."""
+        try:
+            return validate_decision(self.decision_model.decide(ctx)).action.value
+        except (MalformedDecisionError, LLMCallError):
+            return None
+
+    def _finish_human_intents(self, now: datetime, result: "PipelineResult") -> None:
+        """Close every intent this session offered: ordered, or why not. Early exits that never reached
+        the intent (kill switch, reconciliation) leave it CONFIRMED for the next session."""
+        for symbol, rec in self._session_human.items():
+            try:
+                prov = self.provenance.get(f"{symbol}-{now.date()}")
+            except KeyError:
+                prov = None
+            if prov is not None and prov.order_ref:
+                outcome = f"ORDER_PLACED {prov.order_ref}"
+            else:
+                why = [r for r in result.no_trade_reasons if r.startswith(f"{symbol}:")]
+                outcome = "NOT_TRADED: " + ("; ".join(why[:3]) or "did not reach an order")
+            result.human_intents[rec.intent_id] = outcome
+            try:
+                self.human_inbox.consume(rec.intent_id, outcome, now)
+            except OSError as e:
+                result.data_warnings.append(f"could not record the outcome of {rec.intent_id}: {e}")
+            quote_px = None
+            try:
+                quote_px = self.market_data.quote(symbol, now).mid
+            except MarketDataUnavailable:
+                pass
+            self._emit("on_human_override", OverrideEvent(
+                symbol=symbol, as_of=now, ai_action=self._human_ai_view.get(symbol),
+                human_action="BUY", entry_price=quote_px, traded=bool(prov and prov.order_ref)), result)
+
+    def _measure_disagreement(self, scan, decision, critique, chosen_news):
+        """How much the available sources disagree about this BUY (None when fewer than two
+        sources have a view). Sources: quant score, Decision, Skeptic, tradeable news, institutional
+        flow, market regime."""
+        views = {"quant": quant_lean(scan.score), "decision": decision_lean(decision.confidence),
+                 "skeptic": skeptic_lean(critique.severity)}
+        news = news_lean([s.direction for s in chosen_news if s.tradeable])
+        if news is not None:
+            views["news"] = news
+        sig = self.flow_engine.signal(scan.symbol)
+        if sig is not None and sig.score != 0.0:
+            views["institutional"] = sig.score
+        regime = regime_lean(self._session_regime)
+        if regime is not None:
+            views["regime"] = regime
+        return self.disagreement.measure(scan.symbol, views) if len(views) >= 2 else None
+
+    def _load_flow_filings(self, symbols: list[str], now: datetime,
+                           result: "PipelineResult") -> tuple[dict[str, list[str]], bool]:
+        """Ownership filings for the session's candidates (one fetch). `fetched=False` is stated to
+        the model as "not available", never as "none"; the session carries on."""
+        if self.flow_filings_source is None or not symbols:
+            return {}, False
+        try:
+            return self.flow_filings_source.fetch(symbols, now.date()), True
+        except FlowUnavailable as e:
+            result.data_warnings.append(f"ownership filings unavailable — Decision runs without them ({e})")
+            return {}, False
+
+    @staticmethod
+    def _untrusted(signal: NewsSignal) -> UntrustedText:
+        when = signal.published_at.isoformat() if signal.published_at else "unknown time"
+        body = f"[{signal.tier.name}, {when}] {signal.headline}"
+        if signal.summary:
+            body += f" — {signal.summary[:500]}"
+        return UntrustedText(source=signal.tier.name, url=signal.urls[0] if signal.urls else "",
+                             text=body)
+
+    def _correlation_to_book(self, scan, now: datetime) -> float:
+        """Max |corr| of the candidate's daily returns against every held name
+        (§38). Holdings whose bars cannot be fetched count as fully correlated
+        (see position_sizing/correlation.py)."""
+        held = [s for s in self.ledger.positions if s != scan.symbol]
+        series: dict[str, list[float]] = {}
+        for sym in held:
+            try:
+                bars = self.market_data.bars(sym, now, days=40, received_at=now)
+                series[sym] = _daily_returns([b.bar.close for b in bars])
+            except MarketDataUnavailable:
+                series[sym] = []
+        corr = max_abs_correlation_to_book(
+            _daily_returns([b.close for b in scan.bars]), series)
+        self._book_correlation[scan.symbol] = corr
+        return corr
+
+    def _decision_time(self, now: datetime, quote: Quote) -> datetime:
+        """`now`, advanced to the quote's own timestamp when the quote is at most
+        `quote_sampling_lag` ahead of it. A quote further in the future keeps the
+        original `now`, so the integrity engine still flags it."""
+        if now < quote.ts <= now + self.quote_sampling_lag:
+            return quote.ts
+        return now
 
     def _spread_pct(self, symbol: str, now: datetime) -> float:
         quote = self.market_data.quote(symbol, now)

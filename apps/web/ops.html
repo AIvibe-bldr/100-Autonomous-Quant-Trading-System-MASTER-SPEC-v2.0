@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>運用ダッシュボード</title>
+<style>
+  :root { --bg:#eff1ec; --panel:#f9faf7; --ink:#15201b; --mute:#5a665f; --line:#d5dad2; --acc:#d99a00; --up:#0e7a55; --dn:#c0392b; --flat:#5a665f; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.6 "Hiragino Sans","Noto Sans JP",system-ui,sans-serif; padding-bottom: 72px; }
+  .num, .tile .v, .box-pct, .pl, .g .l, .tl { font-family: ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  /* top bar + tabs */
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 24px; border-bottom: 2px solid var(--ink); }
+  .top h1 { font-size: 15px; letter-spacing: .18em; font-weight: 700; }
+  .badge { display: inline-block; padding: 0 8px; margin-left: 8px; font-size: 11px; letter-spacing: .06em; border: 1px solid var(--ink); }
+  .badge.live { background: var(--dn); color: #fff; border-color: var(--dn); }
+  .lamp { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
+  .lamp i { width: 12px; height: 12px; background: var(--up); } .lamp.warn i { background: var(--acc); } .lamp.bad i { background: var(--dn); }
+  nav.tabs { display: flex; gap: 4px; }
+  nav.tabs a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; color: var(--mute); text-decoration: none; font-size: 14px; border-bottom: 3px solid transparent; }
+  nav.tabs a[aria-current="page"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--acc); }
+  .wrap { display: grid; grid-template-columns: 230px minmax(0,1fr); max-width: 1180px; margin: 0 auto; }
+  .rail { padding: 22px 22px 0; border-right: 1px solid var(--line); }
+  main { padding: 22px 24px; min-width: 0; }
+  h2 { font-size: 11px; letter-spacing: .2em; color: var(--mute); margin-bottom: 10px; font-weight: 700; }
+  h3 { font-size: 12px; color: var(--mute); margin: 12px 0 4px; font-weight: 700; }
+  .up, .pos { color: var(--up); } .dn, .neg { color: var(--dn); } .warn { color: #8a5a00; } .muted, .note { color: var(--mute); } .note { font-size: 13px; }
+  /* views */
+  .view-home, .view-all, .view-full { display: none; }
+  body.v-home .view-home, body.v-all .view-all, body.v-full .view-full { display: block; }
+  body.v-home .rail { display: block; } body.v-all .rail, body.v-full .rail { display: none; } body.v-all .wrap, body.v-full .wrap { grid-template-columns: minmax(0,1fr); }
+  /* timeline */
+  .tl { list-style: none; padding: 0 0 0 14px; border-left: 2px solid var(--ink); margin-bottom: 26px; }
+  .tl li { position: relative; padding: 0 0 14px 12px; font-size: 13px; line-height: 1.45; font-family: "Hiragino Sans","Noto Sans JP",system-ui,sans-serif; }
+  .tl li::before { content: ""; position: absolute; left: -21px; top: 5px; width: 10px; height: 10px; background: var(--bg); border: 2px solid var(--ink); }
+  .tl li.now::before { background: var(--acc); border-color: var(--acc); } .tl li.future::before { border-style: dashed; }
+  .tl time { display: block; font-size: 11.5px; color: var(--mute); font-family: ui-monospace,Menlo,Consolas,monospace; }
+  .kv { font-size: 13.5px; line-height: 2; margin-bottom: 20px; }
+  /* status strip + numbers */
+  .tiles { display: flex; gap: 30px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 6px; }
+  .tile .l { font-size: 11px; color: var(--mute); letter-spacing: .1em; } .tile .v { font-size: 22px; font-weight: 700; line-height: 1.2; } .tiles .tile:first-child .v { font-size: 40px; line-height: 1.1; }
+  .tile .s { font-size: 12px; color: var(--mute); }
+  .hero { border-left: 6px solid var(--up); background: var(--panel); padding: 8px 14px; margin: 14px 0 22px; }
+  .hero.warn { border-left-color: var(--acc); } .hero.bad { border-left-color: var(--dn); }
+  .hero .w { display: none; } .hero h2 { font-size: 18px; letter-spacing: 0; color: var(--ink); margin: 0; } .hero p { font-size: 14px; overflow-wrap: anywhere; }
+  .alerts { border: 1px solid var(--acc); background: #fff7df; padding: 10px 16px; margin-bottom: 18px; } .alerts.bad { border-color: var(--dn); background: #fdecea; }
+  .alerts b { display: block; } .alerts li { margin-left: 1.2em; font-size: 14px; overflow-wrap: anywhere; }
+  /* gauge rows (方向3) */
+  .rows .hd, .r { display: grid; grid-template-columns: minmax(170px,290px) minmax(0,1fr) 100px; gap: 18px; align-items: center; }
+  .rows .hd { font-size: 11px; color: var(--mute); letter-spacing: .1em; padding: 0 0 6px; border-bottom: 2px solid var(--ink); }
+  .r { all: unset; box-sizing: border-box; display: grid; grid-template-columns: minmax(170px,290px) minmax(0,1fr) 100px; gap: 18px; align-items: center; width: 100%; min-height: 64px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .r:hover { background: var(--panel); } .r:focus-visible { outline: 3px solid var(--ink); outline-offset: -3px; }
+  .r .c.b { color: var(--ink); opacity: .75; } .r .s { font-weight: 800; font-size: 17px; } .r .c { font-size: 12px; color: var(--mute); line-height: 1.3; overflow-wrap: anywhere; }
+  .tag { white-space: nowrap; font-size: 11px; color: #6b4600; background: #ffe9ad; padding: 0 6px; margin-left: 6px; font-weight: 700; }
+  .g { position: relative; height: 32px; } .g .tr { position: absolute; left: 0; right: 0; top: 11px; height: 4px; background: var(--line); }
+  .g .sf { position: absolute; left: 0; top: 11px; height: 4px; background: #d9a9a1; } .g .e { position: absolute; top: 5px; width: 2px; height: 16px; background: var(--mute); }
+  .g .p { position: absolute; top: 2px; width: 5px; height: 22px; background: var(--ink); transform: translateX(-2px); } .r.near .g .p { background: var(--dn); }
+  .g .l { position: absolute; top: 21px; font-size: 10.5px; color: var(--mute); }
+  .r .v { text-align: right; font-weight: 700; font-size: 18px; line-height: 1.2; } .r .v small { display: block; font-size: 12px; font-weight: 400; color: var(--mute); }
+  .key { font-size: 12px; color: var(--mute); margin: 10px 0 0; }
+  .more-link { all: unset; cursor: pointer; display: inline-flex; align-items: center; min-height: 44px; margin-top: 6px; color: var(--ink); font-weight: 700; border-bottom: 2px solid var(--ink); }
+  .more-link:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  /* 盤: equal windows, green = profit, red = loss */
+  .board { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-rows: 176px; gap: 10px; }
+  .win { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; border-radius: 6px; overflow: hidden; color: #fff; background: var(--flat); min-width: 0; }
+  .win.up { background: var(--up); } .win.dn { background: var(--dn); }
+  .win:hover { filter: brightness(1.08); } .win:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .wt { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: rgba(0,0,0,.22); font-weight: 800; font-size: 14px; letter-spacing: .04em; }
+  .wb { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0 10px; }
+  .box-pct { font-size: 26px; font-weight: 700; line-height: 1.15; } .wb .a { font-size: 13px; opacity: .95; }
+  .wf { padding: 0 10px 8px; font-size: 12px; line-height: 1.35; opacity: .97; } .wf div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .wf .n { font-weight: 700; font-size: 13px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.7em; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 14px; }
+  .controls select { font: inherit; font-size: 14px; min-height: 44px; padding: 0 10px; border: 1px solid var(--ink); background: var(--panel); color: var(--ink); }
+  .seg { display: inline-flex; border: 1px solid var(--ink); } .seg button { all: unset; cursor: pointer; min-height: 44px; padding: 0 18px; font-size: 14px; color: var(--ink); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; font-weight: 700; } .seg button:focus-visible { outline: 3px solid var(--acc); outline-offset: -3px; }
+  .fchip { all: unset; cursor: pointer; display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+  .fchip[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); } .fchip:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  /* detail sheet */
+  .sheet-bg { position: fixed; inset: 0; background: rgba(21,32,27,.5); display: flex; align-items: flex-end; justify-content: center; z-index: 20; animation: fade .12s ease-out; }
+  .sheet { background: var(--panel); width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; padding: 18px 20px 26px; border-top: 4px solid var(--ink); }
+  @media (min-width: 700px) { .sheet-bg { align-items: center; } .sheet { border: 1px solid var(--ink); border-top-width: 4px; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  .sheet-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .sheet .x { all: unset; cursor: pointer; font-size: 28px; line-height: 1; min-width: 44px; min-height: 44px; text-align: center; } .sheet .x:focus-visible { outline: 3px solid var(--ink); }
+  .sym { font-weight: 800; font-size: 17px; } .sym.big { font-size: 28px; } .co { font-size: 12.5px; color: var(--mute); } .big { font-size: 28px; font-weight: 800; }
+  .why1 { font-size: 12px; color: #6b4600; background: #ffe9ad; padding: 0 8px; display: inline-block; }
+  .why h4 { font-size: 12px; color: var(--mute); margin: 14px 0 2px; font-weight: 700; letter-spacing: .08em; } .why p { overflow-wrap: anywhere; font-size: 15px; }
+  .why .plan { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 4px; }
+  .why .plan div { background: var(--bg); border: 1px solid var(--line); padding: 6px 10px; } .why .plan b { display: block; font-size: 16px; } .why .plan span { color: var(--mute); font-size: 12px; }
+  /* chart + misc panels */
+  section, .card { background: var(--panel); border: 1px solid var(--line); padding: 16px 18px; margin-bottom: 14px; }
+  .card h2, section h2 { margin-bottom: 8px; }
+  canvas { width: 100%; height: 150px; display: block; }
+  .bar { height: 8px; background: var(--line); margin: 8px 0 4px; } .bar i { display: block; height: 100%; background: var(--ink); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; } .chip { border: 1px solid var(--ink); padding: 0 12px; font-size: 14px; } .chip.grey { border-color: var(--line); color: var(--mute); }
+  details { margin: 4px 0; } summary { cursor: pointer; min-height: 32px; font-size: 14px; text-decoration: underline; }
+  ul.plain { list-style: none; padding: 0; } ul.plain li { padding: 3px 0; border-bottom: 1px solid var(--line); color: var(--mute); font-size: 13px; overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .grid .card { margin-bottom: 0; padding: 10px 14px; } .grid .card .label { color: var(--mute); font-size: 12px; } .grid .card .value { font-size: 17px; font-weight: 700; overflow-wrap: anywhere; } .grid .card .sub { color: var(--mute); font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; } th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th { color: var(--mute); font-weight: 500; font-size: 12px; } th:first-child, td:first-child, td.l, th.l { text-align: left; }
+  .scroll { overflow-x: auto; } .scroll table { min-width: 520px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; } .cols { align-items: start; } .cols section { margin-bottom: 0; min-width: 0; } .cols .scroll table { min-width: 0; } .cols th, .cols td { white-space: normal; overflow-wrap: anywhere; }
+  .banner { padding: 8px 12px; margin-bottom: 10px; font-size: 13px; border-left: 4px solid; } .banner.WARNING { background: #fff7df; border-color: var(--acc); } .banner.CRITICAL { background: #fdecea; border-color: var(--dn); } .banner.info { background: var(--panel); border-color: var(--ink); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--mute); }
+  #error { display: none; margin: 10px 24px 0; } footer { color: var(--mute); font-size: 12px; padding: 0 24px; max-width: 1180px; margin: 0 auto; }
+  /* phone: bottom tabs, one column */
+  @media (max-width: 760px) {
+    .top { padding: 10px 16px; } nav.tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; background: var(--ink); gap: 0; }
+    nav.tabs a { flex: 1; justify-content: center; color: #cfd6d0; border-bottom: 0; border-top: 3px solid transparent; } nav.tabs a[aria-current="page"] { color: #fff; border-top-color: var(--acc); }
+    .wrap { grid-template-columns: minmax(0,1fr); } .rail { order: 2; border-right: 0; border-top: 1px solid var(--line); padding: 14px 16px 0; margin-top: 8px; }
+    .tl { display: flex; flex-wrap: wrap; gap: 6px 22px; border-left: 0; border-top: 2px solid var(--ink); padding: 12px 0 6px; margin-bottom: 8px; } .tl li { flex: 0 0 auto; padding: 0; } .tl li::before { display: none; }
+    main { padding: 16px; } .tiles .tile:first-child .v { font-size: 32px; } #error { margin: 10px 16px 0; } footer { padding: 0 16px; }
+    .rows .hd { display: none; } .r { grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; } .r .g { grid-column: 1 / -1; order: 3; }
+    .board { grid-template-columns: repeat(2, minmax(0,1fr)); } .box-pct { font-size: 24px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="top"><h1>運用ダッシュボード<span id="env" class="badge">…</span></h1>
+  <nav class="tabs" aria-label="画面の切り替え"><a id="tHome" href="#home">今日</a><a id="tAll" href="#all">銘柄</a><a id="tFull" href="#full">詳細</a></nav>
+  <span class="lamp" id="lamp"><i></i><span id="lampText">…</span></span></div>
+<div id="error" class="banner CRITICAL"></div>
+<div class="wrap"><aside class="rail view-home"><h2>今日の流れ</h2><ul class="tl" id="tl"></ul><h2>状態</h2><div class="kv" id="stt"></div></aside>
+<main>
+<div class="view-home">
+  <div class="tiles" id="tiles"></div>
+  <div id="hero"></div><div id="findings"></div>
+  <h2>気にしてほしい銘柄　<span style="font-weight:400;letter-spacing:0">損切り ─ 現在 ─ 目標 の位置</span></h2>
+  <div id="holdings"></div>
+  <div class="card" style="margin-top:22px"><h2>資産の推移</h2><canvas id="chart" width="800" height="150" role="img" aria-label="資産の推移の折れ線グラフ"></canvas>
+    <div class="note" style="display:flex;justify-content:space-between"><span id="d0"></span><span id="d1"></span></div>
+    <div class="bar"><i id="progress" style="width:0"></i></div><div class="note" id="perfWarn"></div></div>
+  <div class="card"><h2 id="didTitle">直近のセッションでしたこと</h2><div id="did"></div></div>
+</div>
+<div class="view-all">
+  <h2 id="allTitle">持っている全ての銘柄</h2><div id="allHead" class="note"></div>
+  <div class="controls"><div class="seg" role="group" aria-label="表示の形"><button id="mBoard" type="button" aria-pressed="true">盤</button><button id="mList" type="button" aria-pressed="false">表</button></div>
+    <label class="note">並べ方 <select id="sortSel"><option value="attention">気にしてほしい順</option><option value="pnl_pct">損益％の高い順</option><option value="pnl_pct_asc">損益％の低い順</option><option value="value">評価額の大きい順</option><option value="symbol">ティッカー順</option></select></label></div>
+  <div class="controls" id="catChips" role="group" aria-label="系統で絞る"></div>
+  <div id="allBody"></div>
+</div>
+<div class="view-full">
+<div class="grid" id="runnerCards"></div>
+<section><h2>成績</h2><div class="grid" id="perfCards"></div></section>
+<section><h2>セッション（新しい順）</h2><div class="scroll"><table id="sessions"></table></div></section>
+<section><h2>最新セッションの詳細</h2><div id="latest"></div></section>
+<div class="cols" id="observers"></div>
+<section><h2>障害（インシデント）</h2><div id="incidents"></div></section>
+<section><h2>人の意図</h2><div id="intents"></div></section>
+<section><h2>通知の履歴</h2><div id="alerts"></div></section>
+</div>
+</main></div>
+<div id="sheetHost"></div>
+<footer id="footer"></footer>
+
+<script>
+"use strict";
+const token = new URLSearchParams(location.search).get("token");
+const headers = token ? { Authorization: "Bearer " + token } : {};
+
+// All data is rendered through textContent — never as HTML — because it contains text we did not write
+// (news-derived reasons, incident descriptions, operator-typed reasons).
+function el(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat(Infinity)) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return e;
+}
+const money = (x) => x == null ? "—" : (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (x, d = 2) => x == null ? "—" : (x * 100).toFixed(d) + "%";
+const signed = (x, f) => x == null ? "—" : (x > 0 ? "+" : "") + f(x);
+const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
+const jst = (iso) => iso ? new Date(iso).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }) + " JST" : "—";
+const et = (iso) => iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", hour12: false }) + " ET" : "—";
+const card = (label, value, sub, c) => el("div", { class: "card" }, el("div", { class: "label", text: label }),
+  el("div", { class: "value " + (c || ""), text: value }), sub ? el("div", { class: "sub", text: sub }) : null);
+function table(head, rows, leftCols = 1) {
+  const t = el("table");
+  t.append(el("thead", {}, el("tr", {}, head.map((h, i) => el("th", { class: i < leftCols ? "l" : "", text: h })))));
+  t.append(el("tbody", {}, rows.map((r) => el("tr", {}, r.map((c, i) => {
+    const text = (c && typeof c === "object" && "t" in c) ? c.t : c;
+    return el("td", { class: ((c && c.c) || "") + (i < leftCols ? " l" : ""), text: text == null ? "—" : text });
+  })))));
+  return el("div", { class: "scroll" }, t);
+}
+function panel(title, ...body) { return el("section", {}, el("h2", { text: title }), body); }
+async function get(path) {
+  const r = await fetch(path, { headers });
+  if (!r.ok) throw new Error(path + " → HTTP " + r.status);
+  return r.json();
+}
+function setChildren(id, ...kids) { const e = document.getElementById(id); e.replaceChildren(...kids.flat(Infinity).filter(Boolean)); }
+function errorBox(data) { return data && data.error ? el("div", { class: "banner CRITICAL", text: data.error }) : null; }
+
+// <ja-translator>
+// Display-only Japanese for the English sentences our own services write (watchdog, funnel, observers). The
+// originals stay untouched (alerts, CLI and tests use them); a sentence with no rule is shown as written, and
+// free text we did not author (AI objections, exception messages) is never guessed at.
+const SYM = "[A-Z][A-Z0-9.\\-]{0,9}";
+const dropSym = (x) => x.replace(new RegExp("^" + SYM + ": "), "");
+const JA_RULES = [
+  // watchdog findings
+  [/^the runner was stopped on request$/, () => "ランナーは停止操作で止まっています。"],
+  [/^the runner stopped on a failure: ([\s\S]*)$/, (m) => "ランナーが異常で止まりました: " + m[1]],
+  [/^the runner has never written a status file$/, () => "ランナーが一度も状態ファイルを書いていません。"],
+  [/^no heartbeat for (\d+) min \(state (\w+), limit (\d+) min\)$/, (m) => "心拍が " + m[1] + " 分途絶えています（状態 " + m[2] + "、上限 " + m[3] + " 分）。"],
+  [/^risk state is (\w+)$/, (m) => "リスク状態が " + m[1] + " です（通常ではありません）。"],
+  [/^unresolved MAJOR incident (.+)$/, (m) => "未解決の重大障害 " + m[1] + " があります。"],
+  [/^the operator kill switch is engaged \(entries halted\)$/, () => "緊急停止スイッチが作動中です（新しい買いは止まっています）。"],
+  [/^LIVE system without a valid human approval \(no entries\)$/, () => "LIVE のシステムに、有効な人の承認がありません（買いは行われません）。"],
+  [/^today's session \((.+)\) has not run; last session (.+)$/, (m) => "本日（" + m[1] + "）のセッションがまだ実行されていません。前回は " + (m[2] === "never" ? "なし" : m[2]) + " です。"],
+  [/^the trading calendar has no data for this year$/, () => "取引カレンダーに今年のデータがありません。"],
+  // why a symbol was not bought (funnel)
+  [/^scanner produced no candidates$/, () => "スキャナーが候補を出しませんでした。"],
+  [/^no candidate has a valid quote$/, () => "有効な気配値のある候補がありません。"],
+  [/^no BUY decisions survived the funnel$/, () => "買い判断が最後まで残りませんでした。"],
+  [/^reconciliation mismatch — new entries halted: ([\s\S]*)$/, (m) => "台帳とブローカーの照合が一致せず、新しい買いを止めました: " + m[1]],
+  [/^no valid quote — skipped$/, () => "有効な気配値がないため見送り"],
+  [/^quote spread (\S+) exceeds cap (\S+) — no Decision call([\s\S]*)$/, (m) => "気配のスプレッド " + m[1] + " が上限 " + m[2] + " を超えたため、AI判断を呼ばずに見送り" + m[3]],
+  [/^malformed decision rejected \(§28\)$/, () => "AI の出力が不正な形式だったため却下（§28）"],
+  [/^no stop plan — ([\s\S]*)$/, (m) => "損切り計画を作れず見送り — " + m[1]],
+  [/^sizing rejected — ([\s\S]*)$/, (m) => "数量が決まらず見送り — " + jaBody(dropSym(m[1]))],
+  [/^size rounds to zero \(caps\/liquidity\/cash too tight\)$/, () => "買える数が 0 株になります（上限・流動性・現金のどれかが足りません）"],
+  [/^allocation skipped — ([\s\S]*)$/, (m) => "資金配分で見送り — " + m[1]],
+  [/^audit unavailable — ([\s\S]*)$/, (m) => "独立監査が使えず見送り — " + m[1]],
+  [/^Decision AI unavailable — no trade \((.*)\)$/, (m) => "判断 AI が使えず見送り（" + m[1] + "）"],
+  [/^SELL decision on unheld symbol rejected — shorting is forbidden \(§2\); AVOID\/WAIT\/NO_TRADE expected$/, () => "持っていない銘柄の売り判断は却下（空売りは禁止 §2）"],
+  [/^skeptic veto — ([\s\S]*)$/, (m) => "懐疑 AI が拒否 — " + m[1]],
+  [/^allocated but not ordered — per-session limit of (\d+) new positions reached$/, (m) => "資金配分は通ったが、1セッションの新規上限（" + m[1] + " 銘柄）に達したため発注せず"],
+  [/^audit REVIEW — queued for human review: ([\s\S]*)$/, (m) => "監査が人の確認を求めています — " + m[1]],
+  [/^audit REJECT — ([\s\S]*)$/, (m) => "監査が却下 — " + m[1]],
+  [/^risk rejected — ([\s\S]*)$/, (m) => "リスク管理が却下 — " + m[1]],
+  [/^protective stop could not be placed — position is unprotected, review required$/, () => "保護用の損切り注文を置けませんでした。この持ち分は無防備です。確認が必要です"],
+  [/^order ended (\w+)$/, (m) => "注文の最終状態: " + m[1]],
+  // data warnings
+  [/^observer (\S+) failed: (\w+)$/, (m) => "観測者 " + m[1] + " が失敗しました（" + m[2] + "）"],
+  [/^news unavailable — Decision runs without it \(([\s\S]*)\)$/, (m) => "ニュースを取得できません。判断 AI はニュースなしで動きます（" + m[1] + "）"],
+  [/^partial news failure — one source is down \(([\s\S]*)\)$/, (m) => "ニュースの取得元の一部が止まっています（" + m[1] + "）"],
+  [/^events unavailable — Decision runs without them \(([\s\S]*)\)$/, (m) => "決算などの予定を取得できません。判断 AI はそれなしで動きます（" + m[1] + "）"],
+  [/^partial events failure — one source is down \(([\s\S]*)\)$/, (m) => "予定の取得元の一部が止まっています（" + m[1] + "）"],
+  [/^human intent inbox unreadable — no human intent acted on \(([\s\S]*)\)$/, (m) => "人の意図の受付箱を読めません。人の意図は反映されていません（" + m[1] + "）"],
+  [/^(\d+) news item\(s\) quarantined as directive-like text \(§19\)$/, (m) => m[1] + " 件のニュースを、指示文のような内容のため隔離しました（§19）"],
+  // plan text made before entry
+  [/^(\S+)x ATR\((\S+)\) below entry$/, (m) => "ATR（" + m[2] + "）の " + m[1] + " 倍だけ買値より下"],
+  [/^thesis invalidated$/, () => "前提が崩れたとき"],
+  // observers
+  [/^shadow variants are hypothetical close-to-close holds without costs; FULL pays spreads, slippage and fees \(not like-for-like\)$/, () => "シャドーの変種は、費用なしで終値から終値まで持った仮定の結果です。FULL はスプレッド・滑り・手数料を払うため、同じ条件の比較ではありません。"],
+  [/^variants needing an LLM re-run \(NO_NEWS, NO_REGIME, \.\.\.\) are not simulated$/, () => "LLM の再実行が要る変種（NO_NEWS、NO_REGIME など）は再現していません。"],
+  [/^too few sessions to rank anything until the paper period is long$/, () => "ペーパー期間が長くなるまで、セッション数が少なすぎて順位はつけられません。"],
+  [/^market beta = 1\.0 against the benchmark over the holding period$/, () => "市場β は、保有期間のベンチマークに対して 1.0 と仮定しています。"],
+  [/^marked equity uses the last daily close; a mismatch is reported, never a halt$/, () => "評価額は直近の日足終値で計算します。不一致は報告しますが、停止はしません。"],
+  [/^fractional move over one week per unit bought \(not money\)$/, () => "買った1単位あたりの1週間の変化率（金額ではありません）"],
+  // daily review narrative
+  [/^WHY PROFIT: (\S+) — (\d+) fills; mark-to-market gains held\.$/, (m) => "利益の理由: " + m[1] + " — 約定 " + m[2] + " 件。含み益を保っています。"],
+  [/^WHY LOSS: (\S+) — positions marked down; check stop quality and entry timing below\.$/, (m) => "損失の理由: " + m[1] + " — 保有銘柄が値下がりしました。損切りの質と買った時機を確認してください。"],
+  [/^WHY NO TRADE: funnel produced no risk-passing candidate\.$/, () => "見送りの理由: リスクを通る候補がありませんでした。"],
+  [/^WHY NO TRADE: ([\s\S]*)$/, (m) => "見送りの理由: " + ja(m[1])],
+  [/^WHAT WAS MISSED: (\d+) candidates vetoed by skeptic — review vetoes against outcomes \(§53 counterfactual\)\.$/, (m) => "見逃し: 懐疑 AI が " + m[1] + " 件を拒否しました。拒否と実際の結果を照らし合わせてください（§53）。"],
+  [/^REFERENCE: theoretical 100x pace equity (\S+) vs actual (\S+) \(informational only — never raises risk §63\)$/, (m) => "参考: 100倍ペースの理論上の資産 " + m[1] + " に対し、実際は " + m[2] + "（参考表示のみ。リスクを上げることはありません §63）"],
+];
+function jaBody(t) {
+  for (const [re, fn] of JA_RULES) { const m = re.exec(t); if (m) return fn(m); }
+  return t;
+}
+function ja(t) {
+  if (typeof t !== "string") return t;
+  const whole = jaBody(t);                 // whole-sentence rules first ("REFERENCE: ..." looks like a ticker prefix)
+  if (whole !== t) return whole;
+  const m = new RegExp("^(" + SYM + "): ([\\s\\S]+)$").exec(t);
+  if (m) { const r = jaBody(m[2]); return r === m[2] ? t : m[1] + ": " + r; }
+  return jaBody(t);
+}
+// </ja-translator>
+
+function drawChart(series) {
+  const cv = document.getElementById("chart"), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight; cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  if (series.length < 2) { g.fillStyle = css.getPropertyValue("--mute").trim() || "#5a665f"; g.font = "13px sans-serif"; g.fillText("2回以上セッションが終わると表示されます", 4, 24); return; }
+  const ys = series.map((s) => s.equity), lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.15 || 1;
+  const T = 10, B = 6, x = (i) => 6 + (w - 12) * i / (series.length - 1);
+  const y = (v) => T + (h - T - B) * (1 - (v - (lo - pad)) / (hi - lo + 2 * pad));
+  const blue = css.getPropertyValue("--ink").trim();
+  g.beginPath(); series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity)));
+  g.lineTo(x(series.length - 1), h - B); g.lineTo(x(0), h - B); g.closePath(); g.fillStyle = blue + "18"; g.fill();
+  g.strokeStyle = blue; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+  series.forEach((s, i) => i ? g.lineTo(x(i), y(s.equity)) : g.moveTo(x(i), y(s.equity))); g.stroke();
+  g.fillStyle = blue; g.beginPath(); g.arc(x(series.length - 1), y(ys[ys.length - 1]), 4, 0, 7); g.fill();
+}
+
+const jstShort = (iso) => iso ? new Date(iso).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
+
+// One sentence about the system's state, in plain words. Worst case wins; the exact wording of each reason is
+// the watchdog's own finding, so nothing is invented here.
+function heroOf(s) {
+  const r = s.runner, bad = s.findings.filter((f) => f.level === "CRITICAL"), warn = s.findings.filter((f) => f.level === "WARNING");
+  if (!r) return { level: "bad", word: "停止", head: "まだ動いていません。", text: "状態ファイルがありません。ランナーを起動してください。" };
+  if (s.kill_switch.engaged) return { level: "bad", word: "停止", head: "緊急停止中です。", text: s.kill_switch.operator + ": " + s.kill_switch.reason };
+  if (r.state === "FAILED") return { level: "bad", word: "停止", head: "異常で止まっています。", text: r.failure || "原因は障害の履歴を見てください。" };
+  if (s.overall === "CRITICAL") return { level: "bad", word: "要確認", head: "確認が必要です。", text: bad.length ? ja(bad[0].message) : "くわしい画面を見てください。" };
+  if (r.risk_state !== "NORMAL") return { level: "warn", word: "注意",
+    head: r.risk_state === "HALT_NEW_ENTRIES" ? "新しい買いを止めています。" : "安全装置が働いています。",
+    text: "持っている分の損切りは動いています（状態: " + r.risk_state + "）。" };
+  if (s.overall === "WARNING") return { level: "warn", word: "注意", head: "動いていますが、注意があります。", text: warn.length ? ja(warn[0].message) : "" };
+  return { level: "ok", word: "正常", head: "正常に動いています。", text: r.next_session_at ? "次の取引は " + jstShort(r.next_session_at) + " です。" : "" };
+}
+
+function renderStatus(s) {
+  const r = s.runner, h = heroOf(s);
+  const env = document.getElementById("env");
+  env.textContent = r ? r.environment : "—"; env.className = "badge" + (r && r.environment === "LIVE" ? " live" : "");
+  document.getElementById("lamp").className = "lamp " + h.level; document.getElementById("lampText").textContent = h.word;
+  setChildren("hero", el("div", { class: "hero " + h.level }, el("div", { class: "w", text: h.word }),
+    el("h2", { text: h.head }), h.text ? el("p", { text: h.text }) : null));
+  const notes = s.findings.filter((f) => f.level !== "OK" && ja(f.message) !== h.text);
+  setChildren("findings", notes.length ? el("div", { class: "alerts" + (s.overall === "CRITICAL" ? " bad" : "") },
+    el("b", { text: "確認してほしいこと" }), el("ul", {}, notes.map((f) => el("li", { text: ja(f.message) })))) : null);
+  const age = r ? Math.max(0, Math.round((new Date(s.now) - new Date(r.updated_at)) / 1000)) : null;
+  const cards = [
+    card("ランナー", r ? r.state : "未起動", r ? "心拍 " + age + " 秒前 · pid " + r.pid : "状態ファイルがありません", r && r.state === "FAILED" ? "neg" : ""),
+    card("リスク状態", r ? r.risk_state : "—", null, r && r.risk_state !== "NORMAL" ? "warn" : "pos"),
+    card("キルスイッチ", s.kill_switch.engaged ? "作動中" : "解除", s.kill_switch.engaged ? s.kill_switch.operator + ": " + s.kill_switch.reason : null, s.kill_switch.engaged ? "neg" : "pos"),
+    card("最終セッション", r && r.last_session_date ? r.last_session_date : "—", r ? "実行 " + r.sessions_run + " 回" : null),
+    card("口座の保存", s.checkpoint && s.checkpoint.at ? jst(s.checkpoint.at) : "なし", s.checkpoint ? (s.checkpoint.error || s.checkpoint.reason + " · " + s.checkpoint.count + " 世代") : "再起動で引き継げません", s.checkpoint && s.checkpoint.at ? "" : "warn"),
+    card("次のセッション", r && r.next_session_at ? jst(r.next_session_at) : "—", r && r.next_session_at ? et(r.next_session_at) : null),
+    card("未解決の重大障害", String(s.open_major_incidents.length), s.open_major_incidents.join(", ") || null, s.open_major_incidents.length ? "neg" : "pos"),
+  ];
+  if (s.live_gate) cards.push(card("LIVE ゲート", s.live_gate.open ? "承認あり" : "閉", null, s.live_gate.open ? "warn" : "neg"));
+  setChildren("runnerCards", cards);
+}
+
+let lastSeries = [];
+const tile = (l, v, sub, c) => el("div", { class: "tile" }, el("div", { class: "l", text: l }), el("div", { class: "v " + (c || ""), text: v }), sub ? el("div", { class: "s", text: sub }) : null);
+function renderPerf(p) {
+  const s = p.summary, last = (p.series || []).slice(-1)[0];
+  setChildren("tiles", errorBox(p), s ? [
+    tile("いまの資産", money(s.end_equity), "はじめは " + money(s.start_equity) + "。" + signed(s.end_equity - s.start_equity, money) + "（" + signed(s.total_return, pct) + "）"),
+    tile("直近の増減", last ? signed(last.day_pnl, money) : "—", last ? last.date + " のセッション" : null, last ? cls(last.day_pnl) : ""),
+    tile("いちばん減った幅", pct(s.max_drawdown), "これまでの高値からの最大の落ち込み", s.max_drawdown > 0.05 ? "warn" : ""),
+  ] : el("div", { class: "muted", text: "まだセッションが記録されていません" }));
+  document.getElementById("progress").style.width = Math.min(100, 100 * (p.sessions || 0) / (p.proposed_min_sessions || 1)) + "%";
+  document.getElementById("perfWarn").textContent = s ? "検証期間 " + p.sessions + " / " + p.proposed_min_sessions + " 営業日。" +
+    (p.enough_sessions ? "" : "まだ短いので、増えた・減ったで良し悪しは判断できません。") : "";
+  lastSeries = p.series || [];
+  document.getElementById("d0").textContent = lastSeries.length ? lastSeries[0].date : "";
+  document.getElementById("d1").textContent = lastSeries.length ? lastSeries[lastSeries.length - 1].date : "";
+  drawChart(lastSeries);
+  setChildren("perfCards", s ? [
+    card("資産", money(s.end_equity), "開始 " + money(s.start_equity)),
+    card("総リターン", signed(s.total_return, pct), null, cls(s.total_return)),
+    card("最大ドローダウン", pct(s.max_drawdown), null, s.max_drawdown > 0.05 ? "warn" : ""),
+    card("セッション数", s.sessions + " / " + p.proposed_min_sessions, s.first_date + " 〜 " + s.last_date),
+    card("上昇／下落／横ばい", s.up_days + " / " + s.down_days + " / " + s.flat_days, "最良 " + signed(s.best_day, (v) => v.toFixed(2)) + " 最悪 " + signed(s.worst_day, (v) => v.toFixed(2))),
+    card("約定／損切り", s.orders_filled + " / " + s.stops_triggered, "手数料 " + money(s.fees_total)),
+    card("非 NORMAL で終了", String(s.non_normal_risk_days), "警告あり " + s.warning_days + " 日", s.non_normal_risk_days ? "warn" : ""),
+    card("LLM 費用", s.llm_cost_usd == null ? "未記録" : money(s.llm_cost_usd)),
+  ] : []);
+}
+
+// ---- holdings: 方向3 gauge rows (home, "表") and 方向2 equal windows ("盤"); tap = why + plan ----
+const NEAR_STOP = 0.06;                    // a position this close above its stop is shown as "損切り近い" (display only)
+const nameOf = (x) => x.company_ja || x.company || "会社名は未登録";
+const qtyText = (q) => Number(q).toLocaleString("en-US", { maximumFractionDigits: 4 });
+const dist = (from, to) => from > 0 ? to / from - 1 : null;
+const arrow = (x) => x > 0 ? "▲" : x < 0 ? "▼" : "－";
+let holdData = null, catFilter = null, allMode = "board";
+function planBox(label, value, sub) { return el("div", {}, el("span", { text: label }), el("b", { text: value }), sub ? el("span", { text: sub }) : null); }
+const pctPos = (v, lo, hi) => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
+
+// one row: name | where the price sits between stop and target | P&L
+function holdingRow(x) {
+  const pl = x.plan, near = !!pl && dist(pl.stop_price, x.price) < NEAR_STOP;
+  let gauge = el("div", { class: "g" });
+  if (pl) {
+    const lo = pl.stop_price, hi = pl.profit_target;
+    gauge.append(el("div", { class: "tr" }), el("div", { class: "sf", style: "width:" + pctPos(x.price, lo, hi) + "%" }),
+      el("div", { class: "e", style: "left:" + pctPos(x.avg_cost, lo, hi) + "%" }), el("div", { class: "p", style: "left:" + pctPos(x.price, lo, hi) + "%" }),
+      el("span", { class: "l", style: "left:0", text: money(lo) }), el("span", { class: "l", style: "right:0", text: money(hi) }));
+  } else gauge.append(el("span", { class: "warn note", text: "計画の記録がありません" }));
+  const b = el("button", { type: "button", class: "r" + (near ? " near" : ""), "aria-label": x.symbol + " " + nameOf(x) + " " + signed(x.pnl_pct, pct) + (near ? " 損切りに近い" : "") + " 理由と計画を開く" },
+    el("div", {}, el("span", { class: "s", text: x.symbol }), near ? el("span", { class: "tag", text: "損切り近い" }) : null,
+      el("div", { class: "c", text: nameOf(x) + (x.category ? "・" + x.category : "") }),
+      x.business ? el("div", { class: "c b", text: x.business }) : null),
+    gauge,
+    el("div", { class: "v pl " + cls(x.pnl) }, arrow(x.pnl) + " " + signed(x.pnl_pct, pct), el("small", { text: signed(x.pnl, money) })));
+  b.addEventListener("click", () => openSheet(x));
+  return b;
+}
+const rowsHead = () => el("div", { class: "hd" }, el("span", { text: "銘柄" }), el("span", { text: "損切りライン ← → 目標" }), el("span", { style: "text-align:right", text: "損益" }));
+const rowsKey = () => el("p", { class: "key", text: "黒い縦線＝いまの価格 / 灰色の縦線＝買値 / 赤みの帯＝損切りまでの距離。損切りに近いと黒線が赤になります。" });
+
+// one equal-size window: green = profit, red = loss
+function holdingWindow(x) {
+  const t = x.pnl > 0 ? "up" : x.pnl < 0 ? "dn" : "fl";
+  const b = el("button", { type: "button", class: "win " + t, "aria-label": x.symbol + " " + nameOf(x) + (x.category ? "、" + x.category : "") + "、" + (x.pnl > 0 ? "利益" : x.pnl < 0 ? "損失" : "損益なし") + " " + signed(x.pnl_pct, pct) + "、資産の" + pct(x.weight, 0) + "。理由と計画を開く" },
+    el("div", { class: "wt" }, el("span", { text: x.symbol }), el("span", { "aria-hidden": "true", text: arrow(x.pnl) })),
+    el("div", { class: "wb" }, el("div", { class: "box-pct", text: signed(x.pnl_pct, pct) }), el("div", { class: "a num", text: signed(x.pnl, money) })),
+    el("div", { class: "wf" }, el("div", { class: "n", text: nameOf(x) }), el("div", { text: x.category || "系統は未登録" })));
+  b.addEventListener("click", () => openSheet(x));
+  return b;
+}
+
+function openSheet(x) {
+  const opener = document.activeElement;
+  const close = () => { setChildren("sheetHost"); document.removeEventListener("keydown", onKey); if (opener && opener.focus) opener.focus(); };
+  // aria-modal: Tab stays inside the sheet (design system §8), Esc closes it
+  const onKey = (e) => {
+    if (e.key === "Escape") return close();
+    if (e.key !== "Tab") return;
+    const f = document.querySelectorAll("#sheetHost button, #sheetHost [href], #sheetHost summary");
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (!document.querySelector("#sheetHost").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener("keydown", onKey);
+  const pl = x.plan, why = el("div", { class: "why" });
+  if (!pl) why.append(el("p", { class: "warn", text: "この銘柄の計画の記録がありません。" }));
+  else why.append(
+    el("h4", { text: "なぜ持っているか" }), el("p", { text: pl.thesis }),
+    el("h4", { text: "今後の計画" }),
+    el("div", { class: "plan" },
+      planBox("損切りライン", money(pl.stop_price), "いまから " + signed(dist(x.price, pl.stop_price), pct)),
+      planBox("利益の目標", money(pl.profit_target), "いまから " + signed(dist(x.price, pl.profit_target), pct)),
+      planBox("保有の目安", pl.holding_horizon),
+      planBox("最悪の損失（目安）", money(pl.risk_amount), "損切りに達した場合")),
+    el("h4", { text: "やめる条件" }), el("p", { text: ja(pl.invalidation) }),
+    el("h4", { text: "損切りラインの根拠" }), el("p", { text: ja(pl.stop_reason) }),
+    el("p", { class: "note", style: "margin-top:10px", text: "損切りは取引所に置いた注文で自動的に働きます。計画は買う前に作られたものです。" }));
+  const closeBtn = el("button", { class: "x", type: "button", "aria-label": "閉じる", text: "×" });
+  closeBtn.addEventListener("click", close);
+  const bg = el("div", { class: "sheet-bg" }, el("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": x.symbol + " の理由と計画" },
+    el("div", { class: "sheet-top" },
+      el("div", {}, el("div", { class: "sym big", text: x.symbol }), el("div", { class: "co", text: nameOf(x) + (x.company && x.company_ja && x.company_ja.indexOf(x.company) < 0 ? "（" + x.company + "）" : "") }),
+      el("div", { class: "co", text: (x.category || "系統は未登録") + (x.business ? " ／ " + x.business : "") })),
+      closeBtn),
+    el("div", { style: "margin:8px 0 2px" }, el("span", { class: "big num " + cls(x.pnl), text: arrow(x.pnl) + " " + signed(x.pnl_pct, pct) }), "  ", el("b", { class: "num " + cls(x.pnl), text: signed(x.pnl, money) })),
+    el("div", { class: "note", text: qtyText(x.qty) + " 株 · 買値 " + money(x.avg_cost) + " → いま " + money(x.price) + " · 評価額 " + money(x.value) + " · 資産の " + pct(x.weight, 0) }),
+    x.attention_reasons.length ? el("div", { class: "why1", style: "margin-top:8px", text: x.attention_reasons.join(" / ") }) : null,
+    why));
+  bg.addEventListener("click", (e) => { if (e.target === bg) close(); });
+  setChildren("sheetHost", bg); closeBtn.focus();
+}
+
+const holdMsg = (id, text, c) => setChildren(id, el("div", { class: c || "muted", text }));
+function renderHoldings(h) {
+  holdData = h;
+  if (h.error) { setChildren("holdings", errorBox(h)); return renderAll(); }
+  if (!h.session_date) return holdMsg("holdings", "まだセッションがありません。");
+  if (!h.recorded) return holdMsg("holdings", h.session_date + " のセッションは、銘柄ごとの記録が残る前のものです。次のセッションから表示されます。");
+  const byS = new Map(h.holdings.map((x) => [x.symbol, x]));
+  const picks = h.attention.map((k) => byS.get(k)).filter(Boolean);
+  if (!h.holdings.length) return holdMsg("holdings", "いまは何も持っていません（現金 " + money(h.cash) + "）。");
+  const pnl = h.holdings.reduce((t, x) => t + x.pnl, 0), cost = h.holdings.reduce((t, x) => t + x.qty * x.avg_cost, 0);
+  const more = el("button", { class: "more-link", type: "button", text: "全 " + h.holdings.length + " 銘柄を見る →" });
+  more.addEventListener("click", () => { location.hash = "all"; });
+  setChildren("holdings",
+    el("div", { class: "note", style: "margin-bottom:8px" }, "全 " + h.holdings.length + " 銘柄の合計 ", el("b", { class: "num " + cls(pnl), text: signed(pnl, money) + "（" + signed(cost > 0 ? pnl / cost : 0, pct) + "）" }),
+      "　現金 " + money(h.cash) + "　損切りに近い順など、最大 " + picks.length + " 件"),
+    el("div", { class: "rows" }, rowsHead(), picks.map(holdingRow)), rowsKey(), more,
+    el("div", { class: "note", style: "margin-top:6px", text: h.session_date + " のセッション時点の値です（リアルタイムではありません）。" }));
+  renderAll();
+}
+
+function renderAll() {
+  const h = holdData, host = document.getElementById("allBody");
+  if (!h || !h.recorded) { host.replaceChildren(); return; }
+  const sort = document.getElementById("sortSel").value;
+  const cats = [...new Set(h.holdings.map((x) => x.category || "未分類"))].sort();
+  const chip = (label, val) => { const c = el("button", { class: "fchip", type: "button", "aria-pressed": String(catFilter === val), text: label });
+    c.addEventListener("click", () => { catFilter = val; renderAll(); }); return c; };
+  setChildren("catChips", chip("すべて", null), cats.map((c) => chip(c, c)));
+  let items = h.holdings.filter((x) => catFilter === null || (x.category || "未分類") === catFilter);
+  const cmp = { attention: (a, b) => b.attention_score - a.attention_score || Math.abs(b.pnl_pct) - Math.abs(a.pnl_pct),
+    pnl_pct: (a, b) => b.pnl_pct - a.pnl_pct, pnl_pct_asc: (a, b) => a.pnl_pct - b.pnl_pct,
+    value: (a, b) => b.value - a.value, symbol: (a, b) => a.symbol.localeCompare(b.symbol) }[sort];
+  items = [...items].sort(cmp);
+  const pnl = items.reduce((t, x) => t + x.pnl, 0);
+  setChildren("allHead", items.length + " 銘柄 · 合計 " + signed(pnl, money) + " · " + h.session_date + " のセッション時点。緑＝利益、赤＝損失。大きさは全て同じです。");
+  document.getElementById("mBoard").setAttribute("aria-pressed", String(allMode === "board"));
+  document.getElementById("mList").setAttribute("aria-pressed", String(allMode === "list"));
+  host.replaceChildren(allMode === "board" ? el("div", { class: "board" }, items.map(holdingWindow)) : el("div", { class: "rows" }, rowsHead(), items.map(holdingRow), rowsKey()));
+}
+
+function route() {
+  const view = location.hash === "#all" ? "all" : location.hash === "#full" ? "full" : "home";
+  document.body.className = "v-" + view;
+  for (const [id, v] of [["tHome", "home"], ["tAll", "all"], ["tFull", "full"]]) {
+    const a = document.getElementById(id); if (v === view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+  if (view === "home") drawChart(lastSeries);
+  window.scrollTo(0, 0);
+}
+document.getElementById("mBoard").addEventListener("click", () => { allMode = "board"; renderAll(); });
+document.getElementById("mList").addEventListener("click", () => { allMode = "list"; renderAll(); });
+document.getElementById("sortSel").addEventListener("change", renderAll);
+window.addEventListener("hashchange", route);
+
+// the day's flow, from what the system recorded (nothing is invented)
+const riskWord = (r) => r === "NORMAL" ? "通常" : r === "HALT_NEW_ENTRIES" ? "買い停止中" : r || "—";
+function renderRail(s, ss) {
+  const r = s.runner, last = (ss.sessions || [])[0], items = [];
+  if (last) {
+    items.push([jstShort(last.recorded_at), "セッション実行（" + last.session_date + "）", ""]);
+    items.push(["", "候補 " + last.candidates + " → 約定 " + last.orders_filled + (last.stops_triggered ? "・損切り " + last.stops_triggered : ""), ""]);
+  }
+  if (s.checkpoint && s.checkpoint.at) items.push([jstShort(s.checkpoint.at), "口座を保存", "now"]);
+  if (r && r.next_session_at) items.push([jstShort(r.next_session_at), "次のセッション", "future"]);
+  setChildren("tl", items.length ? items.map((x) => el("li", { class: x[2] }, x[0] ? el("time", { text: x[0] }) : null, x[1])) : el("li", { text: "まだ記録がありません" }));
+  setChildren("stt", el("div", {}, "安全装置　", el("b", { text: r ? riskWord(r.risk_state) : "—" })),
+    el("div", {}, "緊急停止　", el("b", { text: s.kill_switch.engaged ? "作動中" : "解除中" })),
+    el("div", {}, "次の取引　", el("b", { text: r && r.next_session_at ? jstShort(r.next_session_at) : "—" })));
+}
+
+function renderDid(o, sessions) {
+  const last = (sessions.sessions || [])[0];
+  document.getElementById("didTitle").textContent = (o.session_date || "直近") + " にしたこと";
+  if (!o.session_date) return setChildren("did", el("div", { class: "muted", text: "まだありません" }));
+  const fills = o.fills || [], reasons = o.no_trade_reasons || [];
+  setChildren("did", errorBox(o),
+    el("div", { class: "chips" },
+      fills.map((f) => el("span", { class: "chip", text: (f.side === "BUY" ? "買い " : "売り ") + f.symbol })),
+      last && last.stops_triggered ? el("span", { class: "chip", text: "損切り " + last.stops_triggered + " 件" }) : null,
+      el("span", { class: "chip grey", text: "見送り " + reasons.length + (reasons.length >= 10 ? " 件以上" : " 件") })),
+    reasons.length ? el("details", {}, el("summary", { text: "見送った理由を見る" }), el("ul", { class: "plain" }, reasons.map((x) => el("li", { text: ja(x) })))) : null,
+    (o.data_warnings || []).length ? el("ul", { class: "plain" }, o.data_warnings.map((x) => el("li", { class: "warn", text: ja(x) }))) : null);
+}
+
+function renderSessions(d) {
+  setChildren("sessions", errorBox(d), table(["日付", "資産", "日次損益", "DD", "候補", "約定", "損切り", "保有", "警告", "リスク", "LLM費用"],
+    (d.sessions || []).slice(0, 20).map((r) => [r.session_date, money(r.equity), { t: signed(r.day_pnl, (v) => v.toFixed(2)), c: cls(r.day_pnl) },
+      pct(r.drawdown), r.candidates, r.orders_filled, r.stops_triggered, r.open_positions, r.data_warnings,
+      { t: r.risk_state, c: r.risk_state === "NORMAL" ? "" : "warn" }, r.llm_cost_usd == null ? "—" : money(r.llm_cost_usd)])));
+}
+
+function renderObservers(o) {
+  const O = o.observers || {}, parts = [];
+  setChildren("latest", errorBox(o), o.session_date ? [
+    el("div", { class: "muted", text: "セッション " + o.session_date }),
+    el("h3", { text: "見送り・除外の理由（上位10）" }),
+    el("ul", { class: "plain" }, (o.no_trade_reasons || []).slice(0, 10).map((x) => el("li", { text: ja(x) }))),
+    (o.data_warnings || []).length ? [el("h3", { text: "データ警告" }), el("ul", { class: "plain" }, o.data_warnings.map((x) => el("li", { class: "warn", text: ja(x) })))] : null,
+    el("h3", { text: "約定" }),
+    (o.fills || []).length ? table(["銘柄", "売買", "数量", "価格"], o.fills.map((f) => [f.symbol, f.side, qtyText(f.qty), money(f.price)])) : el("div", { class: "muted", text: "なし" }),
+    Object.keys(o.disagreement_multipliers || {}).length ? [el("h3", { text: "モデル不一致によるサイズ係数（1.0=縮小なし）" }),
+      table(["銘柄", "係数"], Object.entries(o.disagreement_multipliers).map(([k, v]) => [k, { t: v.toFixed(3), c: v < 0.9 ? "warn" : "" }]))] : null,
+  ] : el("div", { class: "muted", text: "まだありません" }));
+
+  if (O.forecast) { const f = O.forecast, cal = f.calibration || {};
+    parts.push(panel("予測の較正（§32）", el("div", { class: "muted", text: "記録 " + f.recorded + " · 採点済み " + f.resolved + " · 待ち " + f.pending + " · 採点不能 " + f.skipped }),
+      Object.keys(cal).length ? table(["シナリオ", "予測確率", "実現頻度", "差"], ["bear", "base", "bull"].map((k) => [k, pct(cal[k].predicted), pct(cal[k].realized), signed(cal[k].gap, (v) => pct(v))])) : el("div", { class: "muted", text: "採点できた予測がまだありません" }))); }
+  if (O.shadow) { const s = O.shadow;
+    parts.push(panel("シャドー比較（§56-58）", el("div", { class: "muted", text: s.sessions + " セッション" }),
+      table(["変種", "累積リターン"], (s.ranking || []).map((r) => [r.variant, { t: pct(r.total_return), c: cls(r.total_return) }])),
+      el("div", { text: "AIスタックの寄与（FULL − QUANT_ONLY）: " + (s.ai_stack_contribution == null ? "—" : signed(s.ai_stack_contribution, (v) => pct(v))) }),
+      Object.keys(s.alpha_shadow || {}).length ? table(["Alpha", "回数", "平均リターン"], Object.entries(s.alpha_shadow).map(([k, v]) => [k, v.sessions, pct(v.mean_return)])) : null,
+      el("ul", { class: "plain" }, (s.caveats || []).map((c) => el("li", { text: ja(c) }))))); }
+  if (O.attribution) { const a = O.attribution;
+    parts.push(panel("損益分解（§54-55）", el("div", { class: "muted", text: "閉じた取引 " + a.closed_trades + " · 未帰属 " + a.unattributed + " · " + ja(a.assumption) }),
+      table(["項目", "金額"], [["合計", money(a.total_pnl)], ["市場β", money(a.market_beta_pnl)], ["alpha", money(a.alpha_pnl)], ["スリッページ", money(-a.slippage)], ["手数料", money(-a.fees)]]),
+      a.profit_quality ? el("div", { text: "利益の質: " + a.profit_quality.source + "（" + a.profit_quality.score + "）— " + a.profit_quality.detail }) : null)); }
+  if (O.exit_review) { const e = O.exit_review, st = e.stops || {}, cf = e.counterfactual || {};
+    parts.push(panel("出口・見送りの検証（§50-53）",
+      el("div", { text: "採点済み損切り " + (st.graded || 0) + " · 良い " + pct(st.good_rate || 0, 0) + " · 早すぎ " + pct(st.early_rate || 0, 0) }),
+      el("div", { text: "見送りの追跡 " + cf.tracked + " 件（1週間後の結果あり " + cf.with_1w_outcome + "）· 平均 " + (cf.mean_1w_return_of_skipped == null ? "—" : pct(cf.mean_1w_return_of_skipped)) }),
+      (e.proposals || []).length ? table(["提案", "段階"], e.proposals.map((p) => [p.name, p.stage])) : el("div", { class: "muted", text: "出口の研究提案: なし" }))); }
+  if (O.daily_review && O.daily_review.grades) { const d = O.daily_review;
+    parts.push(panel("日次レビュー（§63-64）", el("div", { text: d.day + " · 損益 " + signed(d.pnl, (v) => v.toFixed(2)) }),
+      table(["観点", "評価"], Object.entries(d.grades).map(([k, v]) => [k, v])), el("ul", { class: "plain" }, (d.narrative || []).map((n) => el("li", { text: ja(n) }))))); }
+  if (O.human_vs_ai) { const h = O.human_vs_ai;
+    parts.push(panel("人 vs AI（§79）", el("div", { text: "介入 " + h.overrides + " · 結果が出た " + h.resolved + " · 待ち " + h.pending }),
+      el("div", { text: "人の付加価値: " + (h.human_value_added == null ? "—" : h.human_value_added) + "（" + ja(h.unit) + "）" }))); }
+  if (O.capital_cells) { const c = O.capital_cells, rc = c.reconciliation || {}, latest = rc.latest;
+    parts.push(panel("資本セル（案A・観測のみ）",
+      el("div", { class: rc.sessions_inconsistent ? "warn" : "pos", text: "照合 " + rc.sessions_checked + " 回 · 不一致 " + rc.sessions_inconsistent + " 回" }),
+      latest ? table(["セル", "現金", "評価額", "実現損益"], Object.entries(latest.cells).map(([k, v]) => [k, money(v.cash), money(v.marked_equity), money(v.virtual_realized_pnl)])) : null,
+      (c.errors || []).length ? el("ul", { class: "plain" }, c.errors.map((x) => el("li", { class: "warn", text: x }))) : null,
+      el("div", { class: "muted", text: "未配分プール " + money(c.unallocated_cash) + " · " + ja(c.note) }))); }
+  if (O.pit) parts.push(panel("Point-in-Time 記録（§10）", el("div", { text: "判断の入力・出力を記録: " + O.pit.decisions_recorded + " 件" })));
+  setChildren("observers", parts.length ? parts : [el("div", { class: "muted", text: "観測者の出力はまだありません" })]);
+}
+
+function renderIncidents(d) {
+  setChildren("incidents", errorBox(d), (d.incidents || []).length ? table(["ID", "重大度", "状態", "サービス", "内容"],
+    d.incidents.map((i) => [i.incident_id, i.severity, { t: i.resolved ? "解決" : "未解決", c: i.resolved ? "" : "neg" }, i.service, i.description]), 1) : el("div", { class: "muted", text: "記録なし" }));
+}
+function renderIntents(d) {
+  setChildren("intents", errorBox(d), (d.intents || []).length ? (d.intents || []).map((i) => el("div", {},
+    el("div", {}, el("b", { text: i.intent_id + " " + i.symbol + " " }), el("span", { class: i.status === "CONFIRMED" ? "warn" : "muted", text: i.status }),
+      el("span", { class: "muted", text: " · " + i.submitted_by + " · " + i.reason })),
+    i.outcome ? el("div", { class: "muted", text: "結果: " + i.outcome }) : null,
+    i.analysis ? el("details", {}, el("summary", { text: "分析を見る" }), el("pre", { text: JSON.stringify(i.analysis, null, 2) })) : null))
+    : el("div", { class: "muted", text: "なし（提出・確認・取消は scripts/human_intent.py）" }));
+}
+function renderAlerts(d) {
+  setChildren("alerts", (d.alerts || []).length ? el("ul", { class: "plain" }, d.alerts.slice(0, 15).map((a) =>
+    el("li", { class: a.severity === "CRITICAL" ? "neg" : "warn", text: jst(a.at) + " [" + a.severity + "] " + a.message }))) : el("div", { class: "muted", text: "通知はありません" }));
+}
+
+async function refresh() {
+  try {
+    const [s, p, ss, o, inc, intents, al, hold] = await Promise.all([get("/api/status"), get("/api/performance"), get("/api/sessions?limit=60"),
+      get("/api/observers"), get("/api/incidents"), get("/api/intents"), get("/api/alerts?limit=50"), get("/api/holdings")]);
+    renderStatus(s); renderRail(s, ss); renderPerf(p); renderHoldings(hold); renderDid(o, ss); renderSessions(ss); renderObservers(o); renderIncidents(inc); renderIntents(intents); renderAlerts(al);
+    document.getElementById("error").style.display = "none";
+    document.getElementById("footer").textContent = "更新 " + jst(s.now) + " · 30秒ごとに自動更新 · 表示のみ（操作は CLI）。数字は直近のセッション時点で、リアルタイムではありません。";
+  } catch (e) {
+    const b = document.getElementById("error"); b.style.display = "block"; b.textContent = "取得に失敗しました: " + e.message;
+  }
+}
+route();
+refresh(); setInterval(refresh, 30000); window.addEventListener("resize", () => drawChart(lastSeries));
+</script>
+</body>
+</html>

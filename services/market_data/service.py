@@ -15,8 +15,14 @@ from dataclasses import dataclass
 from datetime import date as _date, datetime, timedelta
 from typing import Protocol
 
+from packages.common.quote_unavailable import QuoteUnavailableError
 from packages.common.clock import EventTimes, ensure_utc
 from packages.schemas.core import Bar, Quote
+
+
+class MarketDataUnavailable(QuoteUnavailableError):
+    """Real data could not be obtained. Providers raise this instead of
+    inventing a value; callers skip the symbol / fail closed."""
 
 
 class MarketDataProvider(Protocol):

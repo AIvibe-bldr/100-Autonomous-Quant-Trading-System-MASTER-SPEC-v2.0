@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.common.calendar import TradingCalendar
 from packages.common.clock import FrozenClock
+from packages.common.kill_switch import KillSwitch
 from tests.conftest import SYMBOLS, build_pipeline
 from services.cost_manager.engine import CostCategory, CostEntry, OperatingCostEngine
 from services.market_data.universe import UniverseManager, UniverseSymbol
@@ -37,7 +38,8 @@ def main() -> None:
     cal = TradingCalendar()
     d = date(2026, 8, 10)
     clock = FrozenClock(current=datetime.combine(d, time(15, 0), tzinfo=timezone.utc))
-    pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
+    pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
+                              kill_switch=KillSwitch.from_env())
     costs = OperatingCostEngine()
     print(f"=== PAPER environment | initial cash ${args.cash:,.2f} (§73: 環境表示) ===")
 

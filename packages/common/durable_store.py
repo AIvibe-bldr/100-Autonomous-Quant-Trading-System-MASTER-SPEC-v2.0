@@ -11,7 +11,14 @@ repo has, one table per narrowly-scoped consumer:
   `ExecutionEngine.submit()`, so "why did this order reach the broker"
   (A5) survives a crash, not just the lifetime of the process.
 
-Neither is a general persistence layer — `docs/database.md`'s full 15-table
+- `DurablePitStore` (§10): the durable twin of `PointInTimeStore` — every record keeps the
+  time we RECEIVED it, so a query "as of T" can never see what arrived after T.
+- `DurableCheckpointStore`: versioned, checksummed snapshots of the whole paper account (broker + ledger +
+  registries), so a restart resumes the SAME account instead of starting a new one.
+- `DurableSessionStore`: one row per trading session (equity, drawdown, funnel counts, risk
+  state, warnings) so multi-day paper results can be measured and compared across runs.
+
+None is a general persistence layer — `docs/database.md`'s full 15-table
 V1 schema (decision provenance, fills, ledger, etc.) remains future work.
 `docs/database.md` already names SQLite as the V1 fallback
 ("インメモリ/SQLite互換のリポジトリ層"); this uses stdlib `sqlite3`, so no
@@ -188,6 +195,255 @@ class DurableAuditStore:
             environment=self.environment,
             created_at=datetime.fromisoformat(created_at),
             updated_at=datetime.fromisoformat(updated_at))
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    """What one trading session left behind. `day_pnl` is the change in equity from the
+    previous recorded session (or from the initial cash for the first), measured at session
+    time — not at the close — so it is an open-to-open figure."""
+    session_date: str            # trading date in ET, ISO
+    model_tag: str               # which AI stack / configuration produced it (for comparison)
+    recorded_at: datetime
+    equity: float
+    cash: float
+    high_water_mark: float
+    drawdown: float
+    day_pnl: float
+    realized_pnl_total: float
+    fees_total: float
+    scanned: int
+    candidates: int
+    decision_candidates: int
+    skeptic_vetoes: int
+    audit_passed: int
+    risk_passed: int
+    orders_filled: int
+    stops_triggered: int
+    open_positions: int
+    data_warnings: int
+    risk_state: str
+    llm_cost_usd: Optional[float]
+    detail_json: str             # no-trade reasons, warnings, fills
+
+
+_SESSION_COLUMNS = (
+    "session_date", "model_tag", "recorded_at", "equity", "cash", "high_water_mark", "drawdown",
+    "day_pnl", "realized_pnl_total", "fees_total", "scanned", "candidates", "decision_candidates",
+    "skeptic_vetoes", "audit_passed", "risk_passed", "orders_filled", "stops_triggered",
+    "open_positions", "data_warnings", "risk_state", "llm_cost_usd", "detail_json")
+
+
+class DurableSessionStore:
+    """Append-only: a session date is recorded once. A second record for the same date is an
+    error (it would overwrite history), not an upsert."""
+
+    def __init__(self, path: str, environment: Environment, read_only: bool = False) -> None:
+        """`read_only=True` opens the file in SQLite's read-only mode and never creates a table: for a
+        dashboard in another process, which must not be able to change (or even create) anything."""
+        self.environment = environment
+        self._read_only = read_only
+        self._table = environment.namespace("sessions")
+        if read_only:
+            self._conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            return
+        self._conn = sqlite3.connect(path)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} ("
+            "session_date TEXT PRIMARY KEY, model_tag TEXT NOT NULL, recorded_at TEXT NOT NULL, "
+            "equity REAL NOT NULL, cash REAL NOT NULL, high_water_mark REAL NOT NULL, "
+            "drawdown REAL NOT NULL, day_pnl REAL NOT NULL, realized_pnl_total REAL NOT NULL, "
+            "fees_total REAL NOT NULL, scanned INTEGER NOT NULL, candidates INTEGER NOT NULL, "
+            "decision_candidates INTEGER NOT NULL, skeptic_vetoes INTEGER NOT NULL, "
+            "audit_passed INTEGER NOT NULL, risk_passed INTEGER NOT NULL, "
+            "orders_filled INTEGER NOT NULL, stops_triggered INTEGER NOT NULL, "
+            "open_positions INTEGER NOT NULL, data_warnings INTEGER NOT NULL, "
+            "risk_state TEXT NOT NULL, llm_cost_usd REAL, detail_json TEXT NOT NULL)")
+        self._conn.commit()
+
+    def record(self, rec: SessionRecord) -> None:
+        if self._read_only:
+            raise PermissionError("this session store was opened read-only")
+        values = [getattr(rec, c) for c in _SESSION_COLUMNS]
+        values[2] = rec.recorded_at.isoformat()
+        try:
+            self._conn.execute(
+                f"INSERT INTO {self._table} ({', '.join(_SESSION_COLUMNS)}) "
+                f"VALUES ({', '.join('?' * len(_SESSION_COLUMNS))})", values)
+        except sqlite3.IntegrityError:
+            raise ValueError(f"session {rec.session_date} is already recorded") from None
+        self._conn.commit()
+
+    def all(self) -> list[SessionRecord]:
+        try:
+            cur = self._conn.execute(
+                f"SELECT {', '.join(_SESSION_COLUMNS)} FROM {self._table} ORDER BY session_date")
+        except sqlite3.OperationalError:
+            if self._read_only:
+                return []                    # no table yet: the runner has not recorded a session
+            raise
+        out = []
+        for row in cur.fetchall():
+            d = dict(zip(_SESSION_COLUMNS, row))
+            d["recorded_at"] = datetime.fromisoformat(d["recorded_at"])
+            out.append(SessionRecord(**d))
+        return out
+
+    def latest_equity(self) -> Optional[float]:
+        cur = self._conn.execute(
+            f"SELECT equity FROM {self._table} ORDER BY session_date DESC LIMIT 1")
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+@dataclass(frozen=True)
+class DurablePitRecord:
+    key: str
+    value: object
+    event_time: datetime
+    received_time: datetime
+    source: str
+
+
+class DurablePitStore:
+    """Point-in-Time records (MASTER SPEC §10) in SQLite. Same contract as
+    `packages.common.pit_store.PointInTimeStore` (`put`, `get_as_of`, `history`), plus
+    durability: append-only, values are JSON. Among records received at the same instant the
+    later `put` wins, exactly as in the in-memory store."""
+
+    def __init__(self, path: str, environment: Environment) -> None:
+        self.environment = environment
+        self._table = environment.namespace("pit")
+        self._conn = sqlite3.connect(path)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, value_json TEXT NOT NULL, "
+            "event_time TEXT NOT NULL, received_time TEXT NOT NULL, source TEXT NOT NULL)")
+        self._conn.execute(
+            f"CREATE INDEX IF NOT EXISTS {self._table}_key ON {self._table} (key, received_time)")
+        self._conn.commit()
+
+    def put(self, key: str, value: object, event_time: datetime, received_time: datetime,
+            source: str = "unknown") -> None:
+        import json
+
+        from packages.common.clock import ensure_utc
+        self._conn.execute(
+            f"INSERT INTO {self._table} (key, value_json, event_time, received_time, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (key, json.dumps(value, default=str), ensure_utc(event_time).isoformat(),
+             ensure_utc(received_time).isoformat(), source))
+        self._conn.commit()
+
+    def get_as_of(self, key: str, as_of: datetime) -> Optional[DurablePitRecord]:
+        from packages.common.clock import ensure_utc
+        cur = self._conn.execute(
+            f"SELECT key, value_json, event_time, received_time, source FROM {self._table} "
+            "WHERE key = ? AND received_time <= ? ORDER BY received_time DESC, id DESC LIMIT 1",
+            (key, ensure_utc(as_of).isoformat()))
+        row = cur.fetchone()
+        return self._row(row) if row else None
+
+    def history(self, key: str) -> list[DurablePitRecord]:
+        cur = self._conn.execute(
+            f"SELECT key, value_json, event_time, received_time, source FROM {self._table} "
+            "WHERE key = ? ORDER BY received_time, id", (key,))
+        return [self._row(r) for r in cur.fetchall()]
+
+    @staticmethod
+    def _row(row: tuple) -> DurablePitRecord:
+        import json
+        key, value_json, event_time, received_time, source = row
+        return DurablePitRecord(key=key, value=json.loads(value_json),
+                                event_time=datetime.fromisoformat(event_time),
+                                received_time=datetime.fromisoformat(received_time), source=source)
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+@dataclass(frozen=True)
+class CheckpointRecord:
+    id: int
+    at: datetime
+    reason: str
+    schema_version: int
+    state: dict
+
+
+class DurableCheckpointStore:
+    """Append-only snapshots (the newest `keep` are retained). Each row carries a SHA-256 of its JSON, and
+    `latest_valid` returns the newest row whose checksum still verifies — a torn or damaged write falls back
+    to the previous snapshot instead of being trusted. The state must be JSON-safe by construction: a value
+    that is not raises at save time, it is never stringified into something that will not restore."""
+
+    def __init__(self, path: str, environment: Environment, read_only: bool = False, keep: int = 50) -> None:
+        self.environment = environment
+        self._table = environment.namespace("checkpoints")
+        self._keep = keep
+        self._read_only = read_only
+        self.skipped_corrupt = 0
+        if read_only:
+            self._conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            return
+        self._conn = sqlite3.connect(path)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, reason TEXT NOT NULL, "
+            "schema_version INTEGER NOT NULL, state_json TEXT NOT NULL, checksum TEXT NOT NULL)")
+        self._conn.commit()
+
+    def save(self, state: dict, reason: str, at: datetime, schema_version: int = 1) -> int:
+        if self._read_only:
+            raise PermissionError("this checkpoint store was opened read-only")
+        import hashlib
+        import json
+        body = json.dumps(state, sort_keys=True)
+        with self._conn:                                           # one transaction: row in, old rows out
+            cur = self._conn.execute(
+                f"INSERT INTO {self._table} (at, reason, schema_version, state_json, checksum) VALUES (?, ?, ?, ?, ?)",
+                (at.isoformat(), reason, schema_version, body, hashlib.sha256(body.encode()).hexdigest()))
+            self._conn.execute(f"DELETE FROM {self._table} WHERE id <= ?", (cur.lastrowid - self._keep,))
+        return int(cur.lastrowid)
+
+    def latest_valid(self) -> Optional[CheckpointRecord]:
+        import hashlib
+        import json
+        self.skipped_corrupt = 0
+        try:
+            rows = self._conn.execute(
+                f"SELECT id, at, reason, schema_version, state_json, checksum FROM {self._table} "
+                "ORDER BY id DESC").fetchall()
+        except sqlite3.OperationalError:
+            if self._read_only:
+                return None
+            raise
+        for id_, at, reason, version, body, checksum in rows:
+            if hashlib.sha256(body.encode()).hexdigest() != checksum:
+                self.skipped_corrupt += 1
+                continue
+            try:
+                return CheckpointRecord(id=id_, at=datetime.fromisoformat(at), reason=reason,
+                                        schema_version=version, state=json.loads(body))
+            except ValueError:
+                self.skipped_corrupt += 1
+        return None
+
+    def info(self) -> Optional[dict]:
+        """The newest snapshot's id/time/reason and how many are kept, without parsing any state."""
+        try:
+            row = self._conn.execute(
+                f"SELECT id, at, reason, (SELECT COUNT(*) FROM {self._table}) FROM {self._table} "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return None if row is None else {"id": row[0], "at": row[1], "reason": row[2], "count": row[3]}
 
     def close(self) -> None:
         self._conn.close()

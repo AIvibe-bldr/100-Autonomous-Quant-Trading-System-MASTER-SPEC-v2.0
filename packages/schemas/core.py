@@ -304,6 +304,11 @@ class OrderType(str, enum.Enum):
     STOP = "STOP"  # protective stop orders remain allowed under MASTER STOP (§43)
 
 
+class TimeInForce(str, enum.Enum):
+    DAY = "DAY"   # expires at the close of the session it was sent in
+    GTC = "GTC"   # good till cancelled
+
+
 class OrderIntent(StrictModel):
     client_order_id: str = Field(min_length=8)  # unique, idempotency key (§46)
     proposal_id: str
@@ -316,6 +321,16 @@ class OrderIntent(StrictModel):
     environment: Environment
     is_protective_exit: bool = False  # protective stop / risk-reducing SELL (§43)
     created_at: datetime
+    # Part of the order's identity (hashed and signed). A resting STOP must outlive the
+    # session — a DAY stop would silently vanish at the close and leave the position with
+    # no stop at the broker (INV-15) — so it cannot even be constructed as DAY.
+    time_in_force: TimeInForce = TimeInForce.DAY
+
+    @model_validator(mode="after")
+    def _resting_stop_must_be_gtc(self) -> "OrderIntent":
+        if self.order_type is OrderType.STOP and self.time_in_force is not TimeInForce.GTC:
+            raise ValueError("a STOP order must be GTC (a DAY stop expires at the close — INV-15)")
+        return self
 
 
 def canonical_order_payload(symbol: str, side: "Action", qty: float,
@@ -338,12 +353,11 @@ def canonical_order_payload(symbol: str, side: "Action", qty: float,
     ])
 
 
-def order_intent_hash(intent: "OrderIntent", take_profit: Optional[float] = None,
-                      time_in_force: str = "DAY") -> str:
+def order_intent_hash(intent: "OrderIntent", take_profit: Optional[float] = None) -> str:
     """SHA-256 over an intent's execution-relevant fields (§42)."""
     return hashlib.sha256(canonical_order_payload(
         intent.symbol, intent.side, intent.qty, intent.order_type, intent.limit_price,
-        intent.stop_price, take_profit, time_in_force,
+        intent.stop_price, take_profit, intent.time_in_force.value,
         intent.client_order_id).encode()).hexdigest()
 
 
@@ -422,6 +436,14 @@ class BrokerOrderRequest(StrictModel):
     order_type: OrderType
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
+    time_in_force: TimeInForce = TimeInForce.DAY
+
+    @model_validator(mode="after")
+    def _resting_stop_must_be_gtc(self) -> "BrokerOrderRequest":
+        # the same rule again at the broker boundary: nothing may build a DAY stop request
+        if self.order_type is OrderType.STOP and self.time_in_force is not TimeInForce.GTC:
+            raise ValueError("a STOP order request must be GTC (INV-15)")
+        return self
 
 
 class BrokerAck(StrictModel):
@@ -454,6 +476,12 @@ class BrokerPosition(StrictModel):
     symbol: str
     qty: float = Field(allow_inf_nan=False)
     avg_cost: float = Field(ge=0, allow_inf_nan=False)
+
+
+class BrokerAccountStatus(StrictModel):
+    """What the broker says about the account itself (not the money in it)."""
+    trading_blocked: bool = False
+    reason: str = ""
 
 
 class BrokerCashBalance(StrictModel):

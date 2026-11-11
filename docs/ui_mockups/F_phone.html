@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>案F スマホアプリ型</title>
+<style>
+:root{--bg:#eef1f6;--card:#fff;--ink:#16202f;--mute:#7a8599;--line:#edf0f5;--ok:#12a150;--warn:#e08a00;--bad:#dc3d3d;--blue:#2f6bff}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);font:16px/1.6 -apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;color:var(--ink);display:flex;justify-content:center;padding:18px 0}
+.phone{width:100%;max-width:410px;min-height:780px;background:#f7f8fb;border-radius:34px;box-shadow:0 20px 60px rgba(20,32,60,.18);overflow:hidden;position:relative;border:8px solid #fff}
+.scr{padding:22px 18px 92px}.hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.hd b{font-size:19px}
+.pill{font-size:12px;font-weight:700;border-radius:999px;padding:3px 12px}.pill.ok{background:#e3f6ea;color:var(--ok)}.pill.warn{background:#fff1d6;color:var(--warn)}.pill.bad{background:#fde4e4;color:var(--bad)}
+.card{background:var(--card);border-radius:22px;padding:18px;margin-bottom:12px;box-shadow:0 1px 0 var(--line)}.k{color:var(--mute);font-size:13px}.n{font-size:42px;font-weight:800;letter-spacing:-.03em;line-height:1.15}.up{color:var(--ok)}.down{color:var(--bad)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}.row small{color:var(--mute);display:block;font-size:12px;line-height:1.3}
+.alert{display:flex;gap:10px;background:#fff4e0;border-radius:16px;padding:12px 14px;margin-bottom:12px;font-size:14px}.alert.bad{background:#fde7e7}
+.tab{position:absolute;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr);padding:8px 0 14px}.tab a{text-align:center;color:var(--mute);font-size:11px;cursor:pointer}.tab a span{display:block;font-size:22px}.tab a.on{color:var(--blue);font-weight:700}
+.mock-switch{position:absolute;top:-2px;left:0;right:0;text-align:center;font-size:11px;color:var(--mute)}.mock-switch a{margin:0 5px;color:var(--blue)}.mock-switch a.on{font-weight:700;color:var(--ink)}
+.seg{display:flex;gap:6px;margin:8px 0 0}.seg i{flex:1;height:6px;border-radius:3px;background:#e4e8f0}.seg i.f{background:var(--blue)}
+</style></head><body><div style="width:100%;max-width:430px;position:relative;padding-top:18px"><div id="sw" class="mock-switch"></div><div class="phone"><div class="scr" id="scr"></div>
+<div class="tab" id="tab"></div></div></div>
+<script src="common.js"></script><script>
+$("sw").innerHTML=stateSwitcher().replace("※数値はすべてサンプル","");
+const tabs=[["home","🏠","ホーム"],["trade","🧾","取引"],["ai","🧠","AI"],["alert","🔔","通知"]];
+const alerts=()=>S.alerts.map(a=>`<div class="alert ${S.level==="bad"?"bad":""}"><span>⚠️</span><span>${a}</span></div>`).join("");
+const V={home:()=>`<div class="hd"><b>運用</b><span class="pill ${S.level}">${S.word}</span></div>${alerts()}
+ <div class="card"><div class="k">いまの資産</div><div class="n">$672.85</div><div class="up" style="font-weight:600">+$2.85（+0.42%）</div><div style="margin:10px -6px 0">${chart(EQUITY,{h:90,pad:4})}</div></div>
+ <div class="card"><div class="row"><span>昨日の増減</span><b class="up">+$10.33</b></div><div class="row"><span>いちばん減った幅</span><b>1.12%</b></div><div class="row"><span>次の取引<small>11/10（火）</small></span><b>23:45</b></div></div>
+ <div class="card"><div class="k">検証期間 18 / 60 営業日</div><div class="seg">${Array.from({length:12},(_, i)=>`<i class="${i<4?"f":""}"></i>`).join("")}</div><div class="k" style="margin-top:6px">まだ短く、良し悪しは判断できません</div></div>`,
+ trade:()=>`<div class="hd"><b>取引</b></div>${BASE.sessionsList.map(s=>`<div class="card"><div class="row" style="padding-top:0"><span>${s.d}<small>${s.note}</small></span><b class="${tone(s.pnl)}">${money(s.pnl,true)}</b></div></div>`).join("")}`,
+ ai:()=>`<div class="hd"><b>AIの判断</b></div><div class="card"><div class="k">昨日見送った理由</div>${BASE.reasons.slice(0,3).map(r=>`<div class="row"><span style="font-size:14px">${r}</span></div>`).join("")}</div><div class="card"><div class="k">AIなしとの比較</div><p style="font-size:14px">${BASE.ai.shadow}</p></div>`,
+ alert:()=>`<div class="hd"><b>通知</b></div>${S.alerts.length?alerts():`<div class="card"><div class="k">いまは通知はありません 🎉</div></div>`}<div class="card"><div class="row"><span>8/14 23:46<small>口座を保存しました</small></span></div><div class="row"><span>8/14 23:45<small>セッション完了：2件買い</small></span></div></div>`};
+let cur="home";function go(t){cur=t;$("scr").innerHTML=V[t]();$("tab").innerHTML=tabs.map(x=>`<a data-t="${x[0]}" class="${x[0]===t?"on":""}"><span>${x[1]}</span>${x[2]}</a>`).join("");document.querySelectorAll(".tab a").forEach(a=>a.onclick=()=>go(a.dataset.t))}go("home");
+</script></body></html>

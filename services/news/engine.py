@@ -76,6 +76,7 @@ class NewsSignal:
     injection_flagged: bool        # §19: directive-like content detected
     urls: list[str] = field(default_factory=list)
     published_at: Optional[datetime] = None
+    summary: str = ""              # best item's body text — UNTRUSTED DATA (§19)
 
     @property
     def tradeable(self) -> bool:
@@ -143,7 +144,8 @@ class NewsEngine:
                 sns_only=all(i.tier is SourceTier.SNS for i in cluster),
                 injection_flagged=any(detect_injection(i.title + " " + i.text)
                                       for i in cluster),
-                urls=[i.url for i in cluster], published_at=ensure_utc(best.published_at)))
+                urls=[i.url for i in cluster], published_at=ensure_utc(best.published_at),
+                summary=best.text))
         return signals
 
     def top_news(self, signals: list[NewsSignal], n: int = 3) -> list[NewsSignal]:

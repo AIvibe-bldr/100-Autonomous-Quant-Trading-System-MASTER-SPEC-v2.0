@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>案E ガイド付き4タブ型</title>
+<style>
+:root{--bg:#f3f6fb;--card:#fff;--ink:#1f2a44;--mute:#68738a;--line:#e3e9f3;--blue:#3b6fe0;--ok:#1f9d63;--warn:#d98a0b;--bad:#d64545}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);color:var(--ink);font:16px/1.7 -apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif}
+.shell{display:grid;grid-template-columns:210px 1fr;min-height:100vh}nav{background:#fff;border-right:1px solid var(--line);padding:22px 14px}nav h1{font-size:15px;margin:0 8px 18px}
+nav a{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;color:var(--mute);text-decoration:none;cursor:pointer;margin-bottom:4px}nav a.on{background:#eaf0fd;color:var(--blue);font-weight:600}
+main{padding:26px 28px 60px;max-width:860px}main h2{font-size:22px;margin-bottom:2px}.lead{color:var(--mute);margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px}.card h3{font-size:15px;margin-bottom:6px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.k{color:var(--mute);font-size:13px}.v{font-size:26px;font-weight:700}.up{color:var(--ok)}.down{color:var(--bad)}
+.status{display:flex;gap:12px;align-items:center;border-radius:14px;padding:16px 20px;margin-bottom:14px;color:#fff}.status.ok{background:var(--ok)}.status.warn{background:var(--warn)}.status.bad{background:var(--bad)}.status b{font-size:20px}
+.help{background:#f0f5ff;border-radius:10px;padding:10px 14px;font-size:14px;color:#33477a;margin-top:8px}.help b{color:var(--blue)}
+table{width:100%;border-collapse:collapse;font-size:15px}td,th{padding:9px 6px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--mute);font-weight:500;font-size:13px}td.r,th.r{text-align:right}
+code{background:#eef2f9;border-radius:6px;padding:2px 8px;font-size:13px}.li{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.mock-switch{font-size:12px;color:var(--mute);margin-bottom:10px}.mock-switch a{margin:0 6px;color:var(--blue)}.mock-switch a.on{font-weight:700;color:var(--ink)}
+@media(max-width:720px){.shell{grid-template-columns:1fr}nav{display:flex;gap:6px;overflow:auto;border:0;border-bottom:1px solid var(--line);padding:10px}nav h1{display:none}nav a{white-space:nowrap}.grid{grid-template-columns:1fr 1fr}}
+</style></head><body><div class="shell"><nav><h1>運用ダッシュボード</h1><a data-t="home" class="on">🏠 ホーム</a><a data-t="perf">📈 成績</a><a data-t="ai">🧠 AIの判断</a><a data-t="safe">🛡 安全と運用</a></nav>
+<main><div id="sw"></div><div id="view"></div></main></div>
+<script src="common.js"></script><script>
+$("sw").innerHTML=stateSwitcher();
+const status=()=>`<div class="status ${S.level}"><b>${S.word}</b><span>${S.sentence}${S.detail}</span></div>`;
+const V={
+home:()=>`<h2>ホーム</h2><p class="lead">いまの様子を、3つの数字でお知らせします。</p>${status()}
+ <div class="grid"><div class="card"><div class="k">資産</div><div class="v">${money(BASE.equity)}</div><div class="k">${pct(BASE.ret)}（はじめ ${money(BASE.start)}）</div></div>
+ <div class="card"><div class="k">昨日</div><div class="v up">${money(10.33,true)}</div><div class="k">2件買い</div></div>
+ <div class="card"><div class="k">最大の落ち込み</div><div class="v">${pct(BASE.maxDD,2,false)}</div><div class="k">10%で要注意</div></div></div>
+ <div class="card"><h3>資産の推移</h3>${chart(EQUITY,{h:140})}<div class="help"><b>読み方：</b>右肩上がりなら増えています。ただし日数が ${BASE.sessions}/${BASE.needSessions} と少ないので、増減だけで良し悪しは決められません。</div></div>`,
+perf:()=>`<h2>成績</h2><p class="lead">日ごとの増減です。</p><div class="card"><table><tr><th>日付</th><th>したこと</th><th class="r">増減</th></tr>${BASE.sessionsList.map(s=>`<tr><td>${s.d}</td><td>${s.note}</td><td class="r ${tone(s.pnl)}">${money(s.pnl,true)}</td></tr>`).join("")}</table>
+ <div class="help"><b>用語：</b>「最大の落ち込み」＝それまでの最高額から、いちばん減った割合。小さいほど安定しています。</div></div>`,
+ai:()=>`<h2>AIの判断</h2><p class="lead">AIがなぜそう決めたかと、その答え合わせです。</p>
+ <div class="card"><h3>昨日、見送った理由</h3>${BASE.reasons.map(r=>`<div class="li">・${r}</div>`).join("")}</div>
+ <div class="card"><h3>予測の答え合わせ</h3><p>${BASE.ai.forecast}</p><div class="help"><b>意味：</b>AIは「上がる／横ばい／下がる」の確率を出します。1週間後に実際どうなったかと比べて、確率が当たっているか確かめます。</div></div>
+ <div class="card"><h3>AIなしの機械的な買いとの比較</h3><p>${BASE.ai.shadow}</p><div class="help"><b>注意：</b>日数が少ないので、AIが良い・悪いとはまだ言えません。</div></div>`,
+safe:()=>`<h2>安全と運用</h2><p class="lead">システムが安全に動いているかの確認です。</p>${status()}
+ <div class="card"><h3>いまの状態</h3><div class="li">実行器：${S.runner}</div><div class="li">安全装置：${S.safety}</div><div class="li">緊急停止スイッチ：解除中</div><div class="li">口座の保存：8/14 23:46（再起動しても続きから再開できます）</div></div>
+ ${S.alerts.length?`<div class="card"><h3>確認してほしいこと</h3>${S.alerts.map(a=>`<div class="li">⚠ ${a}</div>`).join("")}</div>`:""}
+ <div class="card"><h3>困ったとき</h3><div class="li">すぐ新規の買いを止める：<code>scripts/kill_switch.py engage</code></div><div class="li">障害を確認する：<code>scripts/incidents.py list</code></div><div class="help">この画面は見るだけです。操作は上のコマンドで、名前と理由が記録されます。</div></div>`};
+let cur="home";function go(t){cur=t;$("view").innerHTML=V[t]();document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.t===t))}
+document.querySelectorAll("nav a").forEach(a=>a.onclick=()=>go(a.dataset.t));go("home");
+</script></body></html>

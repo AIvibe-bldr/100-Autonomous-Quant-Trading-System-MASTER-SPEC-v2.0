@@ -13,12 +13,14 @@ from __future__ import annotations
 import enum
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Union
 
+from packages.common.alerts import AlertSeverity, AlertSink, NullAlertSink, notify
 from packages.common.calendar import SessionStatus, TradingCalendar
 from packages.common.clock import Clock
 from packages.common.risk_config import RiskConfig
@@ -38,6 +40,12 @@ class RiskState(str, enum.Enum):
     HALT_NEW_ENTRIES = "HALT_NEW_ENTRIES"
     SAFE_EXIT = "SAFE_EXIT"
     FULL_BROKER_DISCONNECT = "FULL_BROKER_DISCONNECT"
+
+
+# Restrictiveness of the MASTER STOP states: FULL_BROKER_DISCONNECT is the only one
+# that also blocks exits, SAFE_EXIT adds reduce-only on top of the entry halt.
+_STATE_SEVERITY = {RiskState.NORMAL: 0, RiskState.HALT_NEW_ENTRIES: 1,
+                   RiskState.SAFE_EXIT: 2, RiskState.FULL_BROKER_DISCONNECT: 3}
 
 
 class ThrottleLevel(str, enum.Enum):
@@ -99,10 +107,23 @@ class MasterRiskController:
     state: RiskState = RiskState.NORMAL
     _signing_key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     decisions_log: list[Union[RiskApproval, RiskRejection]] = field(default_factory=list)
+    alert_sink: AlertSink = field(default_factory=NullAlertSink)
 
     # -- state management ---------------------------------------------------
     def set_state(self, state: RiskState, reason: str = "") -> None:
+        """Escalate or reset, never relax by accident: an automatic trigger asking for a
+        milder stop (e.g. a rejection breaker's HALT_NEW_ENTRIES while the broker is
+        disconnected) is ignored. Only an explicit NORMAL lowers the state."""
+        if state is not RiskState.NORMAL and _STATE_SEVERITY[state] < _STATE_SEVERITY[self.state]:
+            logging.getLogger("quant.risk").info(
+                "ignored %s request (%s): already %s", state.value, reason, self.state.value)
+            return
+        changed = state is not self.state
         self.state = state
+        # F10: tell a human whenever the system stops itself (once per transition)
+        if changed and state is not RiskState.NORMAL:
+            notify(self.alert_sink, AlertSeverity.CRITICAL,
+                   f"risk state -> {state.value}" + (f": {reason}" if reason else ""))
 
     def _entry_allowed_by_state(self, throttle: ThrottleLevel) -> tuple[bool, str]:
         if self.state is RiskState.FULL_BROKER_DISCONNECT:

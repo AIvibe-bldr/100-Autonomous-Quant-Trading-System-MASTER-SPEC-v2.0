@@ -26,11 +26,29 @@ from packages.common.llm_client import (
     Provider,
     get_client,
 )
+from pydantic import create_model
+
 from packages.schemas.core import DecisionOutput
 from services.decision.models import DECISION_VERSION, DecisionContext
 from services.decision.prompts import DECISION_SYSTEM_PROMPT, build_decision_prompt
 
 OPENAI_DECISION_ADAPTER_VERSION = "openai-adapter-1.0.0"
+
+
+def _wire_schema() -> type:
+    """OpenAI strict structured outputs reject `tuple[float, float]` (JSON
+    schema `prefixItems` without `items`). Send the range as two scalar
+    fields instead, and fold it back into the domain `DecisionOutput` shape
+    after parsing — the domain schema itself stays unchanged."""
+    fields: dict[str, Any] = {
+        n: (f.annotation, f) for n, f in DecisionOutput.model_fields.items()
+        if n != "expected_return_range"}
+    fields["expected_return_low"] = (float, ...)
+    fields["expected_return_high"] = (float, ...)
+    return create_model("DecisionOutput", **fields)
+
+
+_WIRE_SCHEMA = _wire_schema()
 
 
 class OpenAIAPIError(LLMCallError):
@@ -67,12 +85,12 @@ class OpenAIDecisionModel:
         try:
             completion = self._client().beta.chat.completions.parse(
                 model=self.agent.model,
-                max_tokens=self.agent.max_tokens,
+                max_completion_tokens=self.agent.max_tokens,
                 messages=[
                     {"role": "system", "content": DECISION_SYSTEM_PROMPT},
                     {"role": "user", "content": build_decision_prompt(context)},
                 ],
-                response_format=DecisionOutput,
+                response_format=_WIRE_SCHEMA,
             )
             message = completion.choices[0].message
         except Exception as e:  # network / SDK-level validation
@@ -86,6 +104,8 @@ class OpenAIDecisionModel:
             raise OpenAIAPIError(
                 f"decision call for {context.scan.symbol} returned no parsed output")
         data = parsed.model_dump(mode="json")
+        data["expected_return_range"] = (data.pop("expected_return_low"),
+                                         data.pop("expected_return_high"))
         # decision_version is bookkeeping, not something to trust from the model
         data["decision_version"] = f"{self.model_id}:{DECISION_VERSION}"
         return data

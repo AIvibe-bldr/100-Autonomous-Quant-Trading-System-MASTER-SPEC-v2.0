@@ -29,6 +29,12 @@
 | INV-20 | Malformed Audit出力はREJECT扱い（A3-3） | validate_audit_output | test_malformed_audit_rejected |
 | INV-21 | Decision Snapshotは書換不能・変更は新Decision ID必須（A1-1） | DecisionQualityEngine.record | test_decision_snapshot_immutable |
 
+> **実行モデルの前提（SAFETY_AUDIT F11）**: このパイプラインは**単一スレッド・単一プロセス**
+> 実行を前提とする（Buying Power の予約と Position Sizing は排他制御を持たない）。スケジューラ、
+> 複数ワーカー、書き込み可能なAPIルートなど並行性を導入する変更は、マージ前に Buying Power
+> 予約と Position Sizing の競合を再監査すること。その際は未配線の
+> `services/capital_cells/reservation.py`（原子的予約）の再利用を先に検討する。
+
 ## MASTER STOP Semantics (§43)
 
 | 状態 | 新規Entry | Entry注文Cancel | Protective Stop | Risk-reducing SELL | 緊急清算 |

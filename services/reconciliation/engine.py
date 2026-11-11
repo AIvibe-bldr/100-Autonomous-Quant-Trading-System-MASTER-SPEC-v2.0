@@ -42,11 +42,17 @@ class ReconciliationEngine:
         try:
             broker_cash = self.broker.get_cash()
             broker_positions = {p.symbol: p for p in self.broker.get_positions()}
+            account = self.broker.get_account_status()
         except BrokerDisconnectedError:
             self.risk_controller.set_state(RiskState.FULL_BROKER_DISCONNECT,
                                            reason="reconciliation: broker unreachable")
             report.mismatches.append(Mismatch("broker_unreachable", "disconnected"))
             return report
+
+        # the account itself: a blocked account cannot trade whatever the books say
+        if account.trading_blocked:
+            report.mismatches.append(Mismatch(
+                "account_trading_blocked", account.reason or "broker reports trading blocked"))
 
         # cash: ledger cash vs broker settled+unsettled
         broker_total = broker_cash.settled_cash + broker_cash.unsettled_cash

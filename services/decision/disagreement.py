@@ -6,7 +6,9 @@ feature: high disagreement → lower calibrated confidence → smaller size.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from typing import Optional, Sequence
 
 
 @dataclass
@@ -34,3 +36,33 @@ class ModelDisagreementEngine:
         return DisagreementReading(symbol=symbol, views=dict(views),
                                    mean_direction=mean,
                                    disagreement=min(1.0, mad))
+
+
+# -- turning each source into a lean in [-1, +1] (how strongly it favours buying) -------------
+# The mappings are judgement calls, kept in one place and covered by tests so they can be
+# changed deliberately. Each answers "how much does THIS source favour the trade?".
+
+def quant_lean(score: float) -> float:
+    """Scanner score = 20d momentum / 20d daily volatility (typically 0-4)."""
+    return math.tanh(score / 2.0)
+
+
+def decision_lean(confidence: float) -> float:
+    """A BUY at confidence 0.5 is a coin flip (neutral); 1.0 is full conviction."""
+    return max(-1.0, min(1.0, 2.0 * confidence - 1.0))
+
+
+def skeptic_lean(severity: float) -> float:
+    """Severity 0 = no objection (agrees, +1), 0.5 = neutral, 1 = fatal flaw (-1). The Skeptic
+    is built to object, so a low-severity critique counts as agreement, not as opposition."""
+    return max(-1.0, min(1.0, 1.0 - 2.0 * severity))
+
+
+def regime_lean(label: str) -> Optional[float]:
+    return {"BULL": 0.5, "BEAR": -0.5}.get(label)
+
+
+def news_lean(directions: Sequence[float]) -> Optional[float]:
+    """Mean keyword-estimated direction of tradeable news (a rough signal; used here only as one
+    view among several, never shown to the model as fact)."""
+    return sum(directions) / len(directions) if directions else None

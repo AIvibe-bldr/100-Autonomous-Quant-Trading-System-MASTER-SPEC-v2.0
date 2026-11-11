@@ -43,13 +43,15 @@ class PostTradeTracker:
         self.tracked.append(t)
         return t
 
-    def evaluate(self, now: datetime, price_fn: Callable[[str, datetime], float]) -> None:
+    def evaluate(self, now: datetime, price_fn: Callable[[str, datetime], Optional[float]]) -> None:
         now = ensure_utc(now)
         for t in self.tracked:
             for label, delta in HORIZONS.items():
                 when = t.exit_at + delta
                 if label not in t.later_prices and when <= now:
-                    t.later_prices[label] = price_fn(t.symbol, when)
+                    px = price_fn(t.symbol, when)
+                    if px is not None:           # not obtainable now: evaluated at a later session
+                        t.later_prices[label] = px
             if t.grade is None and "1w" in t.later_prices and t.kind == "STOP":
                 week_px = t.later_prices["1w"]
                 move = (week_px - t.exit_price) / t.exit_price

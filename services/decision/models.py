@@ -9,11 +9,12 @@ External text (news etc.) reaches the model only as UntrustedText (§19).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any, Optional, Protocol
 
 from pydantic import ValidationError
 
-from packages.schemas.core import DecisionOutput, SkepticOutput
+from packages.schemas.core import DecisionOutput, Quote, SkepticOutput
 from services.quant.scanner import ScanResult
 
 DECISION_VERSION = "1.0.0"
@@ -32,8 +33,26 @@ class UntrustedText:
 @dataclass
 class DecisionContext:
     scan: ScanResult
+    # the session's decision time (simulated or real). Without it the model
+    # judges data age against its own idea of "today" (a live run called a
+    # replayed session's bars "three months stale").
+    as_of: Optional[datetime] = None
     regime: str = "UNKNOWN"
+    # the quote that already passed the pipeline's integrity gate; None means
+    # "not provided" and is rendered as such — never as a fabricated price.
+    quote: Optional[Quote] = None
+    # True when a news fetch succeeded (an empty `news` then means "none found");
+    # False means news was not provided / unavailable — a different statement.
+    news_fetched: bool = False
+    # known upcoming events for this symbol (one line each), from the Event Calendar;
+    # `events_fetched=False` means the calendar was not available — not "no events"
+    upcoming_events: list[str] = field(default_factory=list)
+    events_fetched: bool = False
     news: list[UntrustedText] = field(default_factory=list)
+    # Institutional-flow facts (§20), one line each, already rendered from our own computation and
+    # SEC filings. `flow_filings_fetched=False` means ownership filings were not available.
+    flow_lines: list[str] = field(default_factory=list)
+    flow_filings_fetched: bool = False
     portfolio_summary: dict[str, Any] = field(default_factory=dict)
     risk_context: dict[str, Any] = field(default_factory=dict)
 

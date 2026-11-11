@@ -1,0 +1,32 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>案D コックピット型</title>
+<style>
+:root{--bg:#0e1422;--panel:#161d30;--panel2:#1c2540;--ink:#e8ecf7;--mute:#8b96b5;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--blue:#60a5fa}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;padding:16px}
+.wrap{max-width:1080px;margin:0 auto}.head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.head h1{font-size:16px;font-weight:600}
+.badge{border-radius:999px;padding:3px 14px;font-size:13px;font-weight:700;border:1px solid}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.warn{color:var(--warn);border-color:var(--warn)}.badge.bad{color:var(--bad);border-color:var(--bad)}
+.grid{display:grid;grid-template-columns:280px 1fr 260px;gap:14px}.panel{background:var(--panel);border-radius:18px;padding:18px}.panel h2{font-size:12px;color:var(--mute);letter-spacing:.1em;margin-bottom:12px;font-weight:600}
+.gauge{display:flex;align-items:center;gap:14px;margin-bottom:16px}.gauge svg{flex:none}.gauge b{display:block;font-size:22px}.gauge span{color:var(--mute);font-size:12px;line-height:1.4;display:block}
+.big{font-size:44px;font-weight:700;letter-spacing:-.03em}.up{color:var(--ok)}.down{color:var(--bad)}
+.lights{padding:0}.lights li{list-style:none;white-space:nowrap;display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #232d4a}.lights li:last-child{border:0}.lights i{width:10px;height:10px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok)}
+.lights i.warn{background:var(--warn);box-shadow:0 0 10px var(--warn)}.lights i.bad{background:var(--bad);box-shadow:0 0 10px var(--bad)}.lights small{margin-left:auto;color:var(--mute);font-size:12px}
+.ticker{margin-top:14px;background:var(--panel);border-radius:14px;padding:12px 16px;display:flex;gap:26px;overflow:auto;white-space:nowrap;color:var(--mute);font-size:13px}.ticker b{color:var(--ink)}
+.mock-switch{font-size:12px;color:var(--mute);margin-bottom:10px}.mock-switch a{margin:0 6px;color:var(--blue)}.mock-switch a.on{font-weight:700;color:var(--ink)}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+</style></head><body><div class="wrap"><div id="sw"></div>
+<div class="head"><h1>運用コックピット</h1><span class="badge" id="badge"></span></div>
+<div class="grid"><div class="panel"><h2>ゲージ</h2><div id="gauges"></div></div>
+<div class="panel"><h2>資産</h2><div style="display:flex;align-items:baseline;gap:12px"><span class="big">$672.85</span><span class="up">+0.42%</span></div><div id="chart" style="margin-top:8px"></div></div>
+<div class="panel"><h2>状態ランプ</h2><ul class="lights" id="lights"></ul></div></div>
+<div class="ticker" id="ticker"></div></div>
+<script src="common.js"></script><script>
+$("sw").innerHTML=stateSwitcher();$("badge").className="badge "+S.level;$("badge").textContent=S.word;
+function ring(frac,color,label){const r=30,c=2*Math.PI*r;return `<svg width="76" height="76" viewBox="0 0 76 76"><circle cx="38" cy="38" r="${r}" fill="none" stroke="#232d4a" stroke-width="8"/><circle cx="38" cy="38" r="${r}" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${(c*frac).toFixed(1)} ${c}" transform="rotate(-90 38 38)"/><text x="38" y="43" text-anchor="middle" fill="#e8ecf7" font-size="15" font-weight="700">${label}</text></svg>`}
+$("gauges").innerHTML=[
+ [ring(BASE.sessions/BASE.needSessions,"#60a5fa","30%"),"検証の進み","18 / 60 営業日。まだ結論は出せない"],
+ [ring(BASE.maxDD/0.10,BASE.maxDD>0.07?"#f87171":"#34d399","1%"),"落ち込み","最大 1.12%（警戒ライン 10%）"],
+ [ring(0.4,"#a78bfa","2"),"昨日の取引","2件買い・見送り8件"]].map(g=>`<div class="gauge">${g[0]}<div><b>${g[1]}</b><span>${g[2]}</span></div></div>`).join("");
+$("chart").innerHTML=chart(EQUITY,{h:190,stroke:"#60a5fa",fill:"rgba(96,165,250,.12)"});
+const L=(k,t,s)=>`<li><i class="${k==="ok"?"":k}"></i>${t}<small>${s}</small></li>`;
+$("lights").innerHTML=[L(STATE==="bad"?"bad":"ok","実行器",S.runner),L(STATE==="warn"?"warn":STATE==="bad"?"bad":"ok","安全装置",{ok:"通常",warn:"買い停止中",bad:"停止"}[STATE]),L("ok","緊急停止","解除中"),L(STATE==="warn"?"warn":"ok","データ取得",STATE==="warn"?"警告 1":"正常"),L(STATE==="bad"?"bad":"ok","障害",STATE==="bad"?"未解決 1":"なし"),L("ok","口座の保存","8/14 23:46")].join("");
+$("ticker").innerHTML=["<b>23:46</b> 口座を保存","<b>23:45</b> セッション完了：2件買い","<b>23:45</b> 保護ストップを2本設置","<b>23:44</b> AVGO は見解が割れ購入量 −20%","<b>23:44</b> PLTR 見送り（量が小さすぎる）"].map(t=>`<span>${t}</span>`).join("");
+</script></body></html>

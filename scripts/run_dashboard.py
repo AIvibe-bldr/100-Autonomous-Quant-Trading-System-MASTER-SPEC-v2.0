@@ -21,6 +21,7 @@ from packages.common.clock import FrozenClock
 from services.market_data.universe import UniverseManager, UniverseSymbol
 from services.quant.replay import ReplayEngine
 from services.reconciliation.engine import ReconciliationEngine
+from packages.common.kill_switch import KillSwitch
 from tests.conftest import SYMBOLS, build_pipeline
 
 
@@ -36,7 +37,8 @@ def main() -> None:
         universe.add(UniverseSymbol(symbol=s, listed_from=date(2015, 1, 1)))
     clock = FrozenClock(current=datetime.combine(date(2026, 8, 10), time(15, 0),
                                                  tzinfo=timezone.utc))
-    pipeline = build_pipeline(clock, universe, initial_cash=args.cash)
+    pipeline = build_pipeline(clock, universe, initial_cash=args.cash,
+                              kill_switch=KillSwitch.from_env())
 
     # docs/SAFETY_AUDIT.md F4 / §21: reconcile against the broker BEFORE
     # resuming trading, not only as a post-hoc summary afterward.
