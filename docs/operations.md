@@ -124,6 +124,17 @@ WantedBy=multi-user.target
 終了コード2で拒否／`--resume-if-exists` で保存から再開／口座のない `--state-dir` に `--resume` は終了コード2で拒否。
 **未確認**: 実機の systemd での起動・自動再起動、`EnvironmentFile` の権限、実ブローカー用の復元。
 
+### Windows で動かす場合（テスト済みの範囲と未確認）
+- **確認済み**: 全テストが GitHub Actions の Windows（Python 3.12）で通る（CI で毎回確認）。Discord への通知の実送信を、運用者の Windows PC で確認済み。この CI で、Windows 固有の不具合を2件直した（`tzdata` が無く取引カレンダーが読めない／UTF-8 のファイルを既定の cp1252 で読もうとして失敗）。
+- **起動**（PowerShell。環境変数は§2の表。`$env:` はそのウィンドウの中だけ有効）:
+```powershell
+pip install -e .
+python scripts/run_paper_runner.py --state-dir C:\quant-state\runner-20261112 --resume-if-exists
+```
+- **止め方**: ウィンドウで Ctrl+C。ウィンドウを閉じると止まる（再開は同じコマンド。保存から続きになる）。
+- **systemd が無い**ので、落ちたときの自動再開はない。PC のスリープでも止まる（電源設定でスリープを無効にする）。取引時間は日本時間 23:30〜06:00。常時稼働は Linux の機械が向いている。
+- **未確認**: Windows での Ctrl+C による正常停止（状態 `STOPPED`・終了コード0になるか）、タスクスケジューラでの自動起動、長時間の連続稼働。
+
 ## 4. 平常運用（毎日の確認 — ダッシュボード）
 - ランプが **OK**、ランナーが **WAITING**（セッション中は **RUNNING**）、心拍が数十秒前。
 - 日本時間 23:45 頃（夏時間は 22:45）に「最終セッション」が当日の日付になる。

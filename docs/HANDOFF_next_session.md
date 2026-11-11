@@ -39,7 +39,7 @@
 - **21st.dev の探索**: ゲージ・ヒートマップ（treemap）・シート系の部品を検索した。どれも React/Tailwind で、このダッシュボードの制約（1ファイル・外部読み込みなし・`textContent` のみ）に合わないため**コードは取り込んでいない**（既存の部品が `DESIGN_SYSTEM.md` を満たしている）。
 
 - **通知の不具合の修正**（`packages/common/alert_sinks.py`）: Discord への最初の実送信が HTTP 403（Cloudflare エラー 1010）で失敗した。原因は、Python 標準の識別名（`Python-urllib/x.y`）を Discord が拒否すること（ダミーの Webhook で再現: 既定の識別名は 403、独自の識別名は 404 Unknown Webhook）。`User-Agent: quant-alerts/1.0`（連絡先を含まない一般的な名前）を付けて修正、回帰テストあり。**ローカルの模擬サーバーでは見つからず、本物の宛先で初めて分かった**。**この修正は `claude/confident-planck-uiiidk` のみ（`5c3bd9a`）で、`main` にはまだ入っていない**（新しい PR が要る。指示があるまで作らない）。
-- **Windows での運用**: 運用者の PC は Windows（PowerShell）で、`git` は未導入、リポジトリは ZIP で `C:\quant2` に展開した。送信テストまでは Windows で動作確認済み。**runner の長期運用は Windows では未検証**で、systemd が無く、スリープで止まる。Linux の常時稼働機（小さなクラウドのサーバーなど）が向いている旨を伝えてある。
+- **Windows 対応**: 運用者の PC は Windows（PowerShell）で、`git` は未導入、リポジトリは ZIP で展開した。**CI に Windows（Python 3.12）を追加**し、Windows 固有の不具合を2件直した: ①`tzdata` が無く `ZoneInfo("America/New_York")` が import で失敗（pyproject に Windows 限定の依存を追加）②UTF-8 のファイルを既定の cp1252 で読み書きして失敗（本体18か所に `encoding="utf-8"`。ダッシュボードの配信・緊急停止・状態ファイル・障害ログ・人の意図の受付箱・通知の履歴が対象）。AST のテストで、文字コードなしのファイル入出力を今後は拒否する。両 OS の CI が通る。**runner の Windows での Ctrl+C 停止・自動起動・長時間稼働は未確認**（`docs/operations.md` の「Windows で動かす場合」）。Linux の常時稼働機が向く。
 
 ### 実LLM実行（月曜 2026-11-09、1回のみ）
 - スキャン20 → 候補4 → Decision 1（PFE を BUY）→ Skeptic が拒否 → **発注なし**。費用 $0.133（上限 $1.00）。
@@ -60,7 +60,7 @@
 | LLM の1日あたり予算（A-2） | 未判断（上限は現在プロセス単位） |
 
 ## 4. 既知の限界（報告を続けること）
-- 実LLMの効果は1日分しか見ていない（検証不足）。通知は **Discord への実送信は確認済み**（Slack・Teams・メールは未確認）。外部の死活監視への ping（`scripts/watchdog.py` の `urlopen`）は識別名（User-Agent）を付けておらず、相手先によっては Discord と同じく 403 で拒否される可能性がある（未確認。使う相手先を決めたら実際に送って確かめる）。
+- 実LLMの効果は1日分しか見ていない（検証不足）。通知は **Discord への実送信は確認済み**（Slack・Teams・メールは未確認）。外部の死活監視への ping は、4つのサービス（healthchecks.io・Dead Man's Snitch・Cronitor・Better Stack）にダミーのトークンで試し、識別名の有無で応答が変わらないことを確認した（Discord のような識別名の拒否は無い）。実際の監視の登録と、相手先を選んだ後の実送信は未確認。
 - 観測者の累積統計は再開すると初期化される。永続化は PaperBroker のみ。実ブローカー用の復元（照合）は未実装。
 - ダッシュボードの値は**直近セッション時点**でリアルタイムではない。
 - 日本語表示は既知の文型のみ。識別子（`STOPPED`・`NORMAL`・`BUY`・日次レビューの評価項目名）と AI の自由文は英語のまま。変換表（業種→日本語の系統）は主要な約100コードで、足りないものは大分類か英語になる。
