@@ -4,7 +4,7 @@
       "type": "http",
       "url": "https://21st.dev/api/mcp",
       "headers": {
-        "Authorization": "Bearer ${API_KEY_21ST}"
+        "x-api-key": "${API_KEY_21ST}"
       }
     }
   }
