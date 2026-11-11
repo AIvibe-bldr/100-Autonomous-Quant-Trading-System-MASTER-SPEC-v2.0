@@ -91,10 +91,13 @@ def main(argv: list[str] | None = None) -> int:
     ping_url = os.environ.get("QUANT_WATCHDOG_PING_URL") or None
     if not args.loop:
         return check_once(state, not args.expect_stopped, not args.no_alert, ping_url=ping_url)
-    code = 0
-    while True:
-        code = check_once(state, not args.expect_stopped, not args.no_alert, ping_url=ping_url)
-        time.sleep(args.interval)
+    try:
+        while True:
+            check_once(state, not args.expect_stopped, not args.no_alert, ping_url=ping_url)
+            time.sleep(args.interval)
+    except KeyboardInterrupt:                    # Ctrl+C is how a person stops a console watchdog: not an error
+        print("watchdog stopped")
+        return 0
 
 
 if __name__ == "__main__":
