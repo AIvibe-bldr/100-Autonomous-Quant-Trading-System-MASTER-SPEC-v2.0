@@ -287,3 +287,11 @@ def test_status_reports_when_the_account_was_last_saved(tmp_path):
 def test_a_ticker_without_a_profile_is_shown_by_its_symbol_alone():
     from packages.common.symbol_profiles import profile_of
     assert profile_of("ZZZZ") is None and profile_of("NVDA").company_ja == "エヌビディア"
+
+
+def test_every_design_token_the_page_reads_is_defined():
+    """A misspelled token (e.g. --muted for --mute) silently resolves to nothing; docs/DESIGN_SYSTEM.md §2 is the list."""
+    html = OPS_HTML.read_text()
+    defined = set(re.findall(r"(--[a-z]+)\s*:", html.split("</style>")[0]))
+    used = set(re.findall(r"var\((--[a-z]+)", html)) | set(re.findall(r'getPropertyValue\("(--[a-z]+)"\)', html))
+    assert used and used <= defined, f"undefined tokens: {sorted(used - defined)}"

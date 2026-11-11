@@ -203,7 +203,7 @@ function drawChart(series) {
   const w = cv.clientWidth, h = cv.clientHeight; cv.width = w * dpr; cv.height = h * dpr;
   const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
   const css = getComputedStyle(document.documentElement);
-  if (series.length < 2) { g.fillStyle = css.getPropertyValue("--muted"); g.font = "13px sans-serif"; g.fillText("2回以上セッションが終わると表示されます", 4, 24); return; }
+  if (series.length < 2) { g.fillStyle = css.getPropertyValue("--mute").trim() || "#5a665f"; g.font = "13px sans-serif"; g.fillText("2回以上セッションが終わると表示されます", 4, 24); return; }
   const ys = series.map((s) => s.equity), lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.15 || 1;
   const T = 10, B = 6, x = (i) => 6 + (w - 12) * i / (series.length - 1);
   const y = (v) => T + (h - T - B) * (1 - (v - (lo - pad)) / (hi - lo + 2 * pad));
@@ -330,7 +330,17 @@ function holdingWindow(x) {
 function openSheet(x) {
   const opener = document.activeElement;
   const close = () => { setChildren("sheetHost"); document.removeEventListener("keydown", onKey); if (opener && opener.focus) opener.focus(); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
+  // aria-modal: Tab stays inside the sheet (design system §8), Esc closes it
+  const onKey = (e) => {
+    if (e.key === "Escape") return close();
+    if (e.key !== "Tab") return;
+    const f = document.querySelectorAll("#sheetHost button, #sheetHost [href], #sheetHost summary");
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (!document.querySelector("#sheetHost").contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
   document.addEventListener("keydown", onKey);
   const pl = x.plan, why = el("div", { class: "why" });
   if (!pl) why.append(el("p", { class: "warn", text: "この銘柄の計画の記録がありません。" }));
