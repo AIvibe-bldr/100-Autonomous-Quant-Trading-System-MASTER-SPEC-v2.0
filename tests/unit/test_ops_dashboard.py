@@ -297,7 +297,7 @@ def test_every_design_token_the_page_reads_is_defined():
     assert used and used <= defined, f"undefined tokens: {sorted(used - defined)}"
 
 
-def _ja(samples: list[str]) -> list[str]:
+def _ja(samples: list[str], fn: str = "ja") -> list[str]:
     """Run the page's own display translator (the block between the ja-translator markers) under node."""
     import json
     import shutil
@@ -307,7 +307,7 @@ def _ja(samples: list[str]) -> list[str]:
         pytest.skip("node is not installed")
     html = OPS_HTML.read_text(encoding="utf-8")
     block = html.split("// <ja-translator>")[1].split("// </ja-translator>")[0]
-    out = subprocess.run([node, "-e", block + f"; console.log(JSON.stringify({json.dumps(samples)}.map(ja)))"],
+    out = subprocess.run([node, "-e", block + f"; console.log(JSON.stringify({json.dumps(samples)}.map({fn})))"],
                          capture_output=True, text=True, encoding="utf-8", check=True, timeout=30)
     return json.loads(out.stdout)
 
@@ -339,3 +339,26 @@ def test_english_sentences_from_our_services_are_shown_in_japanese():
 def test_text_without_a_rule_is_shown_exactly_as_written():
     unknown = ["completely new sentence", "NVDA: something unforeseen", "", "ランナーは正常です"]
     assert _ja(unknown) == unknown
+
+
+def test_identifiers_are_shown_in_japanese_and_unknown_values_are_left_alone():
+    got = dict(zip(["STOPPED", "HALT_NEW_ENTRIES", "BUY", "risk_compliance", "something_new", ""],
+                   _ja(["STOPPED", "HALT_NEW_ENTRIES", "BUY", "risk_compliance", "something_new", ""], "jaWord")))
+    assert got["STOPPED"] == "停止（STOPPED）" and "HALT_NEW_ENTRIES" in got["HALT_NEW_ENTRIES"]   # the code stays readable
+    assert got["BUY"] == "買い" and got["risk_compliance"] == "リスク順守"
+    assert got["something_new"] == "something_new" and got[""] == ""
+
+
+def test_every_value_the_backend_can_send_has_a_japanese_word():
+    """A new enum value must get a word here, or the page would show it in English without anyone noticing."""
+    from packages.common.alerts import AlertSeverity
+    from services.decision.intent_inbox import IntentStatus
+    from services.pdca.shadow import ShadowVariant
+    from services.risk.master_controller import RiskState
+    from services.supervisor import status_file
+    from services.supervisor.recovery import FaultSeverity
+    from services.supervisor.watchdog import Level
+    values = ([e.value for e in (*RiskState, *ShadowVariant, *IntentStatus, *FaultSeverity, *Level, *AlertSeverity)]
+              + [status_file.STARTING, status_file.WAITING, status_file.RUNNING, status_file.FAILED, status_file.STOPPED])
+    untranslated = [v for v, w in zip(values, _ja(values, "jaWord")) if v == w]
+    assert untranslated == [], untranslated

@@ -251,7 +251,7 @@ const JA_RULES = [
   [/^thesis invalidated$/, () => "前提が崩れたとき"],
   // observers
   [/^shadow variants are hypothetical close-to-close holds without costs; FULL pays spreads, slippage and fees \(not like-for-like\)$/, () => "シャドーの変種は、費用なしで終値から終値まで持った仮定の結果です。FULL はスプレッド・滑り・手数料を払うため、同じ条件の比較ではありません。"],
-  [/^variants needing an LLM re-run \(NO_NEWS, NO_REGIME, \.\.\.\) are not simulated$/, () => "LLM の再実行が要る変種（NO_NEWS、NO_REGIME など）は再現していません。"],
+  [/^variants needing an LLM re-run \(NO_NEWS, NO_REGIME, \.\.\.\) are not simulated$/, () => "LLM の再実行が要る変種（ニュースなし・相場局面なしなど）は再現していません。"],
   [/^too few sessions to rank anything until the paper period is long$/, () => "ペーパー期間が長くなるまで、セッション数が少なすぎて順位はつけられません。"],
   [/^market beta = 1\.0 against the benchmark over the holding period$/, () => "市場β は、保有期間のベンチマークに対して 1.0 と仮定しています。"],
   [/^marked equity uses the last daily close; a mismatch is reported, never a halt$/, () => "評価額は直近の日足終値で計算します。不一致は報告しますが、停止はしません。"],
@@ -264,6 +264,23 @@ const JA_RULES = [
   [/^WHAT WAS MISSED: (\d+) candidates vetoed by skeptic — review vetoes against outcomes \(§53 counterfactual\)\.$/, (m) => "見逃し: 懐疑 AI が " + m[1] + " 件を拒否しました。拒否と実際の結果を照らし合わせてください（§53）。"],
   [/^REFERENCE: theoretical 100x pace equity (\S+) vs actual (\S+) \(informational only — never raises risk §63\)$/, (m) => "参考: 100倍ペースの理論上の資産 " + m[1] + " に対し、実際は " + m[2] + "（参考表示のみ。リスクを上げることはありません §63）"],
 ];
+// Identifiers (enum values and keys our services write) in Japanese. Codes an operator must match against the
+// runbook and the alerts keep the original in brackets; the rest are Japanese only. Unknown values stay as written.
+const JA_WORDS = {
+  STARTING: "起動中（STARTING）", WAITING: "待機中（WAITING）", RUNNING: "実行中（RUNNING）", FAILED: "異常で停止（FAILED）", STOPPED: "停止（STOPPED）",
+  NORMAL: "通常（NORMAL）", HALT_NEW_ENTRIES: "新規の買いを停止（HALT_NEW_ENTRIES）", SAFE_EXIT: "安全な手仕舞い（SAFE_EXIT）",
+  FULL_BROKER_DISCONNECT: "ブローカー全面切断（FULL_BROKER_DISCONNECT）",
+  OK: "正常（OK）", WARNING: "注意（WARNING）", CRITICAL: "重大（CRITICAL）", MINOR: "軽微（MINOR）", MAJOR: "重大（MAJOR）",
+  BUY: "買い", SELL: "売り",
+  bear: "弱気", base: "中立", bull: "強気",
+  FULL: "フル構成", NO_NEWS: "ニュースなし", NO_INSTITUTIONAL: "機関投資家フローなし", NO_LLM: "LLMなし", QUANT_ONLY: "クオンツのみ",
+  NO_REGIME: "相場局面なし", MOONSHOT_ONLY: "大化け狙いのみ", BENCHMARK: "ベンチマーク",
+  risk_compliance: "リスク順守", data_quality: "データ品質", opportunity_quality: "機会の質", execution_quality: "執行の質", pnl: "損益", overall: "総合",
+  AI: "AI", HUMAN: "人",
+  momentum: "モメンタム（順張り）", mean_reversion: "平均回帰（逆張り）",
+  SUBMITTED: "提出済み", ANALYZED: "分析済み", CONFIRMED: "人が確認済み", CONSUMED: "反映済み", CANCELLED: "取消", REJECTED: "却下", EXPIRED: "期限切れ",
+};
+const jaWord = (v) => (typeof v === "string" && Object.prototype.hasOwnProperty.call(JA_WORDS, v)) ? JA_WORDS[v] : v;
 function jaBody(t) {
   for (const [re, fn] of JA_RULES) { const m = re.exec(t); if (m) return fn(m); }
   return t;
@@ -307,7 +324,7 @@ function heroOf(s) {
   if (s.overall === "CRITICAL") return { level: "bad", word: "要確認", head: "確認が必要です。", text: bad.length ? ja(bad[0].message) : "くわしい画面を見てください。" };
   if (r.risk_state !== "NORMAL") return { level: "warn", word: "注意",
     head: r.risk_state === "HALT_NEW_ENTRIES" ? "新しい買いを止めています。" : "安全装置が働いています。",
-    text: "持っている分の損切りは動いています（状態: " + r.risk_state + "）。" };
+    text: "持っている分の損切りは動いています（状態: " + jaWord(r.risk_state) + "）。" };
   if (s.overall === "WARNING") return { level: "warn", word: "注意", head: "動いていますが、注意があります。", text: warn.length ? ja(warn[0].message) : "" };
   return { level: "ok", word: "正常", head: "正常に動いています。", text: r.next_session_at ? "次の取引は " + jstShort(r.next_session_at) + " です。" : "" };
 }
@@ -324,8 +341,8 @@ function renderStatus(s) {
     el("b", { text: "確認してほしいこと" }), el("ul", {}, notes.map((f) => el("li", { text: ja(f.message) })))) : null);
   const age = r ? Math.max(0, Math.round((new Date(s.now) - new Date(r.updated_at)) / 1000)) : null;
   const cards = [
-    card("ランナー", r ? r.state : "未起動", r ? "心拍 " + age + " 秒前 · pid " + r.pid : "状態ファイルがありません", r && r.state === "FAILED" ? "neg" : ""),
-    card("リスク状態", r ? r.risk_state : "—", null, r && r.risk_state !== "NORMAL" ? "warn" : "pos"),
+    card("ランナー", r ? jaWord(r.state) : "未起動", r ? "心拍 " + age + " 秒前 · pid " + r.pid : "状態ファイルがありません", r && r.state === "FAILED" ? "neg" : ""),
+    card("リスク状態", r ? jaWord(r.risk_state) : "—", null, r && r.risk_state !== "NORMAL" ? "warn" : "pos"),
     card("キルスイッチ", s.kill_switch.engaged ? "作動中" : "解除", s.kill_switch.engaged ? s.kill_switch.operator + ": " + s.kill_switch.reason : null, s.kill_switch.engaged ? "neg" : "pos"),
     card("最終セッション", r && r.last_session_date ? r.last_session_date : "—", r ? "実行 " + r.sessions_run + " 回" : null),
     card("口座の保存", s.checkpoint && s.checkpoint.at ? jst(s.checkpoint.at) : "なし", s.checkpoint ? (s.checkpoint.error || s.checkpoint.reason + " · " + s.checkpoint.count + " 世代") : "再起動で引き継げません", s.checkpoint && s.checkpoint.at ? "" : "warn"),
@@ -359,7 +376,7 @@ function renderPerf(p) {
     card("セッション数", s.sessions + " / " + p.proposed_min_sessions, s.first_date + " 〜 " + s.last_date),
     card("上昇／下落／横ばい", s.up_days + " / " + s.down_days + " / " + s.flat_days, "最良 " + signed(s.best_day, (v) => v.toFixed(2)) + " 最悪 " + signed(s.worst_day, (v) => v.toFixed(2))),
     card("約定／損切り", s.orders_filled + " / " + s.stops_triggered, "手数料 " + money(s.fees_total)),
-    card("非 NORMAL で終了", String(s.non_normal_risk_days), "警告あり " + s.warning_days + " 日", s.non_normal_risk_days ? "warn" : ""),
+    card("通常以外で終了", String(s.non_normal_risk_days), "警告あり " + s.warning_days + " 日", s.non_normal_risk_days ? "warn" : ""),
     card("LLM 費用", s.llm_cost_usd == null ? "未記録" : money(s.llm_cost_usd)),
   ] : []);
 }
@@ -538,7 +555,7 @@ function renderSessions(d) {
   setChildren("sessions", errorBox(d), table(["日付", "資産", "日次損益", "DD", "候補", "約定", "損切り", "保有", "警告", "リスク", "LLM費用"],
     (d.sessions || []).slice(0, 20).map((r) => [r.session_date, money(r.equity), { t: signed(r.day_pnl, (v) => v.toFixed(2)), c: cls(r.day_pnl) },
       pct(r.drawdown), r.candidates, r.orders_filled, r.stops_triggered, r.open_positions, r.data_warnings,
-      { t: r.risk_state, c: r.risk_state === "NORMAL" ? "" : "warn" }, r.llm_cost_usd == null ? "—" : money(r.llm_cost_usd)])));
+      { t: jaWord(r.risk_state), c: r.risk_state === "NORMAL" ? "" : "warn" }, r.llm_cost_usd == null ? "—" : money(r.llm_cost_usd)])));
 }
 
 function renderObservers(o) {
@@ -549,23 +566,23 @@ function renderObservers(o) {
     el("ul", { class: "plain" }, (o.no_trade_reasons || []).slice(0, 10).map((x) => el("li", { text: ja(x) }))),
     (o.data_warnings || []).length ? [el("h3", { text: "データ警告" }), el("ul", { class: "plain" }, o.data_warnings.map((x) => el("li", { class: "warn", text: ja(x) })))] : null,
     el("h3", { text: "約定" }),
-    (o.fills || []).length ? table(["銘柄", "売買", "数量", "価格"], o.fills.map((f) => [f.symbol, f.side, qtyText(f.qty), money(f.price)])) : el("div", { class: "muted", text: "なし" }),
+    (o.fills || []).length ? table(["銘柄", "売買", "数量", "価格"], o.fills.map((f) => [f.symbol, jaWord(f.side), qtyText(f.qty), money(f.price)])) : el("div", { class: "muted", text: "なし" }),
     Object.keys(o.disagreement_multipliers || {}).length ? [el("h3", { text: "モデル不一致によるサイズ係数（1.0=縮小なし）" }),
       table(["銘柄", "係数"], Object.entries(o.disagreement_multipliers).map(([k, v]) => [k, { t: v.toFixed(3), c: v < 0.9 ? "warn" : "" }]))] : null,
   ] : el("div", { class: "muted", text: "まだありません" }));
 
   if (O.forecast) { const f = O.forecast, cal = f.calibration || {};
     parts.push(panel("予測の較正（§32）", el("div", { class: "muted", text: "記録 " + f.recorded + " · 採点済み " + f.resolved + " · 待ち " + f.pending + " · 採点不能 " + f.skipped }),
-      Object.keys(cal).length ? table(["シナリオ", "予測確率", "実現頻度", "差"], ["bear", "base", "bull"].map((k) => [k, pct(cal[k].predicted), pct(cal[k].realized), signed(cal[k].gap, (v) => pct(v))])) : el("div", { class: "muted", text: "採点できた予測がまだありません" }))); }
+      Object.keys(cal).length ? table(["シナリオ", "予測確率", "実現頻度", "差"], ["bear", "base", "bull"].map((k) => [jaWord(k), pct(cal[k].predicted), pct(cal[k].realized), signed(cal[k].gap, (v) => pct(v))])) : el("div", { class: "muted", text: "採点できた予測がまだありません" }))); }
   if (O.shadow) { const s = O.shadow;
     parts.push(panel("シャドー比較（§56-58）", el("div", { class: "muted", text: s.sessions + " セッション" }),
-      table(["変種", "累積リターン"], (s.ranking || []).map((r) => [r.variant, { t: pct(r.total_return), c: cls(r.total_return) }])),
-      el("div", { text: "AIスタックの寄与（FULL − QUANT_ONLY）: " + (s.ai_stack_contribution == null ? "—" : signed(s.ai_stack_contribution, (v) => pct(v))) }),
-      Object.keys(s.alpha_shadow || {}).length ? table(["Alpha", "回数", "平均リターン"], Object.entries(s.alpha_shadow).map(([k, v]) => [k, v.sessions, pct(v.mean_return)])) : null,
+      table(["変種", "累積リターン"], (s.ranking || []).map((r) => [jaWord(r.variant), { t: pct(r.total_return), c: cls(r.total_return) }])),
+      el("div", { text: "AIスタックの寄与（フル構成 − クオンツのみ）: " + (s.ai_stack_contribution == null ? "—" : signed(s.ai_stack_contribution, (v) => pct(v))) }),
+      Object.keys(s.alpha_shadow || {}).length ? table(["アルファ（売買の型）", "回数", "平均リターン"], Object.entries(s.alpha_shadow).map(([k, v]) => [jaWord(k), v.sessions, pct(v.mean_return)])) : null,
       el("ul", { class: "plain" }, (s.caveats || []).map((c) => el("li", { text: ja(c) }))))); }
   if (O.attribution) { const a = O.attribution;
     parts.push(panel("損益分解（§54-55）", el("div", { class: "muted", text: "閉じた取引 " + a.closed_trades + " · 未帰属 " + a.unattributed + " · " + ja(a.assumption) }),
-      table(["項目", "金額"], [["合計", money(a.total_pnl)], ["市場β", money(a.market_beta_pnl)], ["alpha", money(a.alpha_pnl)], ["スリッページ", money(-a.slippage)], ["手数料", money(-a.fees)]]),
+      table(["項目", "金額"], [["合計", money(a.total_pnl)], ["市場β", money(a.market_beta_pnl)], ["アルファ（市場を上回った分）", money(a.alpha_pnl)], ["スリッページ", money(-a.slippage)], ["手数料", money(-a.fees)]]),
       a.profit_quality ? el("div", { text: "利益の質: " + a.profit_quality.source + "（" + a.profit_quality.score + "）— " + a.profit_quality.detail }) : null)); }
   if (O.exit_review) { const e = O.exit_review, st = e.stops || {}, cf = e.counterfactual || {};
     parts.push(panel("出口・見送りの検証（§50-53）",
@@ -574,14 +591,14 @@ function renderObservers(o) {
       (e.proposals || []).length ? table(["提案", "段階"], e.proposals.map((p) => [p.name, p.stage])) : el("div", { class: "muted", text: "出口の研究提案: なし" }))); }
   if (O.daily_review && O.daily_review.grades) { const d = O.daily_review;
     parts.push(panel("日次レビュー（§63-64）", el("div", { text: d.day + " · 損益 " + signed(d.pnl, (v) => v.toFixed(2)) }),
-      table(["観点", "評価"], Object.entries(d.grades).map(([k, v]) => [k, v])), el("ul", { class: "plain" }, (d.narrative || []).map((n) => el("li", { text: ja(n) }))))); }
+      table(["観点", "評価"], Object.entries(d.grades).map(([k, v]) => [jaWord(k), v])), el("ul", { class: "plain" }, (d.narrative || []).map((n) => el("li", { text: ja(n) }))))); }
   if (O.human_vs_ai) { const h = O.human_vs_ai;
     parts.push(panel("人 vs AI（§79）", el("div", { text: "介入 " + h.overrides + " · 結果が出た " + h.resolved + " · 待ち " + h.pending }),
       el("div", { text: "人の付加価値: " + (h.human_value_added == null ? "—" : h.human_value_added) + "（" + ja(h.unit) + "）" }))); }
   if (O.capital_cells) { const c = O.capital_cells, rc = c.reconciliation || {}, latest = rc.latest;
     parts.push(panel("資本セル（案A・観測のみ）",
       el("div", { class: rc.sessions_inconsistent ? "warn" : "pos", text: "照合 " + rc.sessions_checked + " 回 · 不一致 " + rc.sessions_inconsistent + " 回" }),
-      latest ? table(["セル", "現金", "評価額", "実現損益"], Object.entries(latest.cells).map(([k, v]) => [k, money(v.cash), money(v.marked_equity), money(v.virtual_realized_pnl)])) : null,
+      latest ? table(["セル", "現金", "評価額", "実現損益"], Object.entries(latest.cells).map(([k, v]) => [jaWord(k), money(v.cash), money(v.marked_equity), money(v.virtual_realized_pnl)])) : null,
       (c.errors || []).length ? el("ul", { class: "plain" }, c.errors.map((x) => el("li", { class: "warn", text: x }))) : null,
       el("div", { class: "muted", text: "未配分プール " + money(c.unallocated_cash) + " · " + ja(c.note) }))); }
   if (O.pit) parts.push(panel("Point-in-Time 記録（§10）", el("div", { text: "判断の入力・出力を記録: " + O.pit.decisions_recorded + " 件" })));
@@ -590,11 +607,11 @@ function renderObservers(o) {
 
 function renderIncidents(d) {
   setChildren("incidents", errorBox(d), (d.incidents || []).length ? table(["ID", "重大度", "状態", "サービス", "内容"],
-    d.incidents.map((i) => [i.incident_id, i.severity, { t: i.resolved ? "解決" : "未解決", c: i.resolved ? "" : "neg" }, i.service, i.description]), 1) : el("div", { class: "muted", text: "記録なし" }));
+    d.incidents.map((i) => [i.incident_id, jaWord(i.severity), { t: i.resolved ? "解決" : "未解決", c: i.resolved ? "" : "neg" }, i.service, i.description]), 1) : el("div", { class: "muted", text: "記録なし" }));
 }
 function renderIntents(d) {
   setChildren("intents", errorBox(d), (d.intents || []).length ? (d.intents || []).map((i) => el("div", {},
-    el("div", {}, el("b", { text: i.intent_id + " " + i.symbol + " " }), el("span", { class: i.status === "CONFIRMED" ? "warn" : "muted", text: i.status }),
+    el("div", {}, el("b", { text: i.intent_id + " " + i.symbol + " " }), el("span", { class: i.status === "CONFIRMED" ? "warn" : "muted", text: jaWord(i.status) }),
       el("span", { class: "muted", text: " · " + i.submitted_by + " · " + i.reason })),
     i.outcome ? el("div", { class: "muted", text: "結果: " + i.outcome }) : null,
     i.analysis ? el("details", {}, el("summary", { text: "分析を見る" }), el("pre", { text: JSON.stringify(i.analysis, null, 2) })) : null))
@@ -602,7 +619,7 @@ function renderIntents(d) {
 }
 function renderAlerts(d) {
   setChildren("alerts", (d.alerts || []).length ? el("ul", { class: "plain" }, d.alerts.slice(0, 15).map((a) =>
-    el("li", { class: a.severity === "CRITICAL" ? "neg" : "warn", text: jst(a.at) + " [" + a.severity + "] " + a.message }))) : el("div", { class: "muted", text: "通知はありません" }));
+    el("li", { class: a.severity === "CRITICAL" ? "neg" : "warn", text: jst(a.at) + " [" + jaWord(a.severity) + "] " + ja(a.message) }))) : el("div", { class: "muted", text: "通知はありません" }));
 }
 
 async function refresh() {
