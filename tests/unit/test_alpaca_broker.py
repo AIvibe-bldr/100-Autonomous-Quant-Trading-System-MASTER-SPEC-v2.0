@@ -34,7 +34,7 @@ class FakeAlpaca:
     (query, body) -> (status, payload) or a list of such answers consumed one per request."""
 
     def __init__(self):
-        self.requests, self.routes, self.delay = [], {}, 0.0
+        self.requests, self.routes, self.delay, self.dynamic = [], {}, 0.0, None
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -46,7 +46,11 @@ class FakeAlpaca:
                                        "body": body, "headers": {k.lower(): v for k, v in self.headers.items()}})
                 if outer.delay:
                     time.sleep(outer.delay)
-                answer = outer.routes.get((self.command, url.path), (404, {"message": "not found"}))
+                answer = None
+                if outer.dynamic is not None:
+                    answer = outer.dynamic(self.command, url.path, dict(urllib.parse.parse_qsl(url.query)), body)
+                if answer is None:
+                    answer = outer.routes.get((self.command, url.path), (404, {"message": "not found"}))
                 if isinstance(answer, list):
                     answer = answer.pop(0) if len(answer) > 1 else answer[0]
                 if callable(answer):
@@ -59,7 +63,7 @@ class FakeAlpaca:
                 self.end_headers()
                 self.wfile.write(raw)
 
-            do_GET = do_POST = do_DELETE = _handle
+            do_GET = do_POST = do_DELETE = do_PATCH = _handle
 
             def log_message(self, *a):
                 pass
@@ -342,3 +346,31 @@ def test_a_read_that_keeps_failing_is_a_disconnect(fake):
     fake.routes[("GET", "/v2/account")] = (403, {"message": "forbidden"})
     with pytest.raises(BrokerDisconnectedError):
         broker(fake).get_cash()
+
+
+# ---- the operator's check helpers ----------------------------------------------------------------------------
+def test_describe_account_returns_only_a_fixed_set_of_non_secret_fields(fake):
+    fake.routes[("GET", "/v2/account")] = (200, {"status": "ACTIVE", "cash": "670", "account_number": "PA123456", "id": "secret-id",
+                                                 "multiplier": "1", "currency": "USD"})
+    info = broker(fake).describe_account()
+    assert info["status"] == "ACTIVE" and info["cash"] == "670" and info["multiplier"] == "1"
+    assert "account_number" not in info and "id" not in info
+
+
+def test_market_clock_reports_open_or_closed_and_fails_closed_on_nonsense(fake):
+    fake.routes[("GET", "/v2/clock")] = (200, {"is_open": True, "next_open": "a", "next_close": "b"})
+    assert broker(fake).market_clock()["is_open"] is True
+    fake.routes[("GET", "/v2/clock")] = (200, {"is_open": "yes"})
+    assert broker(fake).market_clock()["is_open"] is False                      # only a real True counts as open
+    fake.routes[("GET", "/v2/clock")] = (200, ["x"])
+    with pytest.raises(BrokerDisconnectedError):
+        broker(fake).market_clock()
+
+
+def test_a_refused_configuration_change_is_an_error_not_a_silent_success(fake):
+    fake.routes[("PATCH", "/v2/account/configurations")] = (403, {"message": "forbidden"})
+    with pytest.raises(AlpacaConfigurationError, match="HTTP 403"):
+        broker(fake).configure_cash_style()
+    fake.routes[("PATCH", "/v2/account/configurations")] = (200, {"max_margin_multiplier": "1", "no_shorting": True})
+    assert broker(fake).configure_cash_style()["no_shorting"] is True
+    assert fake.seen("PATCH", "/v2/account/configurations")[-1]["body"] == {"max_margin_multiplier": "1", "no_shorting": True}

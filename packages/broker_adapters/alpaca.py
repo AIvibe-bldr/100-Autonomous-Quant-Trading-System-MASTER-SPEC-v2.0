@@ -15,6 +15,8 @@ The one place that talks to Alpaca's trading API. Choices that matter for a safe
 - Prices are sent on the exchange tick (a cent, or 1/100 cent below $1) rounded so the order is never
   worse than approved: sells round up, buys round down.
 
+The only write that is not an order is `configure_cash_style()`, called by the operator's check script, never by the runner.
+
 Known limits (see docs/paper_live_gate.md): fees are reported as 0 (Alpaca equities are commission-free;
 regulatory fees surface as cash differences that reconciliation catches); unsettled cash is reported as 0
 (T+1 is not modelled); an order cancelled after a partial fill is reported CANCELLED and its fills are not
@@ -75,6 +77,10 @@ _STATE = {
     "pending_cancel": OrderState.CANCEL_REQUESTED, "canceled": OrderState.CANCELLED,
     "expired": OrderState.EXPIRED, "rejected": OrderState.REJECTED,
 }
+
+
+_ACCOUNT_FIELDS = ("status", "currency", "cash", "equity", "buying_power", "multiplier", "pattern_day_trader",
+                   "daytrade_count", "trading_blocked", "account_blocked", "shorting_enabled")
 
 
 class AlpacaConfigurationError(RuntimeError):
@@ -300,6 +306,27 @@ class AlpacaBroker(BrokerAdapter):
         if str(acct.get("status", "ACTIVE")).upper() != "ACTIVE":
             reasons.append(f"status={acct.get('status')}")
         return BrokerAccountStatus(trading_blocked=bool(reasons), reason=", ".join(reasons))
+
+    def describe_account(self) -> dict[str, Any]:
+        """A fixed set of non-secret account fields, for an operator's check (never the keys or the account number)."""
+        acct = self._account()
+        return {name: acct.get(name) for name in _ACCOUNT_FIELDS}
+
+    def market_clock(self) -> dict[str, Any]:
+        data = self._get("/v2/clock")
+        if not isinstance(data, dict) or "is_open" not in data:
+            raise BrokerDisconnectedError("unexpected broker response: not a market clock")
+        return {"is_open": data["is_open"] is True, "next_open": str(data.get("next_open", "")),
+                "next_close": str(data.get("next_close", ""))}
+
+    def configure_cash_style(self) -> dict[str, Any]:
+        """The ONE call that changes the account: cash-style (margin multiplier 1) and long-only. It exists for the
+        operator's check script (scripts/alpaca_paper_check.py --set-cash-config); the runner never calls it."""
+        status, data, _ = self._send("PATCH", "/v2/account/configurations",
+                                     body={"max_margin_multiplier": "1", "no_shorting": True})
+        if status != 200 or not isinstance(data, dict):
+            raise AlpacaConfigurationError(f"the broker refused the change (HTTP {status}) {self._message(data)}".strip())
+        return data
 
     def verify_account_configuration(self) -> None:
         """Refuse an account that is not cash-style and long-only (Alpaca enforces these settings itself).
