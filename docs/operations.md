@@ -137,6 +137,22 @@ python scripts/run_paper_runner.py --state-dir C:\quant-state\runner-20261112 --
 - **運用者の PC（Windows 11・PowerShell・Python 3.12）で確認済み（2026-11-11）**: 模擬データでランナーが起動し、**キーボードの Ctrl+C で約1秒で止まり**、`--resume-if-exists` で保存から再開できる。
 - **未確認**: タスクスケジューラでの自動起動、長時間（数日）の連続稼働。
 
+### Alpaca ペーパー口座の動作確認（手順2。ペーパーのお金だけ。実注文は送れない）
+`scripts/alpaca_paper_check.py` は、システムが前提にしていること（現金のみの設定、小数株の GTC 損切り、約定の記録、現金の動き）を、実際のペーパー口座で確かめる。
+キーはダッシュボードでペーパー口座を選び、API キーを発行する（**シークレットは発行時にしか表示されない**）。**画面に出さずに**入れる（PowerShell）:
+```powershell
+$s = Read-Host "Key ID" -AsSecureString
+$env:QUANT_ALPACA_TRADING_KEY_ID = [System.Net.NetworkCredential]::new("", $s).Password
+$s = Read-Host "Secret" -AsSecureString
+$env:QUANT_ALPACA_TRADING_SECRET = [System.Net.NetworkCredential]::new("", $s).Password
+python scripts/alpaca_paper_check.py                       # 読み取りだけ（いつでも）
+python scripts/alpaca_paper_check.py --set-cash-config     # 現金のみ・空売りなしを設定し、読み戻して確認
+python scripts/alpaca_paper_check.py --orders fractional   # 米国市場が開いている時間に: SPY を 0.01 株買い、GTC の損切りを試し、取り消す
+python scripts/alpaca_paper_check.py --orders whole        # 同じことを、1株（既定は F）で
+python scripts/alpaca_paper_check.py --cleanup             # 翌日以降に: 買った分を売る（同じ日の売買は日計り取引になる）
+```
+市場が開いている時間は、日本時間の夜（夏時間は 22:30〜05:00、冬時間は 23:30〜06:00）。結果の「gtc_stop_accepted」が False なら、小数株では GTC の損切りが使えない（INV-15 に関わる）ので、設計の判断が要る（`docs/HANDOFF_next_session.md` §3b）。
+
 ### 外部の死活監視の設定（マシンごと止まったときの備え。healthchecks.io の例）
 watchdog は runner と同じマシンで動くので、**マシンが止まる・スリープする・ネットが切れると、Discord にも何も届かない**。そこで watchdog が
 健全なときだけ（CRITICAL でないとき）毎回、外部のサービスへ ping を送り、**ping が途絶えたら外部のサービスが通知する**（沈黙が警報になる）。
