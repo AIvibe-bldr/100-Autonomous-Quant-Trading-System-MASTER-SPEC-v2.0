@@ -57,7 +57,7 @@
 | 売買判断（Strategy） | `services/decision`（Decision AI / Skeptic AI）、`services/alpha_factory` |
 | リスク制限（Risk Engine） | `services/risk`（Master Risk Controller、deterministic・AI禁止） |
 | 注文実行（Execution） | `services/execution`（Order State Machine含む、deterministic・AI禁止） |
-| 外部Broker通信（Broker Adapter） | `packages/broker_adapters`（現状 `PaperBroker` のみ） |
+| 外部Broker通信（Broker Adapter） | `packages/broker_adapters`（`PaperBroker`＝模擬、`AlpacaBroker`＝Alpaca の**ペーパー口座専用**。本番のホストは構築時に拒否。起動への配線は未実施） |
 | 永続化（DB Repository） | 未実装（`docs/SAFETY_AUDIT.md` F9）。追加する際は本ルールに従い専用層として切る |
 | 観測（Logging / Monitoring） | `services/supervisor`（Heartbeat）。構造化ログは未整備（同F7） |
 
