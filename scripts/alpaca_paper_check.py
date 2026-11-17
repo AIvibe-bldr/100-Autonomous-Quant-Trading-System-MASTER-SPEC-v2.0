@@ -9,8 +9,12 @@ endpoint, so this script cannot send a real order. Nothing it prints contains th
   python scripts/alpaca_paper_check.py --orders fractional   # PAPER orders (US market hours): buy 0.01 of SPY, try a
                                                              # GTC protective stop on it, cancel the stop
   python scripts/alpaca_paper_check.py --orders whole        # the same with 1 whole share of --whole-symbol
+  python scripts/alpaca_paper_check.py --orders both --wait-for-market
+                                                             # start it before bed: it waits for the US market to
+                                                             # open, then runs both checks by itself
   python scripts/alpaca_paper_check.py --cleanup             # sell what the checks bought (run it the NEXT day: a
-                                                             # same-day buy and sell is a day trade)
+                                                             # same-day buy and sell is a day trade; add
+                                                             # --wait-for-market to let it wait for the open)
 
 What the order checks answer (the system holds fractional shares and requires a GTC protective stop, INV-15):
 does Alpaca accept a GTC stop on a fractional quantity, are the fills complete, does the cash move as expected."""
@@ -83,11 +87,23 @@ def _record(state_dir: Path, symbol: str, qty: float) -> None:
     path.write_text(json.dumps(items), encoding="utf-8")
 
 
-def check_orders(broker: AlpacaBroker, kind: str, symbol: str, qty: float, state_dir: Path) -> dict:
+def wait_for_open(broker: AlpacaBroker, polls: int, poll_seconds: float = 60.0) -> bool:
+    """Wait (up to `polls` checks, one per `poll_seconds`) until the US market is open. False if it never opened."""
+    for i in range(polls):
+        clock = broker.market_clock()
+        if clock["is_open"]:
+            return True
+        if i % 30 == 0:
+            say(f"  市場の開場を待っています（次の開場: {clock['next_open']}）。このウィンドウを開いたまま、PC をスリープさせないでください。")
+        sleep(poll_seconds)
+    return broker.market_clock()["is_open"]
+
+
+def check_orders(broker: AlpacaBroker, kind: str, symbol: str, qty: float, state_dir: Path, wait_polls: int = 0) -> dict:
     """Buy a tiny quantity at the market, try a GTC protective stop on it, cancel the stop. Returns the findings."""
     findings: dict = {"kind": kind, "symbol": symbol, "qty": qty}
     clock = broker.market_clock()
-    if not clock["is_open"]:
+    if not clock["is_open"] and not (wait_polls and wait_for_open(broker, wait_polls)):
         say(f"米国市場が閉じています（次の開場: {clock['next_open']}）。市場が開いている時間（日本時間の夜）に、もう一度実行してください。")
         findings["skipped"] = "market closed"
         return findings
@@ -140,13 +156,13 @@ def check_orders(broker: AlpacaBroker, kind: str, symbol: str, qty: float, state
     return findings
 
 
-def cleanup(broker: AlpacaBroker, state_dir: Path) -> None:
+def cleanup(broker: AlpacaBroker, state_dir: Path, wait_polls: int = 0) -> None:
     path = state_dir / "alpaca_check.json"
     items = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
     if not items:
         say("売る対象の記録がありません（先に --orders を実行すると記録されます）。")
         return
-    if not broker.market_clock()["is_open"]:
+    if not broker.market_clock()["is_open"] and not (wait_polls and wait_for_open(broker, wait_polls)):
         say("米国市場が閉じています。開いている時間に、もう一度実行してください。")
         return
     held = {p.symbol: p.qty for p in broker.get_positions()}
@@ -170,7 +186,9 @@ def cleanup(broker: AlpacaBroker, state_dir: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--set-cash-config", action="store_true")
-    parser.add_argument("--orders", choices=["fractional", "whole"])
+    parser.add_argument("--orders", choices=["fractional", "whole", "both"])
+    parser.add_argument("--wait-for-market", action="store_true", help="wait for the US market to open instead of stopping")
+    parser.add_argument("--max-wait-hours", type=float, default=16.0)
     parser.add_argument("--whole-symbol", default="F", help="a low-priced stock for the whole-share check")
     parser.add_argument("--fractional-symbol", default="SPY")
     parser.add_argument("--cleanup", action="store_true")
@@ -189,15 +207,20 @@ def main(argv: list[str] | None = None) -> int:
             set_cash_config(broker)
         show_account(broker)
         state_dir = Path(args.state_dir)
+        wait_polls = int(args.max_wait_hours * 60) if args.wait_for_market else 0        # one check a minute
         if args.orders:
-            symbol, qty = (args.fractional_symbol, 0.01) if args.orders == "fractional" else (args.whole_symbol, 1.0)
-            findings = check_orders(broker, args.orders, symbol, qty, state_dir)
+            plan = {"fractional": [("fractional", args.fractional_symbol, 0.01)],
+                    "whole": [("whole", args.whole_symbol, 1.0)],
+                    "both": [("fractional", args.fractional_symbol, 0.01), ("whole", args.whole_symbol, 1.0)]}[args.orders]
+            results = [check_orders(broker, kind, symbol, qty, state_dir, wait_polls) for kind, symbol, qty in plan]
             say("== まとめ")
-            for key, value in findings.items():
-                say(f"  {key}: {value}")
+            for findings in results:
+                say(f"-- {findings['kind']}")
+                for key, value in findings.items():
+                    say(f"  {key}: {value}")
             say("  ※ 買った分は、翌日以降に --cleanup で売ってください（同じ日の売買は、日計り取引になります）")
         if args.cleanup:
-            cleanup(broker, state_dir)
+            cleanup(broker, state_dir, wait_polls)
     except (BrokerDisconnectedError, BrokerTimeoutError, DuplicateClientOrderIdError, AlpacaConfigurationError,
             ValueError, KeyError) as e:
         say(f"エラー: {type(e).__name__}: {e}")

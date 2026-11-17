@@ -149,6 +149,9 @@ python scripts/alpaca_paper_check.py                       # 読み取りだけ�
 python scripts/alpaca_paper_check.py --set-cash-config     # 現金のみ・空売りなしを設定し、読み戻して確認
 python scripts/alpaca_paper_check.py --orders fractional   # 米国市場が開いている時間に: SPY を 0.01 株買い、GTC の損切りを試し、取り消す
 python scripts/alpaca_paper_check.py --orders whole        # 同じことを、1株（既定は F）で
+python scripts/alpaca_paper_check.py --orders both --wait-for-market
+                                                           # 寝る前に: 市場が開くまで待ち、小数株と1株の確認を続けて自動で行う（PC をスリープさせない）
+python scripts/alpaca_paper_check.py --cleanup --wait-for-market   # 翌日以降に: 市場が開くまで待って、買った分を売る
 python scripts/alpaca_paper_check.py --cleanup             # 翌日以降に: 買った分を売る（同じ日の売買は日計り取引になる）
 ```
 市場が開いている時間は、日本時間の夜（夏時間は 22:30〜05:00、冬時間は 23:30〜06:00）。結果の「gtc_stop_accepted」が False なら、小数株では GTC の損切りが使えない（INV-15 に関わる）ので、設計の判断が要る（`docs/HANDOFF_next_session.md` §3b）。

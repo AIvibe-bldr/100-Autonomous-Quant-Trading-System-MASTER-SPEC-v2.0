@@ -22,7 +22,8 @@ def load_script():
 class Market:
     """Just enough of Alpaca's paper API for the check script."""
 
-    def __init__(self, *, is_open=True, config_sticks=True, fractional_gtc_stop=True, status_code=None):
+    def __init__(self, *, is_open=True, config_sticks=True, fractional_gtc_stop=True, status_code=None, opens_after=None):
+        self.opens_after, self.clock_calls = opens_after, 0
         self.orders, self.activities, self.positions = {}, [], {}
         self.cash, self.price, self.is_open = 1000.0, 50.0, is_open
         self.config = {"max_margin_multiplier": "2", "no_shorting": False}
@@ -46,6 +47,9 @@ class Market:
                 self.config.update(body)
             return 200, dict(self.config)
         if (method, path) == ("GET", "/v2/clock"):
+            if self.opens_after is not None:                        # closed for the first N asks, then open
+                self.clock_calls += 1
+                self.is_open = self.clock_calls > self.opens_after
             return 200, {"is_open": self.is_open, "next_open": "2026-11-16T14:30:00Z", "next_close": "2026-11-16T21:00:00Z"}
         if (method, path) == ("GET", "/v2/positions"):
             return 200, [{"symbol": s, "qty": str(q), "avg_entry_price": str(self.price)} for s, q in self.positions.items() if q > 0]
@@ -175,3 +179,25 @@ def test_an_authentication_failure_ends_with_an_error_and_never_prints_the_keys(
     code, _, _ = run(market=Market(status_code=401))
     out = capsys.readouterr().out
     assert code == 1 and "エラー" in out and KEY not in out and SECRET not in out
+
+
+def test_both_runs_the_fractional_and_the_whole_share_check_one_after_the_other(run, capsys, tmp_path):
+    code, fake, market = run("--orders", "both")
+    out = capsys.readouterr().out
+    assert code == 0 and [p for m, p in writes(fake) if m == "POST"] == ["/v2/orders"] * 4        # buy+stop twice
+    assert out.index("== まとめ") > out.index("== 注文の確認（whole）") and "-- fractional" in out and "-- whole" in out
+    recorded = json.loads((tmp_path / "st" / "alpaca_check.json").read_text(encoding="utf-8"))
+    assert [(r["symbol"], r["qty"]) for r in recorded] == [("SPY", 0.01), ("F", 1.0)]
+
+
+def test_wait_for_market_waits_for_the_open_and_then_does_the_checks(run, capsys):
+    code, fake, market = run("--orders", "fractional", "--wait-for-market", market=Market(opens_after=3))
+    out = capsys.readouterr().out
+    assert code == 0 and "市場の開場を待っています" in out and "gtc_stop_accepted: True" in out
+    assert market.clock_calls >= 4 and len([w for w in writes(fake) if w[0] == "POST"]) == 2
+
+
+def test_wait_for_market_gives_up_after_its_limit_without_ordering_anything(run, capsys):
+    code, fake, _ = run("--orders", "both", "--wait-for-market", "--max-wait-hours", "0.05", market=Market(is_open=False))
+    out = capsys.readouterr().out
+    assert code == 0 and not writes(fake) and out.count("閉じています") == 2
