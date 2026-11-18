@@ -240,3 +240,107 @@ python3 scripts/human_intent.py confirm HI-... --operator 名前   # 次のセ�
 - 通知先（Slack 等）への**実送信は、ローカルの模擬サーバーでしか確認していない**。設定後に、わざと異常を作って（例: `--state-dir` を間違える）届くか試すこと。
 - 実LLM・実データでの長期連続稼働は未経験。数日は人が見守る前提。
 - 保存は**模擬ブローカー専用**。実ブローカーは相手が口座の真実を持つので、復元ではなく照合で扱う（未実装）。
+
+## 11. Linux サーバー（VPS）への導入（Ubuntu 24.04 LTS）
+PC を切っていても、60営業日の間、動き続けさせるための手順。**確認済み**: Ubuntu 24.04 での仮想環境の作成と `pip install -e .`、ランナーの起動と SIGTERM での停止、
+バックアップ（`scripts/backup_state.py`）、設定ファイル（`deploy/systemd/`）の書式検証。**未確認**: 実際の VPS での通しの導入、再起動をまたぐ自動起動。
+- **OS は Ubuntu 24.04 LTS**（Python 3.12）。22.04 の Python 3.10 では動かない（このシステムは Python 3.11 以上が必要）。メモリは 2GB を推奨。
+- 現状ランナーは**模擬データ・模擬ブローカー**で動く。Alpaca のペーパー口座への切り替え（配線）は未実施で、**この導入は、止まらずに動くこと・再起動・バックアップ・通知の確認が目的**（60営業日には数えない）。
+- **サーバーのパスワード、SSH の秘密鍵、Webhook の URL は、チャットに貼らない。**
+
+### A. 自分の PC で SSH の鍵を作る（Windows の PowerShell）
+```powershell
+ssh-keygen -t ed25519 -C "quant-vps"
+Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub"
+```
+2行目で表示される**公開鍵**（`ssh-ed25519 …` の1行）を、サーバーの作成画面の「SSH 鍵の登録」に貼る。**秘密鍵**（`id_ed25519`、拡張子なし）は、誰にも渡さない。
+
+### B. サーバーを作る（VPS の画面）
+OS は Ubuntu 24.04、メモリ 2GB、月ごとの支払い。A の公開鍵を登録する。作成後の **IP アドレス**を控える。
+
+### C. 最初のログインと安全設定
+管理用のユーザー `ops` を作り、root やパスワードでの SSH を止める。会社によって、最初のユーザーは `root` か `ubuntu`。`<IP>` は控えた IP アドレス。
+```bash
+ssh ubuntu@<IP>                        # root の会社なら root@<IP>
+sudo apt update && sudo apt -y upgrade
+sudo adduser --gecos "" ops            # ops のパスワードを決める（sudo 用）
+sudo usermod -aG sudo ops
+sudo mkdir -p /home/ops/.ssh && sudo cp ~/.ssh/authorized_keys /home/ops/.ssh/
+sudo chown -R ops:ops /home/ops/.ssh && sudo chmod 700 /home/ops/.ssh && sudo chmod 600 /home/ops/.ssh/authorized_keys
+```
+**別のウィンドウで `ssh ops@<IP>` が入れることを確認してから**（最初のウィンドウは閉じない）、次を実行する。
+```bash
+sudo tee /etc/ssh/sshd_config.d/99-quant.conf >/dev/null <<'CONF'
+PermitRootLogin no
+PasswordAuthentication no
+CONF
+sudo systemctl restart ssh
+sudo ufw allow OpenSSH && sudo ufw --force enable      # 外から入れるのは SSH だけ
+timedatectl | grep synchronized                        # "System clock synchronized: yes" を確認
+```
+
+### D. ソフトの導入（`ops` で）
+```bash
+sudo apt install -y python3-venv python3-pip git
+sudo useradd --system --create-home --home-dir /opt/quant --shell /usr/sbin/nologin quant
+sudo -u quant mkdir -p /opt/quant/.ssh && sudo -u quant chmod 700 /opt/quant/.ssh
+sudo -u quant ssh-keygen -t ed25519 -N "" -C "quant-deploy" -f /opt/quant/.ssh/id_ed25519
+sudo cat /opt/quant/.ssh/id_ed25519.pub
+```
+表示された公開鍵を、GitHub のリポジトリの **Settings → Deploy keys → Add deploy key** に登録する（**Allow write access は付けない**＝読み取り専用）。続けて:
+```bash
+sudo -u quant ssh -o StrictHostKeyChecking=accept-new -T git@github.com     # 認証できた旨が出る（終了コード1は正常）
+sudo -u quant git clone git@github.com:AIvibe-bldr/100-Autonomous-Quant-Trading-System-MASTER-SPEC-v2.0.git /opt/quant/app
+sudo -u quant python3 -m venv /opt/quant/venv
+sudo -u quant /opt/quant/venv/bin/pip install -e /opt/quant/app
+sudo mkdir -p /var/lib/quant /var/backups/quant /etc/quant
+sudo chown quant:quant /var/lib/quant /var/backups/quant
+```
+より安全にするなら、`ssh -T` で表示された GitHub のフィンガープリントを、GitHub の公式ページに載っているものと照合する。**使うブランチ**は、既定の `main`（作業が `main` に入っていない間は、`sudo -u quant git -C /opt/quant/app checkout <ブランチ名>`）。
+
+### E. 設定ファイル（秘密はここだけ）
+```bash
+sudo install -m 640 -o root -g quant /dev/null /etc/quant/runner.env
+sudo nano /etc/quant/runner.env
+```
+中身（`=` の右に引用符は付けない。`（…）` は自分の値に置き換える）:
+```
+QUANT_ALERT_WEBHOOK_URL=（Discord の Webhook URL）
+QUANT_ALERT_PREFIX=paper-1
+QUANT_WATCHDOG_PING_URL=（外部の死活監視の URL）
+QUANT_KILL_SWITCH_FILE=/var/lib/quant/kill_switch.json
+QUANT_INCIDENT_LOG=/var/lib/quant/incidents.jsonl
+QUANT_INTENT_LOG=/var/lib/quant/human_intents.jsonl
+QUANT_LIVE_GATE_FILE=/var/lib/quant/live_gate.json
+```
+**ブローカーのキー（Alpaca）は、配線を終えてから、同じファイルに足す。ライブ口座のキーは、置かない。**
+
+### F. 起動する（systemd）
+設定ファイルは `deploy/systemd/` にある（ランナー、見張り、ダッシュボード、バックアップ＋毎日のタイマー）。
+```bash
+sudo cp /opt/quant/app/deploy/systemd/* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now quant-runner quant-watchdog quant-dashboard quant-backup.timer
+systemctl status quant-runner --no-pager
+journalctl -u quant-runner -n 30 --no-pager      # "runner up: PAPER ..." が出ていれば起動している
+```
+
+### G. 確認
+- **ダッシュボード**: 自分の PC から、SSH のトンネルで見る（外には公開していない）。PowerShell で `ssh -L 8080:127.0.0.1:8080 ops@<IP>` を実行したまま、ブラウザで `http://127.0.0.1:8080` を開く。
+- **Discord**: 軽い警告を1件出して届くか（§5）。外部の死活監視が緑になるか（上の手順）。
+- **自動復旧**: `sudo systemctl kill -s SIGKILL quant-runner` で強制的に落とし、30秒後に `systemctl status quant-runner` が active（保存から再開）か見る。**サーバーの再起動**（`sudo reboot`）後も、自動で上がるか見る。
+- **止める**: `sudo systemctl stop quant-runner`（SIGTERM。終了コード0・状態 `STOPPED`）。再開は `sudo systemctl start quant-runner`。
+- **緊急停止**（新規の買いを止める）: `sudo -u quant bash -c 'set -a; . /etc/quant/runner.env; set +a; cd /opt/quant/app; /opt/quant/venv/bin/python scripts/kill_switch.py status'`（`engage` / `clear` は §7）。
+
+### H. バックアップ
+- 毎日 03:30（UTC）に `/var/backups/quant/state-日時/` へ作られ、新しい14個を残す（SQLite の安全なコピー。動作中でも壊れない）。確認: `systemctl list-timers quant-backup.timer`。
+- **同じサーバーの中のバックアップは、サーバーを失うと一緒に消える。** 次のどちらかも行う: ①VPS の**スナップショット**（週1回など。会社の機能）、②新しい1つを自分の PC へ: `sudo usermod -aG quant ops` のあと再ログインし、PowerShell で `scp -r ops@<IP>:/var/backups/quant/state-日時 C:\quant-backup\`。
+- 復元は、`/var/lib/quant/paper-1` を空にして、バックアップの中身を戻し、`quant-runner` を起動する（`--resume-if-exists` が検証して再開する。検証に失敗したら起動しない）。
+
+### I. 更新
+セッションが走っていない時間（米国市場の閉場後）に: `sudo -u quant git -C /opt/quant/app pull` → 部品が変わったときだけ `sudo -u quant /opt/quant/venv/bin/pip install -e /opt/quant/app` → `sudo systemctl restart quant-runner`。
+
+### J. 限界
+- ランナーは**ペーパー専用**で、模擬のブローカー。Alpaca への切り替えと、再起動時のブローカーとの照合は未実装（`docs/HANDOFF_next_session.md` §3b）。
+- サーバー会社の障害・メンテナンスで止まった日は、その日のセッションが欠ける。
+- 取引カレンダーは 2028 年末まで（§9）。
