@@ -1,0 +1,17 @@
+[Unit]
+Description=Quant watchdog
+After=network-online.target
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant/app
+EnvironmentFile=/etc/quant/runner.env
+ExecStart=/opt/quant/venv/bin/python scripts/watchdog.py --state-dir /var/lib/quant/paper-1 --loop
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

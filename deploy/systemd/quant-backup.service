@@ -1,0 +1,9 @@
+[Unit]
+Description=Quant state backup
+
+[Service]
+Type=oneshot
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant/app
+ExecStart=/opt/quant/venv/bin/python scripts/backup_state.py --state-dir /var/lib/quant/paper-1 --backup-dir /var/backups/quant --keep 14

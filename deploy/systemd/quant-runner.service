@@ -1,0 +1,26 @@
+[Unit]
+Description=Quant paper runner
+After=network-online.target
+Wants=network-online.target
+# 10分に5回までの再起動で打ち切る
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant/app
+EnvironmentFile=/etc/quant/runner.env
+ExecStart=/opt/quant/venv/bin/python scripts/run_paper_runner.py --state-dir /var/lib/quant/paper-1 --resume-if-exists
+# 異常終了（終了コード1）なら保存から再開する。systemctl stop（SIGTERM）は終了コード0で、再起動しない
+Restart=on-failure
+RestartSec=30
+# 「起動を拒否」（終了コード2）は再試行しても無駄なので止める（watchdog が通知）
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

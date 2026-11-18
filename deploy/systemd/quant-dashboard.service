@@ -1,0 +1,18 @@
+[Unit]
+Description=Quant ops dashboard (read-only, localhost only)
+After=network-online.target
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant/app
+EnvironmentFile=/etc/quant/runner.env
+# 外には公開しない（127.0.0.1）。自分の PC からは SSH のトンネルで見る
+ExecStart=/opt/quant/venv/bin/python scripts/run_ops_dashboard.py --state-dir /var/lib/quant/paper-1 --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

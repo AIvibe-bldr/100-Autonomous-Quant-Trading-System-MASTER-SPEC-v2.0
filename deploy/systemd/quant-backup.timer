@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily quant state backup
+
+[Timer]
+# 毎日 03:30（UTC）。止まっていた日の分は、起動後に実行する
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
